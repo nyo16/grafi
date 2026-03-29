@@ -2,6 +2,7 @@ defmodule Grafi.Algo.ShortestPath do
   @moduledoc "Dijkstra, Bellman-Ford, A* — with igraph NIF acceleration."
 
   alias Grafi.Graph
+  alias Grafi.Algo.MinHeap
 
   @spec dijkstra(Graph.t(), any(), any(), keyword()) :: {:ok, {[any()], number()}} | :no_path
   def dijkstra(%Graph{} = g, source, target, opts \\ []) do
@@ -52,7 +53,8 @@ defmodule Grafi.Algo.ShortestPath do
   @spec a_star(Graph.t(), any(), any(), (any() -> number())) ::
           {:ok, {[any()], number()}} | :no_path
   def a_star(%Graph{} = g, source, target, h) do
-    do_astar(g, target, h, [{h.(source), 0.0, source, [source]}], MapSet.new())
+    heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source, [source]})
+    do_astar(g, target, h, heap, MapSet.new())
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
@@ -67,36 +69,36 @@ defmodule Grafi.Algo.ShortestPath do
   end
 
   defp do_dijkstra(g, source) do
-    loop(g, [{0.0, source}], %{source => 0.0}, %{}, MapSet.new())
+    heap = MinHeap.new() |> MinHeap.insert({0.0, source})
+    loop(g, heap, %{source => 0.0}, %{}, MapSet.new())
   end
 
-  defp loop(_, [], dists, parents, _), do: {dists, parents}
+  defp loop(g, heap, dists, parents, vis) do
+    case MinHeap.pop(heap) do
+      :empty ->
+        {dists, parents}
 
-  defp loop(g, [{d, u} | rest], dists, parents, vis) do
-    if MapSet.member?(vis, u),
-      do: loop(g, rest, dists, parents, vis),
-      else:
-        (
+      {:ok, {d, u}, rest_heap} ->
+        if MapSet.member?(vis, u) do
+          loop(g, rest_heap, dists, parents, vis)
+        else
           vis = MapSet.put(vis, u)
 
-          {pq, dists, parents} =
+          {heap2, dists, parents} =
             Graph.out_neighbors(g, u)
-            |> Enum.reduce({rest, dists, parents}, fn v, {q, ds, ps} ->
+            |> Enum.reduce({rest_heap, dists, parents}, fn v, {h, ds, ps} ->
               w = Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.min()
               alt = d + w
 
               if alt < Map.get(ds, v, :infinity),
-                do: {ins(q, {alt, v}), Map.put(ds, v, alt), Map.put(ps, v, u)},
-                else: {q, ds, ps}
+                do: {MinHeap.insert(h, {alt, v}), Map.put(ds, v, alt), Map.put(ps, v, u)},
+                else: {h, ds, ps}
             end)
 
-          loop(g, pq, dists, parents, vis)
-        )
+          loop(g, heap2, dists, parents, vis)
+        end
+    end
   end
-
-  defp ins([], e), do: [e]
-  defp ins([{d, _} = h | t], {nd, _} = e) when nd < d, do: [e, h | t]
-  defp ins([h | t], e), do: [h | ins(t, e)]
 
   defp rebuild(_, s, s, path), do: path
 
@@ -107,38 +109,35 @@ defmodule Grafi.Algo.ShortestPath do
     end
   end
 
-  defp do_astar(_, _, _, [], _), do: :no_path
+  defp do_astar(g, target, h, heap, closed) do
+    case MinHeap.pop(heap) do
+      :empty ->
+        :no_path
 
-  defp do_astar(g, target, h, [{_, gc, cur, path} | rest], closed) do
-    cond do
-      cur == target ->
-        {:ok, {Enum.reverse(path), gc}}
+      {:ok, {_, gc, cur, path}, rest_heap} ->
+        cond do
+          cur == target ->
+            {:ok, {Enum.reverse(path), gc}}
 
-      MapSet.member?(closed, cur) ->
-        do_astar(g, target, h, rest, closed)
+          MapSet.member?(closed, cur) ->
+            do_astar(g, target, h, rest_heap, closed)
 
-      true ->
-        closed = MapSet.put(closed, cur)
+          true ->
+            closed = MapSet.put(closed, cur)
 
-        new =
-          Graph.out_neighbors(g, cur)
-          |> Enum.reject(&MapSet.member?(closed, &1))
-          |> Enum.map(fn n ->
-            w = Graph.edges_between(g, cur, n) |> Enum.map(& &1.weight) |> Enum.min()
-            ng = gc + w
-            {ng + h.(n), ng, n, [n | path]}
-          end)
+            new_heap =
+              Graph.out_neighbors(g, cur)
+              |> Enum.reject(&MapSet.member?(closed, &1))
+              |> Enum.reduce(rest_heap, fn n, heap_acc ->
+                w = Graph.edges_between(g, cur, n) |> Enum.map(& &1.weight) |> Enum.min()
+                ng = gc + w
+                MinHeap.insert(heap_acc, {ng + h.(n), ng, n, [n | path]})
+              end)
 
-        do_astar(g, target, h, merge_open(rest, new), closed)
+            do_astar(g, target, h, new_heap, closed)
+        end
     end
   end
-
-  defp merge_open(ex, []), do: ex
-  defp merge_open(ex, [e | r]), do: merge_open(ins_open(ex, e), r)
-
-  defp ins_open([], e), do: [e]
-  defp ins_open([{f1, _, _, _} = h | t], {f2, _, _, _} = e) when f2 < f1, do: [e, h | t]
-  defp ins_open([h | t], e), do: [h | ins_open(t, e)]
 
   defp nif_threshold, do: Application.get_env(:grafi, :nif_threshold, 500)
 end
