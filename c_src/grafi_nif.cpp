@@ -4,6 +4,8 @@
 // Each NIF receives the graph in CSR format from Elixir, converts to
 // igraph_t, runs the algorithm, and returns results as Elixir terms.
 // All NIFs are scheduled on dirty CPU schedulers via fine.
+//
+// Compatible with igraph >= 1.0.0
 
 #include "grafi_nif.h"
 #include <fine.hpp>
@@ -46,10 +48,10 @@ igraph_vector_t csr_to_weights(const CsrGraph& csr) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Algorithm implementations
+// Algorithm implementations (igraph 1.0.x API)
 // ═══════════════════════════════════════════════════════════════════════
 
-PageRankResult compute_pagerank(const CsrGraph& g, double damping, int max_iter) {
+PageRankResult compute_pagerank(const CsrGraph& g, double damping, int /*max_iter*/) {
     igraph_t graph = csr_to_igraph(g);
     igraph_vector_t weights = csr_to_weights(g);
     igraph_vector_t result;
@@ -57,10 +59,12 @@ PageRankResult compute_pagerank(const CsrGraph& g, double damping, int max_iter)
 
     igraph_vector_init(&result, 0);
 
-    igraph_pagerank(&graph, IGRAPH_PAGERANK_ALGO_PRPACK,
+    // igraph 1.0.x: weights 2nd, then result, eigenvalue, damping, directed, vids, algo, options
+    igraph_pagerank(&graph, &weights,
                     &result, &eigenvalue,
-                    igraph_vss_all(), IGRAPH_DIRECTED,
-                    damping, &weights, NULL);
+                    damping, IGRAPH_DIRECTED,
+                    igraph_vss_all(),
+                    IGRAPH_PAGERANK_ALGO_PRPACK, NULL);
 
     PageRankResult pr;
     pr.ranks.resize(igraph_vector_size(&result));
@@ -135,8 +139,9 @@ CentralityResult compute_betweenness(const CsrGraph& g) {
     igraph_vector_t result;
     igraph_vector_init(&result, 0);
 
-    igraph_betweenness(&graph, &result, igraph_vss_all(),
-                       IGRAPH_DIRECTED, &weights);
+    // igraph 1.0.x: weights 2nd arg, added normalized param
+    igraph_betweenness(&graph, &weights, &result, igraph_vss_all(),
+                       IGRAPH_DIRECTED, false);
 
     CentralityResult cr;
     cr.scores.resize(igraph_vector_size(&result));
@@ -177,14 +182,19 @@ CommunityResult compute_louvain(const CsrGraph& g) {
     igraph_vector_t weights = csr_to_weights(g);
     igraph_vector_int_t membership;
     igraph_vector_int_init(&membership, 0);
-    igraph_real_t modularity;
+    igraph_vector_t modularity_vec;
+    igraph_vector_init(&modularity_vec, 0);
 
+    // igraph 1.0.x: modularity is now a vector (per-level), not a scalar
     igraph_community_multilevel(&graph, &weights,
                                 1.0,  // resolution
-                                &membership, NULL, &modularity);
+                                &membership, NULL, &modularity_vec);
 
     CommunityResult cr;
-    cr.modularity = modularity;
+    // Use the last (final) modularity value
+    igraph_integer_t mod_len = igraph_vector_size(&modularity_vec);
+    cr.modularity = mod_len > 0 ? VECTOR(modularity_vec)[mod_len - 1] : 0.0;
+
     cr.membership.resize(igraph_vector_int_size(&membership));
     int64_t max_id = 0;
     for (igraph_integer_t i = 0; i < igraph_vector_int_size(&membership); i++) {
@@ -193,6 +203,7 @@ CommunityResult compute_louvain(const CsrGraph& g) {
     }
     cr.n_communities = max_id + 1;
 
+    igraph_vector_destroy(&modularity_vec);
     igraph_vector_int_destroy(&membership);
     igraph_vector_destroy(&weights);
     igraph_destroy(&graph);
@@ -204,15 +215,19 @@ CommunityResult compute_label_propagation(const CsrGraph& g) {
     igraph_vector_t weights = csr_to_weights(g);
     igraph_vector_int_t membership;
     igraph_vector_int_init(&membership, 0);
-    igraph_real_t modularity;
 
+    // igraph 1.0.x: 7 args including variant
     igraph_community_label_propagation(&graph, &membership,
                                        IGRAPH_ALL, &weights,
                                        NULL, NULL,
-                                       IGRAPH_LPA_VARIANT_RAK);
+                                       IGRAPH_LPA_FAST);
 
     CommunityResult cr;
+    // Compute modularity separately
+    igraph_real_t modularity;
+    igraph_modularity(&graph, &membership, &weights, 1.0, IGRAPH_UNDIRECTED, &modularity);
     cr.modularity = modularity;
+
     cr.membership.resize(igraph_vector_int_size(&membership));
     int64_t max_id = 0;
     for (igraph_integer_t i = 0; i < igraph_vector_int_size(&membership); i++) {
@@ -233,21 +248,23 @@ CommunityResult compute_leiden(const CsrGraph& g, double resolution) {
     igraph_vector_int_t membership;
     igraph_vector_int_init(&membership, 0);
     igraph_real_t quality;
+    igraph_integer_t nb_clusters;
 
-    igraph_community_leiden(&graph, &weights, NULL,
+    // igraph 1.0.x: added vertex_out_weights and vertex_in_weights params
+    igraph_community_leiden(&graph, &weights,
+                            NULL,  // vertex_out_weights
+                            NULL,  // vertex_in_weights
                             resolution, 0.01, false,
                             -1,
-                            &membership, NULL, &quality);
+                            &membership, &nb_clusters, &quality);
 
     CommunityResult cr;
     cr.modularity = quality;
+    cr.n_communities = nb_clusters;
     cr.membership.resize(igraph_vector_int_size(&membership));
-    int64_t max_id = 0;
     for (igraph_integer_t i = 0; i < igraph_vector_int_size(&membership); i++) {
         cr.membership[i] = VECTOR(membership)[i];
-        if (cr.membership[i] > max_id) max_id = cr.membership[i];
     }
-    cr.n_communities = max_id + 1;
 
     igraph_vector_int_destroy(&membership);
     igraph_vector_destroy(&weights);
@@ -308,6 +325,8 @@ std::vector<int64_t> compute_topological_sort(const CsrGraph& g) {
 // ═══════════════════════════════════════════════════════════════════════
 
 // Helper: decode a list of int64 from Elixir
+// Uses long as intermediate to match enif_get_long on platforms where
+// int64_t != long (e.g., macOS ARM64 with OTP 28)
 static std::vector<int64_t> decode_int_list(ErlNifEnv* env, ERL_NIF_TERM list) {
     unsigned len;
     enif_get_list_length(env, list, &len);
@@ -315,9 +334,9 @@ static std::vector<int64_t> decode_int_list(ErlNifEnv* env, ERL_NIF_TERM list) {
     ERL_NIF_TERM head, tail = list;
     for (unsigned i = 0; i < len; i++) {
         enif_get_list_cell(env, tail, &head, &tail);
-        int64_t val;
-        enif_get_int64(env, head, &val);
-        result[i] = val;
+        long val;
+        enif_get_long(env, head, &val);
+        result[i] = static_cast<int64_t>(val);
     }
     return result;
 }
@@ -352,7 +371,9 @@ static grafi::CsrGraph decode_csr(ErlNifEnv* env, ERL_NIF_TERM map) {
     csr.weights = decode_float_list(env, val);
 
     enif_get_map_value(env, map, enif_make_atom(env, "n_vertices"), &val);
-    enif_get_int64(env, val, &csr.n_vertices);
+    long n_verts;
+    enif_get_long(env, val, &n_verts);
+    csr.n_vertices = static_cast<int64_t>(n_verts);
 
     enif_get_map_value(env, map, enif_make_atom(env, "directed"), &val);
     char atom_buf[16];
@@ -384,34 +405,56 @@ static ERL_NIF_TERM encode_int_list(ErlNifEnv* env, const std::vector<int64_t>& 
 
 static ERL_NIF_TERM nif_pagerank(ErlNifEnv* env, int argc,
                                   const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    double damping;
-    int max_iter;
-    enif_get_double(env, argv[1], &damping);
-    enif_get_int(env, argv[2], &max_iter);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        double damping;
+        int max_iter;
+        enif_get_double(env, argv[1], &damping);
+        enif_get_int(env, argv[2], &max_iter);
 
-    auto result = grafi::compute_pagerank(csr, damping, max_iter);
-    return encode_float_list(env, result.ranks);
+        auto result = grafi::compute_pagerank(csr, damping, max_iter);
+        return encode_float_list(env, result.ranks);
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Dijkstra ──────────────────────────────────────────────────────
 
 static ERL_NIF_TERM nif_dijkstra(ErlNifEnv* env, int argc,
                                   const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    int64_t source, target;
-    enif_get_int64(env, argv[1], &source);
-    enif_get_int64(env, argv[2], &target);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        long source_l, target_l;
+        enif_get_long(env, argv[1], &source_l);
+        enif_get_long(env, argv[2], &target_l);
+        int64_t source = static_cast<int64_t>(source_l);
+        int64_t target = static_cast<int64_t>(target_l);
 
-    auto result = grafi::compute_dijkstra(csr, source, target);
+        auto result = grafi::compute_dijkstra(csr, source, target);
 
-    if (result.found) {
-        return enif_make_tuple3(env,
-            enif_make_atom(env, "ok"),
-            encode_int_list(env, result.path),
-            enif_make_double(env, result.distance));
-    } else {
-        return enif_make_atom(env, "no_path");
+        if (result.found) {
+            return enif_make_tuple3(env,
+                enif_make_atom(env, "ok"),
+                encode_int_list(env, result.path),
+                enif_make_double(env, result.distance));
+        } else {
+            return enif_make_atom(env, "no_path");
+        }
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
     }
 }
 
@@ -419,89 +462,169 @@ static ERL_NIF_TERM nif_dijkstra(ErlNifEnv* env, int argc,
 
 static ERL_NIF_TERM nif_betweenness(ErlNifEnv* env, int argc,
                                      const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    auto result = grafi::compute_betweenness(csr);
-    return encode_float_list(env, result.scores);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        auto result = grafi::compute_betweenness(csr);
+        return encode_float_list(env, result.scores);
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Closeness centrality ──────────────────────────────────────────
 
 static ERL_NIF_TERM nif_closeness(ErlNifEnv* env, int argc,
                                    const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    auto result = grafi::compute_closeness(csr);
-    return encode_float_list(env, result.scores);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        auto result = grafi::compute_closeness(csr);
+        return encode_float_list(env, result.scores);
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Louvain community detection ───────────────────────────────────
 
 static ERL_NIF_TERM nif_louvain(ErlNifEnv* env, int argc,
                                  const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    auto result = grafi::compute_louvain(csr);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        auto result = grafi::compute_louvain(csr);
 
-    return enif_make_tuple3(env,
-        encode_int_list(env, result.membership),
-        enif_make_double(env, result.modularity),
-        enif_make_int64(env, result.n_communities));
+        return enif_make_tuple3(env,
+            encode_int_list(env, result.membership),
+            enif_make_double(env, result.modularity),
+            enif_make_int64(env, result.n_communities));
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Label propagation ─────────────────────────────────────────────
 
 static ERL_NIF_TERM nif_label_propagation(ErlNifEnv* env, int argc,
                                            const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    auto result = grafi::compute_label_propagation(csr);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        auto result = grafi::compute_label_propagation(csr);
 
-    return enif_make_tuple3(env,
-        encode_int_list(env, result.membership),
-        enif_make_double(env, result.modularity),
-        enif_make_int64(env, result.n_communities));
+        return enif_make_tuple3(env,
+            encode_int_list(env, result.membership),
+            enif_make_double(env, result.modularity),
+            enif_make_int64(env, result.n_communities));
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Leiden ─────────────────────────────────────────────────────────
 
 static ERL_NIF_TERM nif_leiden(ErlNifEnv* env, int argc,
                                 const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    double resolution;
-    enif_get_double(env, argv[1], &resolution);
-    auto result = grafi::compute_leiden(csr, resolution);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        double resolution;
+        enif_get_double(env, argv[1], &resolution);
+        auto result = grafi::compute_leiden(csr, resolution);
 
-    return enif_make_tuple3(env,
-        encode_int_list(env, result.membership),
-        enif_make_double(env, result.modularity),
-        enif_make_int64(env, result.n_communities));
+        return enif_make_tuple3(env,
+            encode_int_list(env, result.membership),
+            enif_make_double(env, result.modularity),
+            enif_make_int64(env, result.n_communities));
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Strongly connected components ─────────────────────────────────
 
 static ERL_NIF_TERM nif_scc(ErlNifEnv* env, int argc,
                              const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    auto result = grafi::compute_scc(csr);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        auto result = grafi::compute_scc(csr);
 
-    return enif_make_tuple2(env,
-        encode_int_list(env, result.membership),
-        enif_make_int64(env, result.n_components));
+        return enif_make_tuple2(env,
+            encode_int_list(env, result.membership),
+            enif_make_int64(env, result.n_components));
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Is DAG? ───────────────────────────────────────────────────────
 
 static ERL_NIF_TERM nif_is_acyclic(ErlNifEnv* env, int argc,
                                     const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    bool acyclic = grafi::compute_is_acyclic(csr);
-    return enif_make_atom(env, acyclic ? "true" : "false");
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        bool acyclic = grafi::compute_is_acyclic(csr);
+        return enif_make_atom(env, acyclic ? "true" : "false");
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ── NIF: Topological sort ──────────────────────────────────────────────
 
 static ERL_NIF_TERM nif_topological_sort(ErlNifEnv* env, int argc,
                                           const ERL_NIF_TERM argv[]) {
-    auto csr = decode_csr(env, argv[0]);
-    auto result = grafi::compute_topological_sort(csr);
-    return encode_int_list(env, result);
+    try {
+        auto csr = decode_csr(env, argv[0]);
+        auto result = grafi::compute_topological_sort(csr);
+        return encode_int_list(env, result);
+    } catch (const std::exception& e) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_string(env, e.what(), ERL_NIF_LATIN1));
+    } catch (...) {
+        return enif_make_tuple2(env,
+            enif_make_atom(env, "error"),
+            enif_make_atom(env, "unknown_nif_error"));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

@@ -1,13 +1,6 @@
 import Config
 
-# Grafi configuration
+# Compile-time configuration for Grafi.
 #
-# Set the NIF threshold (vertex count above which algorithms dispatch to igraph):
-#   config :grafi, nif_threshold: 500
-#
-# Disable NIF entirely (always use pure Elixir):
-#   config :grafi, nif_enabled: false
-
-config :grafi,
-  nif_threshold: 500,
-  nif_enabled: true
+# Runtime settings (nif_threshold, nif_enabled) are in config/runtime.exs
+# and can be overridden via environment variables.

@@ -19,8 +19,10 @@ defmodule Grafi.DAG do
   @spec new() :: t()
   def new, do: %__MODULE__{graph: Graph.new(type: :directed)}
 
+  @doc "Wraps an existing directed graph as a DAG, returning an error if it contains a cycle."
   @spec from_graph(Graph.t()) :: {:ok, t()} | {:error, :has_cycle | :must_be_directed}
   def from_graph(%Graph{type: :undirected}), do: {:error, :must_be_directed}
+
   def from_graph(%Graph{type: :directed} = g) do
     case topological_sort_graph(g) do
       {:ok, _} -> {:ok, %__MODULE__{graph: g}}
@@ -28,6 +30,7 @@ defmodule Grafi.DAG do
     end
   end
 
+  @doc "Like from_graph/1 but raises on cycle or undirected input."
   @spec from_graph!(Graph.t()) :: t()
   def from_graph!(g) do
     case from_graph(g) do
@@ -36,10 +39,12 @@ defmodule Grafi.DAG do
     end
   end
 
+  @doc "Adds a vertex to the DAG, optionally with a label."
   @spec add_vertex(t(), any(), keyword()) :: t()
   def add_vertex(%__MODULE__{graph: g} = dag, v, opts \\ []),
     do: %{dag | graph: Graph.add_vertex(g, v, opts)}
 
+  @doc "Adds an edge to the DAG, raising CycleError if it would create a cycle."
   @spec add_edge(t(), any(), any(), keyword()) :: t()
   def add_edge(%__MODULE__{graph: g} = dag, v1, v2, opts \\ []) do
     if v1 == v2,
@@ -47,12 +52,14 @@ defmodule Grafi.DAG do
 
     if Graph.has_vertex?(g, v2) and Graph.has_vertex?(g, v1) do
       if Grafi.Algo.Traversal.reachable?(g, v2, v1),
-        do: raise(Grafi.CycleError, message: "#{inspect(v1)} -> #{inspect(v2)} would create a cycle")
+        do:
+          raise(Grafi.CycleError, message: "#{inspect(v1)} -> #{inspect(v2)} would create a cycle")
     end
 
     %{dag | graph: Graph.add_edge(g, v1, v2, opts)}
   end
 
+  @doc "Adds multiple edges to the DAG, raising CycleError if any would create a cycle."
   @spec add_edges(t(), list()) :: t()
   def add_edges(%__MODULE__{} = dag, edges) do
     Enum.reduce(edges, dag, fn
@@ -61,9 +68,11 @@ defmodule Grafi.DAG do
     end)
   end
 
+  @doc "Returns a topological ordering of the DAG's vertices."
   @spec topological_sort(t()) :: {:ok, [any()]} | {:error, :has_cycle}
   def topological_sort(%__MODULE__{graph: g}), do: topological_sort_graph(g)
 
+  @doc "Groups vertices into layers by their longest-path depth from sources."
   @spec layers(t()) :: %{non_neg_integer() => [any()]}
   def layers(%__MODULE__{graph: g} = dag) do
     case topological_sort(dag) do
@@ -71,22 +80,31 @@ defmodule Grafi.DAG do
         {layer_map, _} =
           Enum.reduce(sorted, {%{}, %{}}, fn v, {lm, vl} ->
             preds = Graph.in_neighbors(g, v)
-            layer = if preds == [], do: 0, else: (Enum.map(preds, &Map.get(vl, &1, 0)) |> Enum.max()) + 1
+
+            layer =
+              if preds == [], do: 0, else: (Enum.map(preds, &Map.get(vl, &1, 0)) |> Enum.max()) + 1
+
             {Map.update(lm, layer, [v], &(&1 ++ [v])), Map.put(vl, v, layer)}
           end)
+
         layer_map
-      _ -> %{}
+
+      _ ->
+        %{}
     end
   end
 
+  @doc "Returns vertices with no incoming edges."
   @spec sources(t()) :: [any()]
   def sources(%__MODULE__{graph: g}),
     do: Graph.vertices(g) |> Enum.filter(&(Graph.in_degree(g, &1) == 0))
 
+  @doc "Returns vertices with no outgoing edges."
   @spec sinks(t()) :: [any()]
   def sinks(%__MODULE__{graph: g}),
     do: Graph.vertices(g) |> Enum.filter(&(Graph.out_degree(g, &1) == 0))
 
+  @doc "Returns the longest weighted path and its total weight."
   @spec critical_path(t()) :: {[any()], number()}
   def critical_path(%__MODULE__{graph: g} = dag) do
     case topological_sort(dag) do
@@ -97,23 +115,35 @@ defmodule Grafi.DAG do
 
         {dist, parent} =
           Enum.reduce(sorted, {dist, %{}}, fn u, {d, p} ->
-            if d[u] == :neg_inf, do: {d, p}, else:
-              Graph.out_neighbors(g, u)
-              |> Enum.reduce({d, p}, fn v, {d2, p2} ->
-                w = Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.max(fn -> 1.0 end)
-                nd = d2[u] + w
-                if nd > d2[v] or d2[v] == :neg_inf,
-                  do: {Map.put(d2, v, nd), Map.put(p2, v, u)},
-                  else: {d2, p2}
-              end)
+            if d[u] == :neg_inf,
+              do: {d, p},
+              else:
+                Graph.out_neighbors(g, u)
+                |> Enum.reduce({d, p}, fn v, {d2, p2} ->
+                  w =
+                    Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.max(fn -> 1.0 end)
+
+                  nd = d2[u] + w
+
+                  if nd > d2[v] or d2[v] == :neg_inf,
+                    do: {Map.put(d2, v, nd), Map.put(p2, v, u)},
+                    else: {d2, p2}
+                end)
           end)
 
-        {end_v, max_d} = dist |> Enum.reject(fn {_, d} -> d == :neg_inf end) |> Enum.max_by(&elem(&1, 1), fn -> {nil, 0} end)
+        {end_v, max_d} =
+          dist
+          |> Enum.reject(fn {_, d} -> d == :neg_inf end)
+          |> Enum.max_by(&elem(&1, 1), fn -> {nil, 0} end)
+
         {rebuild_path(parent, end_v, []), max_d}
-      _ -> {[], 0}
+
+      _ ->
+        {[], 0}
     end
   end
 
+  @doc "Returns the underlying Graph struct."
   @spec to_graph(t()) :: Graph.t()
   def to_graph(%__MODULE__{graph: g}), do: g
 
@@ -122,25 +152,28 @@ defmodule Grafi.DAG do
   defp topological_sort_graph(%Graph{} = g) do
     in_deg = Graph.vertices(g) |> Map.new(&{&1, Graph.in_degree(g, &1)})
     queue = for {v, 0} <- in_deg, do: v
-    kahn(g, queue, in_deg, [])
+    kahn(g, :queue.from_list(queue), in_deg, [])
   end
 
-  defp kahn(_g, [], in_deg, result) do
-    if Enum.any?(in_deg, fn {_, d} -> d > 0 end),
-      do: {:error, :has_cycle},
-      else: {:ok, Enum.reverse(result)}
-  end
+  defp kahn(g, q, in_deg, result) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        if Enum.any?(in_deg, fn {_, d} -> d > 0 end),
+          do: {:error, :has_cycle},
+          else: {:ok, Enum.reverse(result)}
 
-  defp kahn(g, [v | rest], in_deg, result) do
-    {adds, in_deg} =
-      Graph.out_neighbors(g, v)
-      |> Enum.reduce({[], in_deg}, fn n, {a, d} ->
-        nd = d[n] - 1
-        d = Map.put(d, n, nd)
-        if nd == 0, do: {[n | a], d}, else: {a, d}
-      end)
+      {{:value, v}, rest_q} ->
+        {adds, in_deg} =
+          Graph.out_neighbors(g, v)
+          |> Enum.reduce({[], in_deg}, fn n, {a, d} ->
+            nd = d[n] - 1
+            d = Map.put(d, n, nd)
+            if nd == 0, do: {[n | a], d}, else: {a, d}
+          end)
 
-    kahn(g, rest ++ Enum.reverse(adds), Map.put(in_deg, v, -1), [v | result])
+        new_q = Enum.reduce(Enum.reverse(adds), rest_q, fn n, q -> :queue.in(n, q) end)
+        kahn(g, new_q, Map.put(in_deg, v, -1), [v | result])
+    end
   end
 
   defp rebuild_path(_, nil, path), do: path

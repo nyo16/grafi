@@ -12,3 +12,4 @@ erl_crash.dump
 *.dll
 /priv/grafi_nif.*
 /bench/results/
+/priv/plts/

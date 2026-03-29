@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+- Fixed igraph 1.0.x and OTP 28 compatibility in C++ NIF
+- Replaced throw-for-flow-control with explicit conditionals
+- Replaced O(n²) list appends with `:queue` and prepend+reverse
+- Made NIF threshold runtime-configurable via Application config
+- Added Credo, Dialyzer, and GitHub Actions CI
+- Added `runtime.exs` for environment-based configuration
+- Expanded test suite with edge cases, JSON round-trip, and property-based tests
+- Added `@doc` annotations to all public functions
+
 ## v0.1.0
 
 - Initial release

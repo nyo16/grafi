@@ -8,7 +8,7 @@
 PRIV_DIR = $(MIX_APP_PATH)/priv
 NIF_SO   = $(PRIV_DIR)/grafi_nif.so
 
-FINE_INCLUDE = $(shell elixir -e 'IO.puts Fine.include_dir()' 2>/dev/null || echo "")
+FINE_INCLUDE = $(shell elixir -e 'IO.puts Fine.include_dir()' 2>/dev/null || echo "$(CURDIR)/deps/fine/c_include")
 ERTS_INCLUDE = $(shell erl -noshell -eval 'io:format("~s/erts-~s/include", [code:root_dir(), erlang:system_info(version)])' -s erlang halt)
 
 # igraph detection

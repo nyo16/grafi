@@ -6,12 +6,18 @@ defmodule Grafi.Algo.Traversal do
   @spec bfs(Graph.t(), any()) :: Enumerable.t()
   def bfs(%Graph{} = g, start) do
     Stream.resource(
-      fn -> {[start], MapSet.new([start])} end,
+      fn -> {:queue.from_list([start]), MapSet.new([start])} end,
       fn
-        {[], _} -> {:halt, nil}
-        {[v | rest], vis} ->
-          new = Graph.out_neighbors(g, v) |> Enum.reject(&MapSet.member?(vis, &1))
-          {[v], {rest ++ new, Enum.reduce(new, vis, &MapSet.put(&2, &1))}}
+        {q, vis} ->
+          case :queue.out(q) do
+            {:empty, _} ->
+              {:halt, nil}
+
+            {{:value, v}, q2} ->
+              new = Graph.out_neighbors(g, v) |> Enum.reject(&MapSet.member?(vis, &1))
+              q3 = Enum.reduce(new, q2, fn n, q -> :queue.in(n, q) end)
+              {[v], {q3, Enum.reduce(new, vis, &MapSet.put(&2, &1))}}
+          end
       end,
       fn _ -> :ok end
     )
@@ -22,7 +28,9 @@ defmodule Grafi.Algo.Traversal do
     Stream.resource(
       fn -> {[start], MapSet.new()} end,
       fn
-        {[], _} -> {:halt, nil}
+        {[], _} ->
+          {:halt, nil}
+
         {[v | rest], vis} ->
           if MapSet.member?(vis, v) do
             {[], {rest, vis}}
@@ -50,9 +58,18 @@ defmodule Grafi.Algo.Traversal do
     do: bfs(g, source) |> Enum.into(MapSet.new())
 
   defp do_post(g, v, vis, acc) do
-    if MapSet.member?(vis, v), do: {acc, vis}, else:
-      (vis = MapSet.put(vis, v)
-       {acc, vis} = Enum.reduce(Graph.out_neighbors(g, v), {acc, vis}, fn n, {a, v2} -> do_post(g, n, v2, a) end)
-       {[v | acc], vis})
+    if MapSet.member?(vis, v),
+      do: {acc, vis},
+      else:
+        (
+          vis = MapSet.put(vis, v)
+
+          {acc, vis} =
+            Enum.reduce(Graph.out_neighbors(g, v), {acc, vis}, fn n, {a, v2} ->
+              do_post(g, n, v2, a)
+            end)
+
+          {[v | acc], vis}
+        )
   end
 end

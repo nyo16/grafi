@@ -47,27 +47,34 @@ defmodule Grafi.Graph do
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
     type = Keyword.get(opts, :type, :directed)
-    unless type in [:directed, :undirected], do: raise(ArgumentError, "type must be :directed or :undirected")
+
+    unless type in [:directed, :undirected],
+      do: raise(ArgumentError, "type must be :directed or :undirected")
+
     %__MODULE__{type: type}
   end
 
   # ── Vertices ──────────────────────────────────────────────────────────
 
+  @doc "Adds a vertex to the graph, optionally with a label."
   @spec add_vertex(t(), vertex_id(), keyword()) :: t()
   def add_vertex(%__MODULE__{} = g, v, opts \\ []) do
     if Map.has_key?(g.vertices, v) do
       maybe_set_label(g, v, opts)
     else
-      g = %{g |
-        vertices: Map.put(g.vertices, v, true),
-        out_edges: Map.put_new(g.out_edges, v, %{}),
-        in_edges: Map.put_new(g.in_edges, v, %{}),
-        num_vertices: g.num_vertices + 1
+      g = %{
+        g
+        | vertices: Map.put(g.vertices, v, true),
+          out_edges: Map.put_new(g.out_edges, v, %{}),
+          in_edges: Map.put_new(g.in_edges, v, %{}),
+          num_vertices: g.num_vertices + 1
       }
+
       maybe_set_label(g, v, opts)
     end
   end
 
+  @doc "Adds multiple vertices to the graph."
   @spec add_vertices(t(), [vertex_id() | {vertex_id(), keyword()}]) :: t()
   def add_vertices(%__MODULE__{} = g, vs) when is_list(vs) do
     Enum.reduce(vs, g, fn
@@ -76,27 +83,29 @@ defmodule Grafi.Graph do
     end)
   end
 
+  @doc "Removes a vertex and all its incident edges from the graph."
   @spec delete_vertex(t(), vertex_id()) :: t()
   def delete_vertex(%__MODULE__{} = g, v) do
-    unless Map.has_key?(g.vertices, v), do: (throw g)
+    if not Map.has_key?(g.vertices, v) do
+      g
+    else
+      out_count = g.out_edges |> Map.get(v, %{}) |> edge_count_in_map()
+      in_count = g.in_edges |> Map.get(v, %{}) |> edge_count_in_map()
+      reduction = if g.type == :undirected, do: out_count, else: out_count + in_count
 
-    out_count = g.out_edges |> Map.get(v, %{}) |> edge_count_in_map()
-    in_count = g.in_edges |> Map.get(v, %{}) |> edge_count_in_map()
-    reduction = if g.type == :undirected, do: out_count, else: out_count + in_count
+      out_edges = g.out_edges |> Map.delete(v) |> strip_target(v)
+      in_edges = g.in_edges |> Map.delete(v) |> strip_target(v)
 
-    out_edges = g.out_edges |> Map.delete(v) |> strip_target(v)
-    in_edges = g.in_edges |> Map.delete(v) |> strip_target(v)
-
-    %{g |
-      vertices: Map.delete(g.vertices, v),
-      vertex_labels: Map.delete(g.vertex_labels, v),
-      out_edges: out_edges,
-      in_edges: in_edges,
-      num_edges: g.num_edges - reduction,
-      num_vertices: g.num_vertices - 1
-    }
-  catch
-    result -> result
+      %{
+        g
+        | vertices: Map.delete(g.vertices, v),
+          vertex_labels: Map.delete(g.vertex_labels, v),
+          out_edges: out_edges,
+          in_edges: in_edges,
+          num_edges: g.num_edges - reduction,
+          num_vertices: g.num_vertices - 1
+      }
+    end
   end
 
   # ── Edges ─────────────────────────────────────────────────────────────
@@ -118,16 +127,18 @@ defmodule Grafi.Graph do
     g = push_edge(g, :out_edges, v1, v2, edge)
     g = push_edge(g, :in_edges, v2, v1, edge)
 
-    g = if g.type == :undirected do
-      rev = %Edge{from: v2, to: v1, weight: weight, label: label}
-      g |> push_edge(:out_edges, v2, v1, rev) |> push_edge(:in_edges, v1, v2, rev)
-    else
-      g
-    end
+    g =
+      if g.type == :undirected do
+        rev = %Edge{from: v2, to: v1, weight: weight, label: label}
+        g |> push_edge(:out_edges, v2, v1, rev) |> push_edge(:in_edges, v1, v2, rev)
+      else
+        g
+      end
 
     %{g | num_edges: g.num_edges + 1}
   end
 
+  @doc "Adds multiple edges to the graph."
   @spec add_edges(t(), [{vertex_id(), vertex_id()} | {vertex_id(), vertex_id(), keyword()}]) :: t()
   def add_edges(%__MODULE__{} = g, edges) when is_list(edges) do
     Enum.reduce(edges, g, fn
@@ -136,27 +147,35 @@ defmodule Grafi.Graph do
     end)
   end
 
+  @doc "Removes one edge from v1 to v2 (the most recently added)."
   @spec delete_edge(t(), vertex_id(), vertex_id()) :: t()
   def delete_edge(%__MODULE__{} = g, v1, v2) do
     case get_in(g.out_edges, [v1, v2]) do
-      nil -> g
+      nil ->
+        g
+
       [_ | rest] ->
         g = put_in_edge(g, :out_edges, v1, v2, rest)
         g = remove_first_in(g, :in_edges, v2, v1)
-        g = if g.type == :undirected do
-          g |> remove_first_in(:out_edges, v2, v1) |> remove_first_in(:in_edges, v1, v2)
-        else
-          g
-        end
+
+        g =
+          if g.type == :undirected do
+            g |> remove_first_in(:out_edges, v2, v1) |> remove_first_in(:in_edges, v1, v2)
+          else
+            g
+          end
+
         %{g | num_edges: g.num_edges - 1}
     end
   end
 
   # ── Queries ───────────────────────────────────────────────────────────
 
+  @doc "Returns true if the vertex exists in the graph."
   @spec has_vertex?(t(), vertex_id()) :: boolean()
   def has_vertex?(%__MODULE__{vertices: vs}, v), do: Map.has_key?(vs, v)
 
+  @doc "Returns true if an edge from v1 to v2 exists."
   @spec has_edge?(t(), vertex_id(), vertex_id()) :: boolean()
   def has_edge?(%__MODULE__{out_edges: out}, v1, v2) do
     case Map.get(out, v1) do
@@ -165,9 +184,11 @@ defmodule Grafi.Graph do
     end
   end
 
+  @doc "Returns all vertices in the graph."
   @spec vertices(t()) :: [vertex_id()]
   def vertices(%__MODULE__{vertices: vs}), do: Map.keys(vs)
 
+  @doc "Returns all edges in the graph."
   @spec edges(t()) :: [Edge.t()]
   def edges(%__MODULE__{out_edges: out, type: type}) do
     all = for {_f, targets} <- out, {_t, el} <- targets, e <- el, do: e
@@ -181,70 +202,84 @@ defmodule Grafi.Graph do
     end
   end
 
+  @doc "Returns the outgoing neighbors of a vertex."
   @spec out_neighbors(t(), vertex_id()) :: [vertex_id()]
   def out_neighbors(%__MODULE__{out_edges: out}, v),
     do: out |> Map.get(v, %{}) |> Enum.reject(fn {_, el} -> el == [] end) |> Enum.map(&elem(&1, 0))
 
+  @doc "Returns the incoming neighbors of a vertex."
   @spec in_neighbors(t(), vertex_id()) :: [vertex_id()]
   def in_neighbors(%__MODULE__{in_edges: ine}, v),
     do: ine |> Map.get(v, %{}) |> Enum.reject(fn {_, el} -> el == [] end) |> Enum.map(&elem(&1, 0))
 
+  @doc "Returns all neighbors (in and out) of a vertex, deduplicated."
   @spec neighbors(t(), vertex_id()) :: [vertex_id()]
   def neighbors(%__MODULE__{} = g, v),
     do: (out_neighbors(g, v) ++ in_neighbors(g, v)) |> Enum.uniq()
 
+  @doc "Returns the number of outgoing edges from a vertex."
   @spec out_degree(t(), vertex_id()) :: non_neg_integer()
   def out_degree(%__MODULE__{} = g, v), do: length(out_neighbors(g, v))
 
+  @doc "Returns the number of incoming edges to a vertex."
   @spec in_degree(t(), vertex_id()) :: non_neg_integer()
   def in_degree(%__MODULE__{} = g, v), do: length(in_neighbors(g, v))
 
+  @doc "Returns the total degree of a vertex."
   @spec degree(t(), vertex_id()) :: non_neg_integer()
   def degree(%__MODULE__{type: :undirected} = g, v), do: out_degree(g, v)
   def degree(%__MODULE__{} = g, v), do: out_degree(g, v) + in_degree(g, v)
 
+  @doc "Returns the number of vertices in the graph."
   @spec num_vertices(t()) :: non_neg_integer()
   def num_vertices(%__MODULE__{num_vertices: n}), do: n
 
+  @doc "Returns the number of edges in the graph."
   @spec num_edges(t()) :: non_neg_integer()
   def num_edges(%__MODULE__{num_edges: n}), do: n
 
+  @doc "Returns true if the graph has no vertices."
   @spec empty?(t()) :: boolean()
   def empty?(%__MODULE__{num_vertices: 0}), do: true
   def empty?(_), do: false
 
+  @doc "Returns the label of a vertex, or nil if none."
   @spec label(t(), vertex_id()) :: any()
   def label(%__MODULE__{vertex_labels: l}, v), do: Map.get(l, v)
 
+  @doc "Returns all edges between two vertices."
   @spec edges_between(t(), vertex_id(), vertex_id()) :: [Edge.t()]
   def edges_between(%__MODULE__{out_edges: out}, v1, v2),
     do: get_in(out, [v1, v2]) || []
 
   # ── Transforms ────────────────────────────────────────────────────────
 
+  @doc "Returns a subgraph induced by the given list of vertices."
   @spec subgraph(t(), [vertex_id()]) :: t()
   def subgraph(%__MODULE__{} = g, keep) do
     vset = MapSet.new(keep)
 
     Enum.reduce(keep, new(type: g.type), fn v, acc ->
-      unless Map.has_key?(g.vertices, v), do: throw(acc)
+      if not Map.has_key?(g.vertices, v) do
+        acc
+      else
+        acc = add_vertex(acc, v, label: Map.get(g.vertex_labels, v))
 
-      acc = add_vertex(acc, v, label: Map.get(g.vertex_labels, v))
-
-      g.out_edges
-      |> Map.get(v, %{})
-      |> Enum.reduce(acc, fn {to, el}, a ->
-        if MapSet.member?(vset, to),
-          do: Enum.reduce(el, a, &add_edge(&2, v, to, weight: &1.weight, label: &1.label)),
-          else: a
-      end)
-    catch
-      result -> result
+        g.out_edges
+        |> Map.get(v, %{})
+        |> Enum.reduce(acc, fn {to, el}, a ->
+          if MapSet.member?(vset, to),
+            do: Enum.reduce(el, a, &add_edge(&2, v, to, weight: &1.weight, label: &1.label)),
+            else: a
+        end)
+      end
     end)
   end
 
+  @doc "Returns the transpose (edge-reversed) graph."
   @spec transpose(t()) :: t()
   def transpose(%__MODULE__{type: :undirected} = g), do: g
+
   def transpose(%__MODULE__{} = g) do
     edges(g)
     |> Enum.reduce(new(type: :directed) |> add_vertices(vertices(g)), fn e, acc ->
@@ -264,7 +299,7 @@ defmodule Grafi.Graph do
     sorted = vertices(g) |> Enum.sort()
     idx = sorted |> Enum.with_index() |> Map.new()
 
-    {offsets, cols, weights} =
+    {rev_offsets, rev_cols, rev_weights} =
       Enum.reduce(sorted, {[0], [], []}, fn v, {off, c, w} ->
         out = Map.get(g.out_edges, v, %{})
 
@@ -275,8 +310,12 @@ defmodule Grafi.Graph do
           |> Enum.sort_by(&elem(&1, 0))
 
         {new_c, new_w} = Enum.unzip(pairs)
-        {off ++ [List.last(off) + length(pairs)], c ++ new_c, w ++ new_w}
+        {[hd(off) + length(pairs) | off], Enum.reverse(new_c) ++ c, Enum.reverse(new_w) ++ w}
       end)
+
+    offsets = Enum.reverse(rev_offsets)
+    cols = Enum.reverse(rev_cols)
+    weights = Enum.reverse(rev_weights)
 
     csr_map = %{
       row_offsets: offsets,
@@ -299,37 +338,49 @@ defmodule Grafi.Graph do
   end
 
   defp push_edge(g, field, from, to, edge) do
-    update_in(Map.get(g, field), fn map ->
+    map = Map.get(g, field)
+
+    map =
       map
       |> Map.put_new(from, %{})
-      |> update_in([from], fn targets ->
+      |> Map.update!(from, fn targets ->
         Map.update(targets, to, [edge], &[edge | &1])
       end)
-    end)
-    |> then(&Map.put(g, field, &1))
+
+    Map.put(g, field, map)
   end
 
   defp put_in_edge(g, field, from, to, edges) do
     map = Map.get(g, field)
-    map = if edges == [] do
-      update_in(map, [from], &Map.delete(&1, to))
-    else
-      put_in(map, [from, to], edges)
-    end
+
+    map =
+      if edges == [] do
+        update_in(map, [from], &Map.delete(&1, to))
+      else
+        put_in(map, [from, to], edges)
+      end
+
     Map.put(g, field, map)
   end
 
   defp remove_first_in(g, field, from, to) do
     map = Map.get(g, field)
+
     case get_in(map, [from, to]) do
-      nil -> g
-      [] -> g
+      nil ->
+        g
+
+      [] ->
+        g
+
       [_ | rest] ->
-        map = if rest == [] do
-          update_in(map, [from], &Map.delete(&1, to))
-        else
-          put_in(map, [from, to], rest)
-        end
+        map =
+          if rest == [] do
+            update_in(map, [from], &Map.delete(&1, to))
+          else
+            put_in(map, [from, to], rest)
+          end
+
         Map.put(g, field, map)
     end
   end
@@ -353,7 +404,10 @@ defmodule Grafi.Graph do
   defimpl Enumerable do
     def count(%Grafi.Graph{num_vertices: n}), do: {:ok, n}
     def member?(%Grafi.Graph{} = g, v), do: {:ok, Grafi.Graph.has_vertex?(g, v)}
-    def reduce(%Grafi.Graph{} = g, acc, fun), do: Grafi.Graph.vertices(g) |> Enumerable.List.reduce(acc, fun)
+
+    def reduce(%Grafi.Graph{} = g, acc, fun),
+      do: Grafi.Graph.vertices(g) |> Enumerable.List.reduce(acc, fun)
+
     def slice(_), do: {:error, __MODULE__}
   end
 end

@@ -17,8 +17,13 @@ defmodule Grafi.NIF do
     path = :filename.join(:code.priv_dir(:grafi), ~c"grafi_nif")
 
     case :erlang.load_nif(path, 0) do
-      :ok -> :ok
-      {:error, {:load_failed, _}} -> :ok  # allow graceful degradation
+      :ok ->
+        :ok
+
+      # allow graceful degradation
+      {:error, {:load_failed, _}} ->
+        :ok
+
       {:error, reason} ->
         require Logger
         Logger.warning("Grafi NIF not loaded: #{inspect(reason)}. Using pure Elixir fallback.")
@@ -37,11 +42,28 @@ defmodule Grafi.NIF do
         n_vertices: 1,
         directed: true
       })
+
       true
     rescue
       _ -> false
     end
   end
+
+  @doc false
+  def validate_csr!(
+        %{row_offsets: ro, col_indices: ci, weights: w, n_vertices: n, directed: d} = csr
+      )
+      when is_list(ro) and is_list(ci) and is_list(w) and is_integer(n) and is_boolean(d) do
+    unless length(ro) == n + 1,
+      do: raise(ArgumentError, "row_offsets length must be n_vertices + 1")
+
+    unless length(ci) == length(w),
+      do: raise(ArgumentError, "col_indices and weights must have same length")
+
+    csr
+  end
+
+  def validate_csr!(_), do: raise(ArgumentError, "invalid CSR map structure")
 
   # ── NIF stubs ─────────────────────────────────────────────────────────
   # Each stub raises if the NIF is not loaded. The Algo modules check

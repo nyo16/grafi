@@ -11,7 +11,7 @@ defmodule Grafi.Algo.Community do
 
   alias Grafi.Graph
 
-  @type result :: %{
+  @type community_result :: %{
           membership: %{any() => non_neg_integer()},
           modularity: float(),
           n_communities: non_neg_integer(),
@@ -22,9 +22,9 @@ defmodule Grafi.Algo.Community do
   Louvain method (multi-level modularity optimization).
   Fast, widely used. Works on undirected graphs.
   """
-  @spec louvain(Graph.t()) :: {:ok, result()} | {:error, atom()}
+  @spec louvain(Graph.t()) :: {:ok, community_result()} | {:error, atom()}
   def louvain(%Graph{} = g) do
-    with_nif(g, fn idx, csr, rev ->
+    with_nif(g, fn _idx, csr, rev ->
       {membership, modularity, n} = Grafi.NIF.nif_louvain(csr)
       build_result(membership, modularity, n, rev)
     end)
@@ -37,11 +37,12 @@ defmodule Grafi.Algo.Community do
     - `:resolution` — resolution parameter (default `1.0`).
       Higher values produce more, smaller communities.
   """
-  @spec leiden(Graph.t(), keyword()) :: {:ok, result()} | {:error, atom()}
+  @spec leiden(Graph.t(), keyword()) :: {:ok, community_result()} | {:error, atom()}
   def leiden(%Graph{} = g, opts \\ []) do
     resolution = Keyword.get(opts, :resolution, 1.0)
+
     with_nif(g, fn _idx, csr, rev ->
-      {membership, quality, n} = Grafi.NIF.nif_leiden(csr, resolution / 1)
+      {membership, quality, n} = Grafi.NIF.nif_leiden(csr, resolution)
       build_result(membership, quality, n, rev)
     end)
   end
@@ -50,7 +51,7 @@ defmodule Grafi.Algo.Community do
   Label propagation — near-linear time, non-deterministic.
   Very fast on large graphs.
   """
-  @spec label_propagation(Graph.t()) :: {:ok, result()} | {:error, atom()}
+  @spec label_propagation(Graph.t()) :: {:ok, community_result()} | {:error, atom()}
   def label_propagation(%Graph{} = g) do
     with_nif(g, fn _idx, csr, rev ->
       {membership, modularity, n} = Grafi.NIF.nif_label_propagation(csr)
@@ -64,26 +65,28 @@ defmodule Grafi.Algo.Community do
   Simple label propagation in pure Elixir. Less accurate than the
   igraph version but works without the NIF.
   """
-  @spec label_propagation_simple(Graph.t(), keyword()) :: result()
+  @spec label_propagation_simple(Graph.t(), keyword()) :: community_result()
   def label_propagation_simple(%Graph{} = g, opts \\ []) do
     max_iter = Keyword.get(opts, :iterations, 100)
     vs = Graph.vertices(g)
     labels = vs |> Enum.with_index() |> Map.new()
 
-    labels = Enum.reduce(1..max_iter, labels, fn _, lab ->
-      vs
-      |> Enum.shuffle()
-      |> Enum.reduce(lab, fn v, l ->
-        neighbors = Graph.neighbors(g, v)
-        if neighbors == [] do
-          l
-        else
-          freqs = Enum.frequencies_by(neighbors, &l[&1])
-          {best_label, _} = Enum.max_by(freqs, &elem(&1, 1))
-          Map.put(l, v, best_label)
-        end
+    labels =
+      Enum.reduce(1..max_iter, labels, fn _, lab ->
+        vs
+        |> Enum.shuffle()
+        |> Enum.reduce(lab, fn v, l ->
+          neighbors = Graph.neighbors(g, v)
+
+          if neighbors == [] do
+            l
+          else
+            freqs = Enum.frequencies_by(neighbors, &l[&1])
+            {best_label, _} = Enum.max_by(freqs, &elem(&1, 1))
+            Map.put(l, v, best_label)
+          end
+        end)
       end)
-    end)
 
     communities = Enum.group_by(vs, &labels[&1])
     n = map_size(communities)
@@ -101,6 +104,7 @@ defmodule Grafi.Algo.Community do
   defp with_nif(g, fun) do
     if Grafi.NIF.available?() do
       {idx, csr} = Graph.to_csr(g)
+      Grafi.NIF.validate_csr!(csr)
       rev = Map.new(idx, fn {v, i} -> {i, v} end)
       {:ok, fun.(idx, csr, rev)}
     else
@@ -109,7 +113,8 @@ defmodule Grafi.Algo.Community do
   end
 
   defp build_result(membership_list, modularity, n, reverse_idx) do
-    membership = membership_list
+    membership =
+      membership_list
       |> Enum.with_index()
       |> Map.new(fn {comm_id, i} -> {reverse_idx[i], comm_id} end)
 

@@ -2,7 +2,8 @@ defmodule Grafi.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/yourname/grafi"
+  # TODO: Replace with your actual GitHub URL before publishing to Hex
+  @source_url "https://github.com/nmaroulis/grafi"
 
   def project do
     [
@@ -13,21 +14,27 @@ defmodule Grafi.MixProject do
       compilers: [:elixir_make] ++ Mix.compilers(),
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
+      dialyzer: [
+        plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
+        flags: [:unmatched_returns, :error_handling, :underspecs]
+      ],
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",
       description: "High-performance graph library for Elixir — γραφή",
       package: package(),
       docs: docs(),
-      aliases: aliases(),
-      preferred_cli_env: [bench: :bench]
+      aliases: aliases()
     ]
+  end
+
+  def cli do
+    [preferred_envs: [bench: :bench]]
   end
 
   def application do
     [extra_applications: [:logger]]
   end
 
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
   defp deps do
@@ -40,6 +47,7 @@ defmodule Grafi.MixProject do
       # Dev / test
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.1", only: [:test, :dev]},
       {:benchee, "~> 1.3", only: :bench},
 
@@ -61,19 +69,18 @@ defmodule Grafi.MixProject do
     [
       main: "Grafi",
       source_url: @source_url,
+      source_ref: "v#{@version}",
       extras: ["README.md", "CHANGELOG.md"],
       groups_for_modules: [
-        "Core": [Grafi.Graph, Grafi.DAG, Grafi.Edge],
-        "Algorithms": [
-          Grafi.Algo,
+        Core: [Grafi.Graph, Grafi.DAG, Grafi.Edge],
+        Algorithms: [
           Grafi.Algo.Traversal,
           Grafi.Algo.ShortestPath,
           Grafi.Algo.Centrality,
           Grafi.Algo.Community,
           Grafi.Algo.Cycles
         ],
-        "Serialization": [
-          Grafi.Serialize,
+        Serialization: [
           Grafi.Serialize.DOT,
           Grafi.Serialize.JSON
         ],
