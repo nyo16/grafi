@@ -214,27 +214,25 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec eccentricity(Graph.t(), any(), keyword()) :: number() | :infinity
   def eccentricity(%Graph{} = g, vertex, opts \\ []) do
-    cond do
-      not Graph.has_vertex?(g, vertex) ->
-        0
+    if not Graph.has_vertex?(g, vertex) do
+      0
+    else
+      dists = single_source_distances(g, vertex, opts)
+      n = Graph.num_vertices(g)
+      strict? = Keyword.get(opts, :connected) == :strict
 
-      true ->
-        dists = single_source_distances(g, vertex, opts)
-        n = Graph.num_vertices(g)
-        strict? = Keyword.get(opts, :connected) == :strict
+      cond do
+        # `dists` excludes the source itself, so a fully-connected graph
+        # of size n yields map_size == n - 1.
+        strict? and map_size(dists) < n - 1 ->
+          :infinity
 
-        cond do
-          # `dists` excludes the source itself, so a fully-connected graph
-          # of size n yields map_size == n - 1.
-          strict? and map_size(dists) < n - 1 ->
-            :infinity
+        map_size(dists) == 0 ->
+          0
 
-          map_size(dists) == 0 ->
-            0
-
-          true ->
-            dists |> Map.values() |> Enum.max()
-        end
+        true ->
+          dists |> Map.values() |> Enum.max()
+      end
     end
   end
 

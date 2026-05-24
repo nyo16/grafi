@@ -162,22 +162,20 @@ defmodule Grafi.Algo.KShortestPath do
 
   defp add_filtered_edges(acc, g, forbidden_vertices, forbidden_edges) do
     Enum.reduce(g.out_edges, acc, fn {from, targets}, acc1 ->
-      if MapSet.member?(forbidden_vertices, from) do
-        acc1
+      if MapSet.member?(forbidden_vertices, from),
+        do: acc1,
+        else: add_targets(acc1, from, targets, forbidden_vertices, forbidden_edges)
+    end)
+  end
+
+  defp add_targets(acc, from, targets, forbidden_vertices, forbidden_edges) do
+    Enum.reduce(targets, acc, fn {to, edge_list}, acc2 ->
+      if MapSet.member?(forbidden_vertices, to) or
+           MapSet.member?(forbidden_edges, {from, to}) do
+        acc2
       else
-        Enum.reduce(targets, acc1, fn {to, edge_list}, acc2 ->
-          cond do
-            MapSet.member?(forbidden_vertices, to) ->
-              acc2
-
-            MapSet.member?(forbidden_edges, {from, to}) ->
-              acc2
-
-            true ->
-              Enum.reduce(edge_list, acc2, fn e, a ->
-                Graph.add_edge(a, from, to, weight: e.weight, label: e.label)
-              end)
-          end
+        Enum.reduce(edge_list, acc2, fn e, a ->
+          Graph.add_edge(a, from, to, weight: e.weight, label: e.label)
         end)
       end
     end)

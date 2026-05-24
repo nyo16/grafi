@@ -257,27 +257,7 @@ defmodule Grafi.Algo.APSP do
 
           {new_row_i, new_pred_row_i} =
             Enum.reduce(row_k, {row_i, pred_row_i}, fn {j, dkj}, {ri, pri} ->
-              alt = dik + dkj
-
-              if alt < Map.get(ri, j, :infinity) do
-                ri = Map.put(ri, j, alt)
-
-                pri =
-                  if record_preds? do
-                    # Predecessor of j on path i -> j (going through k)
-                    # is the predecessor of j on path k -> j.
-                    case Map.get(pred_row_k, j) do
-                      nil -> Map.put(pri, j, k)
-                      pk -> Map.put(pri, j, pk)
-                    end
-                  else
-                    pri
-                  end
-
-                {ri, pri}
-              else
-                {ri, pri}
-              end
+              relax_one(j, dik + dkj, ri, pri, k, pred_row_k, record_preds?)
             end)
 
           d = Map.put(d, i, new_row_i)
@@ -285,6 +265,19 @@ defmodule Grafi.Algo.APSP do
           {d, p}
       end
     end)
+  end
+
+  # Relax distance dist[i][j] using intermediate k. Returns updated
+  # {row_i, pred_row_i}. Predecessor of j on i->k->j is the predecessor
+  # of j on the k->j path (or k itself if k is the direct predecessor).
+  defp relax_one(j, alt, ri, pri, k, pred_row_k, record_preds?) do
+    if alt < Map.get(ri, j, :infinity) do
+      ri = Map.put(ri, j, alt)
+      pri = if record_preds?, do: Map.put(pri, j, Map.get(pred_row_k, j, k)), else: pri
+      {ri, pri}
+    else
+      {ri, pri}
+    end
   end
 
   # ── Internal: Dijkstra with a weight function (for Johnson) ───────────

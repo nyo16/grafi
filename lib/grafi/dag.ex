@@ -168,21 +168,8 @@ defmodule Grafi.DAG do
         dist = Enum.reduce(src, dist, &Map.put(&2, &1, 0))
 
         {dist, parent} =
-          Enum.reduce(sorted, {dist, %{}}, fn u, {d, p} ->
-            if d[u] == :neg_inf,
-              do: {d, p},
-              else:
-                Graph.out_neighbors(g, u)
-                |> Enum.reduce({d, p}, fn v, {d2, p2} ->
-                  w =
-                    Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.max(fn -> 1.0 end)
-
-                  nd = d2[u] + w
-
-                  if nd > d2[v] or d2[v] == :neg_inf,
-                    do: {Map.put(d2, v, nd), Map.put(p2, v, u)},
-                    else: {d2, p2}
-                end)
+          Enum.reduce(sorted, {dist, %{}}, fn u, acc ->
+            relax_outgoing(g, u, acc)
           end)
 
         {end_v, max_d} =
@@ -202,6 +189,26 @@ defmodule Grafi.DAG do
   def to_graph(%__MODULE__{graph: g}), do: g
 
   # ── Internal ──────────────────────────────────────────────────────────
+
+  # Longest-path relaxation for one source vertex `u` in critical_path/1.
+  defp relax_outgoing(g, u, {d, p}) do
+    if d[u] == :neg_inf do
+      {d, p}
+    else
+      Enum.reduce(Graph.out_neighbors(g, u), {d, p}, fn v, acc ->
+        relax_edge(g, u, v, acc)
+      end)
+    end
+  end
+
+  defp relax_edge(g, u, v, {d, p}) do
+    w = Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.max(fn -> 1.0 end)
+    nd = d[u] + w
+
+    if nd > d[v] or d[v] == :neg_inf,
+      do: {Map.put(d, v, nd), Map.put(p, v, u)},
+      else: {d, p}
+  end
 
   defp topological_sort_graph(%Graph{} = g) do
     in_deg = Graph.vertices(g) |> Map.new(&{&1, Graph.in_degree(g, &1)})

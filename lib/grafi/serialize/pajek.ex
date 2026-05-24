@@ -107,18 +107,16 @@ defmodule Grafi.Serialize.Pajek do
   defp read_vertex_lines(rest, 0, acc), do: {:ok, acc, rest}
 
   defp read_vertex_lines([line | rest], remaining, acc) do
-    cond do
-      starts_with_section?(line) ->
-        {:error, :unexpected_section}
+    if starts_with_section?(line) do
+      {:error, :unexpected_section}
+    else
+      case parse_vertex_line(line) do
+        {:ok, idx, label} ->
+          read_vertex_lines(rest, remaining - 1, Map.put(acc, idx, label))
 
-      true ->
-        case parse_vertex_line(line) do
-          {:ok, idx, label} ->
-            read_vertex_lines(rest, remaining - 1, Map.put(acc, idx, label))
-
-          :error ->
-            {:error, {:malformed_vertex_line, line}}
-        end
+        :error ->
+          {:error, {:malformed_vertex_line, line}}
+      end
     end
   end
 
@@ -170,21 +168,19 @@ defmodule Grafi.Serialize.Pajek do
   defp read_edge_lines([], g, _label_map, _type), do: g
 
   defp read_edge_lines([line | rest], g, label_map, type) do
-    cond do
-      starts_with_section?(line) ->
-        # Switch section mid-stream (e.g., another *Arcs/*Edges block)
-        {new_type, new_rest} = detect_edge_section([line | rest])
-        read_edge_lines(new_rest, g, label_map, new_type)
+    if starts_with_section?(line) do
+      # Switch section mid-stream (e.g., another *Arcs/*Edges block)
+      {new_type, new_rest} = detect_edge_section([line | rest])
+      read_edge_lines(new_rest, g, label_map, new_type)
+    else
+      case parse_edge_line(line, label_map) do
+        {:ok, from, to, w} ->
+          g = Graph.add_edge(g, from, to, weight: w)
+          read_edge_lines(rest, g, label_map, type)
 
-      true ->
-        case parse_edge_line(line, label_map) do
-          {:ok, from, to, w} ->
-            g = Graph.add_edge(g, from, to, weight: w)
-            read_edge_lines(rest, g, label_map, type)
-
-          :error ->
-            {:error, {:malformed_edge_line, line}}
-        end
+        :error ->
+          {:error, {:malformed_edge_line, line}}
+      end
     end
   end
 
@@ -195,31 +191,29 @@ defmodule Grafi.Serialize.Pajek do
              {bi, ""} <- Integer.parse(b),
              from when not is_nil(from) <- Map.get(label_map, ai),
              to when not is_nil(to) <- Map.get(label_map, bi) do
-          weight =
-            case tail do
-              [w | _] ->
-                case Float.parse(w) do
-                  {f, ""} ->
-                    f
-
-                  _ ->
-                    case Integer.parse(w) do
-                      {i, ""} -> i * 1.0
-                      _ -> 1.0
-                    end
-                end
-
-              [] ->
-                1.0
-            end
-
-          {:ok, from, to, weight}
+          {:ok, from, to, parse_weight(tail)}
         else
           _ -> :error
         end
 
       _ ->
         :error
+    end
+  end
+
+  defp parse_weight([]), do: 1.0
+
+  defp parse_weight([w | _]) do
+    case Float.parse(w) do
+      {f, ""} -> f
+      _ -> parse_int_weight(w)
+    end
+  end
+
+  defp parse_int_weight(w) do
+    case Integer.parse(w) do
+      {i, ""} -> i * 1.0
+      _ -> 1.0
     end
   end
 

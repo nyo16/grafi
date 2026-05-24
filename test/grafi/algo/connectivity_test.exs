@@ -92,8 +92,8 @@ defmodule Grafi.Algo.ConnectivityTest do
       assert flat == MapSet.new([{1, 2}, {2, 3}, {3, 4}, {4, 5}])
     end
 
-    test "is_biconnected? is false for a path", %{g: g} do
-      refute Connectivity.is_biconnected?(g)
+    test "biconnected? is false for a path", %{g: g} do
+      refute Connectivity.biconnected?(g)
     end
   end
 
@@ -118,8 +118,8 @@ defmodule Grafi.Algo.ConnectivityTest do
       assert MapSet.size(bcc) == 5
     end
 
-    test "is_biconnected? is true", %{g: g} do
-      assert Connectivity.is_biconnected?(g)
+    test "biconnected? is true", %{g: g} do
+      assert Connectivity.biconnected?(g)
     end
   end
 
@@ -155,7 +155,7 @@ defmodule Grafi.Algo.ConnectivityTest do
     end
 
     test "not biconnected", %{g: g} do
-      refute Connectivity.is_biconnected?(g)
+      refute Connectivity.biconnected?(g)
     end
   end
 
@@ -191,7 +191,7 @@ defmodule Grafi.Algo.ConnectivityTest do
     end
 
     test "is biconnected", %{g: g} do
-      assert Connectivity.is_biconnected?(g)
+      assert Connectivity.biconnected?(g)
     end
   end
 
@@ -233,7 +233,7 @@ defmodule Grafi.Algo.ConnectivityTest do
     end
 
     test "not biconnected", %{g: g} do
-      refute Connectivity.is_biconnected?(g)
+      refute Connectivity.biconnected?(g)
     end
   end
 
@@ -302,7 +302,7 @@ defmodule Grafi.Algo.ConnectivityTest do
       assert Connectivity.bridges(g) == []
       assert Connectivity.articulation_points(g) == MapSet.new()
       assert Connectivity.biconnected_components(g) == []
-      refute Connectivity.is_biconnected?(g)
+      refute Connectivity.biconnected?(g)
     end
 
     test "single isolated vertex" do
@@ -310,12 +310,12 @@ defmodule Grafi.Algo.ConnectivityTest do
       assert Connectivity.bridges(g) == []
       assert Connectivity.articulation_points(g) == MapSet.new()
       assert Connectivity.biconnected_components(g) == []
-      refute Connectivity.is_biconnected?(g)
+      refute Connectivity.biconnected?(g)
     end
 
     test "two isolated vertices" do
       g = Graph.new(type: :undirected) |> Graph.add_vertices([:a, :b])
-      refute Connectivity.is_biconnected?(g)
+      refute Connectivity.biconnected?(g)
     end
 
     test "single edge between two vertices" do
@@ -324,7 +324,7 @@ defmodule Grafi.Algo.ConnectivityTest do
       assert Connectivity.articulation_points(g) == MapSet.new()
       assert Connectivity.biconnected_components(g) == [MapSet.new([{:a, :b}])]
       # A single edge is a K_2 — by convention K_2 is biconnected.
-      assert Connectivity.is_biconnected?(g)
+      assert Connectivity.biconnected?(g)
     end
 
     test "directed graph is treated as undirected" do
@@ -343,7 +343,7 @@ defmodule Grafi.Algo.ConnectivityTest do
                [{:a, :b}, {:c, :d}, {:d, :e}]
 
       assert Connectivity.articulation_points(g) == MapSet.new([:d])
-      refute Connectivity.is_biconnected?(g)
+      refute Connectivity.biconnected?(g)
     end
   end
 

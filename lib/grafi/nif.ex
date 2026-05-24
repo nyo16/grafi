@@ -34,19 +34,17 @@ defmodule Grafi.NIF do
   @doc "Returns true if the NIF engine is loaded and available."
   @spec available?() :: boolean()
   def available? do
-    try do
-      nif_is_acyclic(%{
-        row_offsets: [0, 0],
-        col_indices: [],
-        weights: [],
-        n_vertices: 1,
-        directed: true
-      })
+    nif_is_acyclic(%{
+      row_offsets: [0, 0],
+      col_indices: [],
+      weights: [],
+      n_vertices: 1,
+      directed: true
+    })
 
-      true
-    rescue
-      _ -> false
-    end
+    true
+  rescue
+    _ -> false
   end
 
   @doc """
@@ -142,6 +140,7 @@ defmodule Grafi.NIF do
   def nif_scc(_csr_map),
     do: :erlang.nif_error(:nif_not_loaded)
 
+  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
   def nif_is_acyclic(_csr_map),
     do: :erlang.nif_error(:nif_not_loaded)
 

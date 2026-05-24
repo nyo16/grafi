@@ -293,13 +293,11 @@ defmodule Grafi.Algo.Matching do
         j1 = Map.get(row_assignment, i + 1, 0)
         j = j1 - 1
 
-        cond do
-          j < 0 or j >= n_cols ->
-            {[nil | as], sum, [i | un]}
-
-          true ->
-            orig = cost_matrix |> Enum.at(i) |> Enum.at(j)
-            {[j | as], sum + orig, un}
+        if j < 0 or j >= n_cols do
+          {[nil | as], sum, [i | un]}
+        else
+          orig = cost_matrix |> Enum.at(i) |> Enum.at(j)
+          {[j | as], sum + orig, un}
         end
       end)
 

@@ -204,10 +204,9 @@ defmodule Grafi.Layout do
       after_down = sweep_down(g, current, max_layer)
       after_up = sweep_up(g, after_down, max_layer)
 
-      cond do
-        after_up == current and pass > 1 -> {:halt, after_up}
-        true -> {:cont, after_up}
-      end
+      if after_up == current and pass > 1,
+        do: {:halt, after_up},
+        else: {:cont, after_up}
     end)
   end
 

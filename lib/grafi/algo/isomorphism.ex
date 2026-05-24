@@ -291,15 +291,13 @@ defmodule Grafi.Algo.Isomorphism do
   end
 
   defp elixir_isomorphism(g1, g2) do
-    cond do
-      degree_seq(g1) != degree_seq(g2) ->
-        :no_isomorphism
-
-      true ->
-        case find_one_iso(g1, g2) do
-          nil -> :no_isomorphism
-          mapping -> {:ok, mapping}
-        end
+    if degree_seq(g1) != degree_seq(g2) do
+      :no_isomorphism
+    else
+      case find_one_iso(g1, g2) do
+        nil -> :no_isomorphism
+        mapping -> {:ok, mapping}
+      end
     end
   end
 

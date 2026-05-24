@@ -128,11 +128,11 @@ defmodule Grafi.Algo.Connectivity do
 
       iex> g = Grafi.new(type: :undirected)
       ...>     |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
-      iex> Grafi.Algo.Connectivity.is_biconnected?(g)
+      iex> Grafi.Algo.Connectivity.biconnected?(g)
       true
   """
-  @spec is_biconnected?(Graph.t()) :: boolean()
-  def is_biconnected?(%Graph{} = g) do
+  @spec biconnected?(Graph.t()) :: boolean()
+  def biconnected?(%Graph{} = g) do
     case biconnected_components(g) do
       [bcc] ->
         verts_in_bcc =

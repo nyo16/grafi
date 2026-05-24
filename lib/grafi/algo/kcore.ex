@@ -123,24 +123,22 @@ defmodule Grafi.Algo.KCore do
         # Remove v from all its neighbors; decrement their degree.
         {buckets, degree} =
           Enum.reduce(Map.fetch!(neigh, v), {buckets, degree}, fn u, {b, deg} ->
-            cond do
-              not Map.has_key?(deg, u) ->
+            if not Map.has_key?(deg, u) do
+              {b, deg}
+            else
+              du = Map.fetch!(deg, u)
+
+              if du > d do
+                b =
+                  b
+                  |> update_in_array(du, &MapSet.delete(&1, u))
+                  |> update_in_array(du - 1, &MapSet.put(&1, u))
+
+                {b, Map.put(deg, u, du - 1)}
+              else
+                # Already in a bucket <= d; it will be peeled at its own d.
                 {b, deg}
-
-              true ->
-                du = Map.fetch!(deg, u)
-
-                if du > d do
-                  b =
-                    b
-                    |> update_in_array(du, &MapSet.delete(&1, u))
-                    |> update_in_array(du - 1, &MapSet.put(&1, u))
-
-                  {b, Map.put(deg, u, du - 1)}
-                else
-                  # Already in a bucket <= d; it will be peeled at its own d.
-                  {b, deg}
-                end
+              end
             end
           end)
 
