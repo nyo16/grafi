@@ -59,7 +59,7 @@ defmodule Grafi.MixProject do
   defp package do
     [
       name: "grafi",
-      licenses: ["MIT"],
+      licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
       files: ~w(lib c_src Makefile checksum-*.exs .formatter.exs mix.exs README.md LICENSE)
     ]
@@ -70,7 +70,7 @@ defmodule Grafi.MixProject do
       main: "Grafi",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "CHANGELOG.md"],
+      extras: ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE"],
       groups_for_modules: [
         Core: [Grafi.Graph, Grafi.DAG, Grafi.Edge],
         Algorithms: [

@@ -84,7 +84,24 @@ defmodule Grafi do
 
   # ── Algorithms (convenience wrappers) ─────────────────────────────────
 
-  @doc "Shortest path via Dijkstra. Returns `{:ok, {path, distance}}` or `:no_path`."
+  @doc """
+  Shortest weighted path via Dijkstra. Returns `{:ok, {path, distance}}`,
+  `:no_path`, or `{:error, :no_such_vertex}`.
+
+  ## Examples
+
+      iex> g = Grafi.new() |> Grafi.add_edges([
+      ...>   {:a, :b, weight: 1.0},
+      ...>   {:b, :c, weight: 2.0},
+      ...>   {:a, :c, weight: 5.0}
+      ...> ])
+      iex> Grafi.shortest_path(g, :a, :c)
+      {:ok, {[:a, :b, :c], 3.0}}
+
+      iex> g = Grafi.new() |> Grafi.add_vertices([:a, :b])
+      iex> Grafi.shortest_path(g, :a, :b)
+      :no_path
+  """
   def shortest_path(g, from, to, opts \\ []),
     do: Grafi.Algo.ShortestPath.dijkstra(g, from, to, opts)
 
@@ -92,7 +109,19 @@ defmodule Grafi do
   def a_star(g, from, to, heuristic),
     do: Grafi.Algo.ShortestPath.a_star(g, from, to, heuristic)
 
-  @doc "PageRank scores for all vertices."
+  @doc """
+  PageRank scores for all vertices. Returns a map of `vertex => score`,
+  with scores summing to ~1.0.
+
+  ## Examples
+
+      iex> g = Grafi.new() |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
+      iex> ranks = Grafi.pagerank(g)
+      iex> Enum.sort(Map.keys(ranks))
+      [:a, :b, :c]
+      iex> Float.round(Enum.sum(Map.values(ranks)), 2)
+      1.0
+  """
   def pagerank(g, opts \\ []),
     do: Grafi.Algo.Centrality.pagerank(g, opts)
 
@@ -104,7 +133,21 @@ defmodule Grafi do
   def closeness(g),
     do: Grafi.Algo.Centrality.closeness(g)
 
-  @doc "Returns true if the graph contains a cycle."
+  @doc """
+  Returns true if the graph contains at least one directed cycle.
+
+  ## Examples
+
+      iex> Grafi.new()
+      ...> |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
+      ...> |> Grafi.has_cycle?()
+      true
+
+      iex> Grafi.new()
+      ...> |> Grafi.add_edges([{:a, :b}, {:b, :c}])
+      ...> |> Grafi.has_cycle?()
+      false
+  """
   def has_cycle?(g),
     do: Grafi.Algo.Cycles.has_cycle?(g)
 
@@ -132,7 +175,21 @@ defmodule Grafi do
   def leiden(g, opts \\ []),
     do: Grafi.Algo.Community.leiden(g, opts)
 
-  @doc "BFS stream from a start vertex."
+  @doc """
+  BFS stream from a start vertex. Lazy; safe to pipe into `Enum.take/2`.
+  Sibling order at a given depth is map-iteration order, so don't rely on
+  it; depth order is guaranteed.
+
+  ## Examples
+
+      iex> order =
+      ...>   Grafi.new()
+      ...>   |> Grafi.add_edges([{:a, :b}, {:a, :c}, {:b, :d}, {:c, :d}])
+      ...>   |> Grafi.bfs(:a)
+      ...>   |> Enum.to_list()
+      iex> {hd(order), Enum.sort(order)}
+      {:a, [:a, :b, :c, :d]}
+  """
   def bfs(g, start),
     do: Grafi.Algo.Traversal.bfs(g, start)
 
@@ -140,9 +197,105 @@ defmodule Grafi do
   def dfs(g, start),
     do: Grafi.Algo.Traversal.dfs(g, start)
 
+  # ── Metrics ───────────────────────────────────────────────────────────
+
+  defdelegate triangle_count(g), to: Grafi.Algo.Metrics
+  defdelegate clustering_coefficient(g), to: Grafi.Algo.Metrics
+  defdelegate clustering_coefficient(g, vertex), to: Grafi.Algo.Metrics
+  defdelegate transitivity(g), to: Grafi.Algo.Metrics
+  defdelegate density(g), to: Grafi.Algo.Metrics
+  defdelegate diameter(g, opts \\ []), to: Grafi.Algo.Metrics
+  defdelegate radius(g, opts \\ []), to: Grafi.Algo.Metrics
+  defdelegate eccentricity(g, vertex, opts \\ []), to: Grafi.Algo.Metrics
+
+  # ── Spanning trees ────────────────────────────────────────────────────
+
+  defdelegate kruskal(g), to: Grafi.Algo.MST
+  defdelegate prim(g, start \\ nil), to: Grafi.Algo.MST
+
+  # ── All-pairs shortest path ───────────────────────────────────────────
+
+  defdelegate floyd_warshall(g), to: Grafi.Algo.APSP
+  defdelegate johnson(g), to: Grafi.Algo.APSP
+  defdelegate transitive_closure(g), to: Grafi.Algo.APSP
+
+  # ── Bidirectional / k-shortest ────────────────────────────────────────
+
+  defdelegate bidirectional_dijkstra(g, source, target, opts \\ []),
+    to: Grafi.Algo.Bidirectional,
+    as: :dijkstra
+
+  defdelegate k_shortest_paths(g, source, target, k, opts \\ []),
+    to: Grafi.Algo.KShortestPath,
+    as: :yen
+
+  # ── Connectivity ──────────────────────────────────────────────────────
+
+  defdelegate bridges(g), to: Grafi.Algo.Connectivity
+  defdelegate articulation_points(g), to: Grafi.Algo.Connectivity
+  defdelegate biconnected_components(g), to: Grafi.Algo.Connectivity
+
+  # ── Bipartite / k-core / cliques ──────────────────────────────────────
+
+  defdelegate bipartite?(g), to: Grafi.Algo.Bipartite
+  defdelegate core_numbers(g), to: Grafi.Algo.KCore
+  defdelegate k_core(g, k), to: Grafi.Algo.KCore
+  defdelegate maximal_cliques(g), to: Grafi.Algo.Cliques
+  defdelegate maximum_clique(g), to: Grafi.Algo.Cliques
+
+  # ── Extra centralities ────────────────────────────────────────────────
+
+  defdelegate hits(g, opts \\ []), to: Grafi.Algo.Centrality
+  defdelegate katz(g, opts \\ []), to: Grafi.Algo.Centrality
+
+  defdelegate eigenvector_centrality(g, opts \\ []),
+    to: Grafi.Algo.Centrality,
+    as: :eigenvector
+
+  defdelegate harmonic_centrality(g, opts \\ []),
+    to: Grafi.Algo.Centrality,
+    as: :harmonic
+
+  # ── Max-flow / matching ───────────────────────────────────────────────
+
+  @doc """
+  Maximum s–t flow. Dispatches to Dinic's algorithm by default; pass
+  `algo: :edmonds_karp` for the simpler BFS-based variant.
+  """
+  def max_flow(g, source, sink, opts \\ []) do
+    case Keyword.get(opts, :algo, :dinic) do
+      :dinic -> Grafi.Algo.MaxFlow.dinic(g, source, sink, opts)
+      :edmonds_karp -> Grafi.Algo.MaxFlow.edmonds_karp(g, source, sink, opts)
+    end
+  end
+
+  defdelegate min_cut(g, source, sink, opts \\ []), to: Grafi.Algo.MaxFlow
+
+  defdelegate bipartite_matching(g, left_side, opts \\ []),
+    to: Grafi.Algo.Matching,
+    as: :hopcroft_karp
+
+  defdelegate weighted_bipartite_matching(g, left_side, opts \\ []),
+    to: Grafi.Algo.Matching
+
+  # ── Isomorphism ───────────────────────────────────────────────────────
+
+  defdelegate isomorphic?(g1, g2), to: Grafi.Algo.Isomorphism
+  defdelegate subgraph_isomorphic?(g, pattern), to: Grafi.Algo.Isomorphism
+
   # ── Serialization ─────────────────────────────────────────────────────
 
-  @doc "Export to Graphviz DOT format."
+  @doc """
+  Export to Graphviz DOT format. See `Grafi.Serialize.DOT.to_dot/2` for
+  options.
+
+  ## Examples
+
+      iex> dot = Grafi.new() |> Grafi.add_edge(:a, :b) |> Grafi.to_dot()
+      iex> String.starts_with?(dot, "digraph G {") and
+      ...>   dot =~ "a -> b" and dot =~ "a;" and dot =~ "b;"
+      true
+  """
   def to_dot(g, opts \\ []),
     do: Grafi.Serialize.DOT.to_dot(g, opts)
 
@@ -153,4 +306,18 @@ defmodule Grafi do
   @doc "Import from JSON string."
   def from_json(json),
     do: Grafi.Serialize.JSON.from_json(json)
+
+  defdelegate to_mermaid(g, opts \\ []), to: Grafi.Serialize.Mermaid
+  defdelegate to_graphml(g, opts \\ []), to: Grafi.Serialize.GraphML
+  defdelegate from_graphml(xml), to: Grafi.Serialize.GraphML
+  defdelegate to_gexf(g, opts \\ []), to: Grafi.Serialize.GEXF
+  defdelegate from_gexf(xml), to: Grafi.Serialize.GEXF
+  defdelegate to_pajek(g, opts \\ []), to: Grafi.Serialize.Pajek
+  defdelegate from_pajek(text), to: Grafi.Serialize.Pajek
+  defdelegate to_edge_list(g, opts \\ []), to: Grafi.Serialize.EdgeList
+  defdelegate from_edge_list(text, opts \\ []), to: Grafi.Serialize.EdgeList
+  defdelegate to_adjacency_list(g, opts \\ []), to: Grafi.Serialize.AdjacencyList
+  defdelegate from_adjacency_list(text, opts \\ []), to: Grafi.Serialize.AdjacencyList
+  defdelegate to_matrix_market(g, opts \\ []), to: Grafi.Serialize.MatrixMarket
+  defdelegate from_matrix_market(text), to: Grafi.Serialize.MatrixMarket
 end

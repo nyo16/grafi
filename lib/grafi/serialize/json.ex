@@ -1,11 +1,26 @@
 defmodule Grafi.Serialize.JSON do
   @moduledoc """
-  Serialize/deserialize graphs to JSON (adjacency list format).
-  Requires `:jason` dependency.
+  Serialize and deserialize graphs to JSON.
+
+  The schema is an adjacency-list representation:
+
+      {
+        "type": "directed" | "undirected",
+        "vertices": [{"id": <any>, "label": <optional>}, ...],
+        "edges":    [{"from": <id>, "to": <id>, "weight": <number>, "label": <optional>}, ...]
+      }
+
+  Requires the `:jason` dependency.
+
+  Note: JSON has no atom type — atom vertex IDs round-trip as strings.
   """
 
   alias Grafi.Graph
 
+  @doc """
+  Encodes a graph as a pretty-printed JSON string using the schema in the
+  moduledoc. Vertex labels and edge labels are included only when present.
+  """
   @spec to_json(Graph.t()) :: String.t()
   def to_json(%Graph{} = g) do
     data = %{
@@ -27,29 +42,67 @@ defmodule Grafi.Serialize.JSON do
     Jason.encode!(data, pretty: true)
   end
 
-  @spec from_json(String.t()) :: Graph.t()
-  def from_json(json) do
-    data = Jason.decode!(json)
+  @doc """
+  Decodes a JSON string produced by `to_json/1` (or a hand-written one
+  matching the schema) into a `Grafi.Graph`.
 
-    type =
-      case data["type"] do
-        "directed" -> :directed
-        "undirected" -> :undirected
-        other -> raise ArgumentError, "unknown graph type: #{inspect(other)}"
-      end
+  Returns the graph on success, or `{:error, :malformed_json}` if the input is
+  not valid JSON or does not match the expected shape (missing `"type"`,
+  `"vertices"`, or `"edges"`, or those fields have the wrong type).
+  """
+  @spec from_json(String.t()) :: Graph.t() | {:error, :malformed_json}
+  def from_json(json) when is_binary(json) do
+    with {:ok, data} <- Jason.decode(json),
+         {:ok, type} <- decode_type(data),
+         {:ok, vertices} <- fetch_list(data, "vertices"),
+         {:ok, edges} <- fetch_list(data, "edges") do
+      build_graph(type, vertices, edges)
+    else
+      _ -> {:error, :malformed_json}
+    end
+  end
 
-    g = Graph.new(type: type)
+  def from_json(_), do: {:error, :malformed_json}
 
-    g =
-      Enum.reduce(data["vertices"], g, fn v, acc ->
+  defp decode_type(%{"type" => "directed"}), do: {:ok, :directed}
+  defp decode_type(%{"type" => "undirected"}), do: {:ok, :undirected}
+  defp decode_type(_), do: :error
+
+  defp fetch_list(data, key) do
+    case Map.get(data, key) do
+      list when is_list(list) -> {:ok, list}
+      _ -> :error
+    end
+  end
+
+  defp build_graph(type, vertices, edges) do
+    with {:ok, g} <- reduce_vertices(Graph.new(type: type), vertices),
+         {:ok, g} <- reduce_edges(g, edges) do
+      g
+    end
+  end
+
+  defp reduce_vertices(g, vertices) do
+    Enum.reduce_while(vertices, {:ok, g}, fn
+      %{"id" => id} = v, {:ok, acc} ->
         opts = if v["label"], do: [label: v["label"]], else: []
-        Graph.add_vertex(acc, v["id"], opts)
-      end)
+        {:cont, {:ok, Graph.add_vertex(acc, id, opts)}}
 
-    Enum.reduce(data["edges"], g, fn e, acc ->
-      opts = [weight: e["weight"] || 1.0]
-      opts = if e["label"], do: Keyword.put(opts, :label, e["label"]), else: opts
-      Graph.add_edge(acc, e["from"], e["to"], opts)
+      _bad, _acc ->
+        {:halt, {:error, :malformed_json}}
+    end)
+  end
+
+  defp reduce_edges(g, edges) do
+    Enum.reduce_while(edges, {:ok, g}, fn
+      %{"from" => from, "to" => to} = e, {:ok, acc} ->
+        weight = Map.get(e, "weight") || 1.0
+        opts = [weight: weight]
+        opts = if e["label"], do: Keyword.put(opts, :label, e["label"]), else: opts
+        {:cont, {:ok, Graph.add_edge(acc, from, to, opts)}}
+
+      _bad, _acc ->
+        {:halt, {:error, :malformed_json}}
     end)
   end
 

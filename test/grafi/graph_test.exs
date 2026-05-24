@@ -1,5 +1,6 @@
 defmodule Grafi.GraphTest do
   use ExUnit.Case, async: true
+  doctest Grafi.Graph
   alias Grafi.Graph
 
   describe "construction" do

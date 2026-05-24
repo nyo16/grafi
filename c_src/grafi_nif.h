@@ -31,10 +31,21 @@ struct CsrGraph {
 };
 
 // Build an igraph_t from CSR data. Caller must destroy with igraph_destroy().
+// Throws std::runtime_error on igraph failure.
 igraph_t csr_to_igraph(const CsrGraph& csr);
 
 // Build an igraph weight vector. Caller must destroy with igraph_vector_destroy().
 igraph_vector_t csr_to_weights(const CsrGraph& csr);
+
+// Validate the structural invariants of a CSR map. Throws std::invalid_argument
+// on the first violation. Call immediately after decode_csr.
+//   - row_offsets.size() == n_vertices + 1
+//   - row_offsets[0] == 0 and monotonic non-decreasing
+//   - row_offsets[n_vertices] == col_indices.size()
+//   - col_indices.size() == weights.size()
+//   - col_indices[j] in [0, n_vertices)
+//   - n_vertices >= 0
+void validate_csr_structure(const CsrGraph& csr);
 
 // ── Algorithm result types ─────────────────────────────────────────────
 
@@ -63,11 +74,20 @@ struct SccResult {
     int64_t              n_components;
 };
 
+struct IsomorphismResult {
+    bool                  iso;       // true if (sub)isomorphism found
+    std::vector<int64_t>  mapping;   // map12: index = vertex in g1, value = vertex in g2.
+                                     // Empty when iso == false.
+};
+
 // ── Algorithm wrappers ─────────────────────────────────────────────────
 
 PageRankResult     compute_pagerank(const CsrGraph& g, double damping, int max_iter);
 ShortestPathResult compute_dijkstra(const CsrGraph& g, int64_t source, int64_t target);
-ShortestPathResult compute_bellman_ford(const CsrGraph& g, int64_t source, int64_t target);
+// TODO: wire up a `nif_bellman_ford` NIF (Elixir falls back to a pure-Elixir
+// implementation in `lib/grafi/algo/shortest_path.ex` today). igraph provides
+// `igraph_get_shortest_path_bellman_ford` which would be a straight port of
+// `compute_dijkstra` with negative-weight support and negative-cycle reporting.
 CentralityResult   compute_betweenness(const CsrGraph& g);
 CentralityResult   compute_closeness(const CsrGraph& g);
 CommunityResult    compute_louvain(const CsrGraph& g);
@@ -76,5 +96,17 @@ CommunityResult    compute_leiden(const CsrGraph& g, double resolution);
 SccResult          compute_scc(const CsrGraph& g);
 bool               compute_is_acyclic(const CsrGraph& g);
 std::vector<int64_t> compute_topological_sort(const CsrGraph& g);
+
+// VF2 (sub)graph isomorphism — wrappers around igraph's VF2 implementation.
+//
+// `compute_isomorphic_vf2` returns only the boolean iso flag (and an empty
+// mapping). `compute_isomorphism_vf2` additionally returns one witness mapping
+// when iso == true. Same convention for the sub-isomorphism variants:
+// `g1` is the *host* graph, `g2` is the *pattern*.
+bool                 compute_isomorphic_vf2(const CsrGraph& g1, const CsrGraph& g2);
+bool                 compute_subisomorphic_vf2(const CsrGraph& g1, const CsrGraph& g2);
+IsomorphismResult    compute_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2);
+IsomorphismResult    compute_subgraph_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2);
+int64_t              compute_count_subisomorphisms_vf2(const CsrGraph& g1, const CsrGraph& g2);
 
 } // namespace grafi

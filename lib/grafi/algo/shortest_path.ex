@@ -1,33 +1,82 @@
 defmodule Grafi.Algo.ShortestPath do
   @moduledoc "Dijkstra, Bellman-Ford, A* — with igraph NIF acceleration."
 
-  alias Grafi.Graph
   alias Grafi.Algo.MinHeap
+  alias Grafi.Graph
 
-  @spec dijkstra(Graph.t(), any(), any(), keyword()) :: {:ok, {[any()], number()}} | :no_path
+  @doc """
+  Computes the shortest weighted path from `source` to `target` using Dijkstra's
+  algorithm.
+
+  Returns `{:ok, {path, distance}}` on success, `:no_path` if no path exists, or
+  `{:error, :no_such_vertex}` if either endpoint is not in the graph.
+
+  For graphs larger than the configured `:nif_threshold` (default `500` vertices)
+  and when `Grafi.NIF.available?/0` returns `true`, the computation is dispatched
+  to the igraph C++ NIF on a dirty scheduler. Otherwise a pure Elixir
+  implementation runs.
+  """
+  @spec dijkstra(Graph.t(), any(), any(), keyword()) ::
+          {:ok, {[any()], number()}} | :no_path | {:error, :no_such_vertex}
   def dijkstra(%Graph{} = g, source, target, opts \\ []) do
-    if Graph.num_vertices(g) > nif_threshold() and Grafi.NIF.available?() do
-      {idx, csr} = Graph.to_csr(g)
-      Grafi.NIF.validate_csr!(csr)
-      rev = Map.new(idx, fn {v, i} -> {i, v} end)
+    cond do
+      not Graph.has_vertex?(g, source) ->
+        {:error, :no_such_vertex}
 
-      case Grafi.NIF.nif_dijkstra(csr, idx[source], idx[target]) do
-        {:ok, path_indices, dist} -> {:ok, {Enum.map(path_indices, &rev[&1]), dist}}
-        :no_path -> :no_path
-      end
-    else
-      dijkstra_elixir(g, source, target, opts)
+      not Graph.has_vertex?(g, target) ->
+        {:error, :no_such_vertex}
+
+      Graph.num_vertices(g) > nif_threshold() and Grafi.NIF.available?() ->
+        dijkstra_nif(g, source, target)
+
+      true ->
+        dijkstra_elixir(g, source, target, opts)
     end
   end
 
+  defp dijkstra_nif(g, source, target) do
+    {idx, csr} = Graph.to_csr(g)
+    Grafi.NIF.validate_csr!(csr)
+    rev = Map.new(idx, fn {v, i} -> {i, v} end)
+    {:ok, sidx} = Map.fetch(idx, source)
+    {:ok, tidx} = Map.fetch(idx, target)
+
+    case Grafi.NIF.nif_dijkstra(csr, sidx, tidx) do
+      {:ok, path_indices, dist} ->
+        {:ok, {Enum.map(path_indices, &Map.fetch!(rev, &1)), dist}}
+
+      :no_path ->
+        :no_path
+    end
+  end
+
+  @doc """
+  Computes shortest-path distances from `source` to every reachable vertex via
+  Dijkstra's algorithm.
+
+  Returns a map of `vertex => distance`. Unreachable vertices are omitted. Runs
+  entirely in pure Elixir; intended for the small-graph case.
+  """
   @spec dijkstra_all(Graph.t(), any()) :: %{any() => number()}
   def dijkstra_all(%Graph{} = g, source) do
     {dists, _} = do_dijkstra(g, source)
     dists
   end
 
+  @doc """
+  Computes shortest-path distances from `source` via the Bellman-Ford algorithm,
+  which supports negative edge weights.
+
+  Returns `{:ok, dists}` where `dists` is a map of `vertex => distance` (with
+  unreachable vertices omitted), or `{:error, :negative_cycle}` if any negative
+  cycle is reachable from `source`. O(|V|·|E|).
+  """
   @spec bellman_ford(Graph.t(), any()) :: {:ok, %{any() => number()}} | {:error, :negative_cycle}
   def bellman_ford(%Graph{} = g, source) do
+    # TODO(perf): the inner Enum.reduce rebuilds a map of size |V| at every
+    # edge relaxation, giving O(|V|·|E|·log|V|) instead of O(|V|·|E|).
+    # For >1k vertices switch to an :array of distances indexed by the
+    # vertex-id integer map, or wire up the NIF Bellman-Ford wrapper.
     vs = Graph.vertices(g)
     n = length(vs)
     dist = Map.new(vs, &{&1, if(&1 == source, do: 0.0, else: :infinity)})
@@ -50,11 +99,28 @@ defmodule Grafi.Algo.ShortestPath do
       else: {:ok, Map.reject(dist, fn {_, v} -> v == :infinity end)}
   end
 
+  @doc """
+  A* search for the shortest path from `source` to `target` guided by the
+  admissible heuristic `h`, a function `vertex -> estimated_cost_to_target`.
+
+  Returns `{:ok, {path, cost}}` on success, `:no_path` if `target` is
+  unreachable, or `{:error, :no_such_vertex}` if either endpoint is missing.
+  With `h.(_) == 0`, A* degenerates to Dijkstra.
+  """
   @spec a_star(Graph.t(), any(), any(), (any() -> number())) ::
-          {:ok, {[any()], number()}} | :no_path
+          {:ok, {[any()], number()}} | :no_path | {:error, :no_such_vertex}
   def a_star(%Graph{} = g, source, target, h) do
-    heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source, [source]})
-    do_astar(g, target, h, heap, MapSet.new())
+    cond do
+      not Graph.has_vertex?(g, source) ->
+        {:error, :no_such_vertex}
+
+      not Graph.has_vertex?(g, target) ->
+        {:error, :no_such_vertex}
+
+      true ->
+        heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source, [source]})
+        do_astar(g, target, h, heap, MapSet.new())
+    end
   end
 
   # ── Internal ──────────────────────────────────────────────────────────

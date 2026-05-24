@@ -4,6 +4,9 @@ defmodule Grafi.DAG do
 
   Every edge addition that would introduce a cycle raises `Grafi.CycleError`.
 
+  > If cycle prevention is not needed, use `Grafi.Graph` directly — `add_edge`
+  > is then O(1) instead of O(|V|+|E|) per insertion.
+
       iex> dag = Grafi.DAG.new()
       ...>   |> Grafi.DAG.add_edge(:compile, :test)
       ...>   |> Grafi.DAG.add_edge(:test, :deploy)
@@ -44,19 +47,42 @@ defmodule Grafi.DAG do
   def add_vertex(%__MODULE__{graph: g} = dag, v, opts \\ []),
     do: %{dag | graph: Graph.add_vertex(g, v, opts)}
 
-  @doc "Adds an edge to the DAG, raising CycleError if it would create a cycle."
+  @doc """
+  Adds an edge to the DAG, auto-creating missing vertices.
+
+  Raises `Grafi.CycleError` for self-loops or if the edge would create a
+  cycle. The reachability check runs against the graph with both endpoints
+  guaranteed present, so newly inserted vertices participate in the check.
+
+  ## Options
+    * `:weight` — numeric weight (default `1.0`)
+    * `:label` — arbitrary label
+
+  ## Examples
+
+      iex> dag = Grafi.DAG.new() |> Grafi.DAG.add_edge(:a, :b)
+      iex> _ = Grafi.DAG.add_edge(dag, :b, :c)
+      iex> try do
+      ...>   Grafi.DAG.add_edge(dag, :b, :a)
+      ...> rescue
+      ...>   e in Grafi.CycleError -> e.message =~ "would create a cycle"
+      ...> end
+      true
+  """
   @spec add_edge(t(), any(), any(), keyword()) :: t()
   def add_edge(%__MODULE__{graph: g} = dag, v1, v2, opts \\ []) do
     if v1 == v2,
       do: raise(Grafi.CycleError, message: "self-loop: #{inspect(v1)}")
 
-    if Graph.has_vertex?(g, v2) and Graph.has_vertex?(g, v1) do
-      if Grafi.Algo.Traversal.reachable?(g, v2, v1),
-        do:
-          raise(Grafi.CycleError, message: "#{inspect(v1)} -> #{inspect(v2)} would create a cycle")
-    end
+    g_with_verts = g |> Graph.add_vertex(v1) |> Graph.add_vertex(v2)
 
-    %{dag | graph: Graph.add_edge(g, v1, v2, opts)}
+    if Grafi.Algo.Traversal.reachable?(g_with_verts, v2, v1),
+      do:
+        raise(Grafi.CycleError,
+          message: "#{inspect(v1)} -> #{inspect(v2)} would create a cycle"
+        )
+
+    %{dag | graph: Graph.add_edge(g_with_verts, v1, v2, opts)}
   end
 
   @doc "Adds multiple edges to the DAG, raising CycleError if any would create a cycle."
@@ -68,7 +94,21 @@ defmodule Grafi.DAG do
     end)
   end
 
-  @doc "Returns a topological ordering of the DAG's vertices."
+  @doc """
+  Returns a topological ordering of the DAG's vertices via Kahn's algorithm.
+
+  Since a `Grafi.DAG` is cycle-free by construction this always succeeds with
+  `{:ok, sorted}` (the `{:error, :has_cycle}` arm exists for internal use on
+  raw `Grafi.Graph`s).
+
+  ## Examples
+
+      iex> Grafi.DAG.new()
+      ...> |> Grafi.DAG.add_edge(:a, :b)
+      ...> |> Grafi.DAG.add_edge(:b, :c)
+      ...> |> Grafi.DAG.topological_sort()
+      {:ok, [:a, :b, :c]}
+  """
   @spec topological_sort(t()) :: {:ok, [any()]} | {:error, :has_cycle}
   def topological_sort(%__MODULE__{graph: g}), do: topological_sort_graph(g)
 
@@ -104,7 +144,21 @@ defmodule Grafi.DAG do
   def sinks(%__MODULE__{graph: g}),
     do: Graph.vertices(g) |> Enum.filter(&(Graph.out_degree(g, &1) == 0))
 
-  @doc "Returns the longest weighted path and its total weight."
+  @doc """
+  Returns the longest weighted path in the DAG and its total weight.
+
+  ## Examples
+
+      iex> Grafi.DAG.new()
+      ...> |> Grafi.DAG.add_edges([
+      ...>   {:a, :b, weight: 3.0},
+      ...>   {:a, :c, weight: 1.0},
+      ...>   {:b, :d, weight: 2.0},
+      ...>   {:c, :d, weight: 10.0}
+      ...> ])
+      ...> |> Grafi.DAG.critical_path()
+      {[:a, :c, :d], 11.0}
+  """
   @spec critical_path(t()) :: {[any()], number()}
   def critical_path(%__MODULE__{graph: g} = dag) do
     case topological_sort(dag) do

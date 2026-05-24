@@ -3,6 +3,11 @@ defmodule Grafi.Algo.Traversal do
 
   alias Grafi.Graph
 
+  @doc """
+  Returns a lazy `Stream` of vertices in breadth-first order starting from
+  `start`. The start vertex is emitted first; unreachable vertices are
+  never emitted.
+  """
   @spec bfs(Graph.t(), any()) :: Enumerable.t()
   def bfs(%Graph{} = g, start) do
     Stream.resource(
@@ -23,6 +28,10 @@ defmodule Grafi.Algo.Traversal do
     )
   end
 
+  @doc """
+  Returns a lazy `Stream` of vertices in depth-first pre-order from `start`.
+  Each vertex is emitted at most once.
+  """
   @spec dfs(Graph.t(), any()) :: Enumerable.t()
   def dfs(%Graph{} = g, start) do
     Stream.resource(
@@ -43,16 +52,29 @@ defmodule Grafi.Algo.Traversal do
     )
   end
 
+  @doc """
+  Returns the list of vertices reachable from `start` in DFS post-order
+  (children before parents). Useful for topological-sort-style traversals
+  and SCC algorithms.
+  """
   @spec dfs_post(Graph.t(), any()) :: [any()]
   def dfs_post(%Graph{} = g, start) do
     {r, _} = do_post(g, start, MapSet.new(), [])
     r
   end
 
+  @doc """
+  Returns `true` if there is a directed path from `source` to `target`,
+  `false` otherwise. Implemented as a lazy BFS that halts on the first hit.
+  """
   @spec reachable?(Graph.t(), any(), any()) :: boolean()
   def reachable?(%Graph{} = g, source, target),
     do: bfs(g, source) |> Enum.any?(&(&1 == target))
 
+  @doc """
+  Returns the `MapSet` of every vertex reachable from `source` (including
+  `source` itself).
+  """
   @spec reachable_from(Graph.t(), any()) :: MapSet.t()
   def reachable_from(%Graph{} = g, source),
     do: bfs(g, source) |> Enum.into(MapSet.new())
