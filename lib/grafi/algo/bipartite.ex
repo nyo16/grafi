@@ -121,10 +121,9 @@ defmodule Grafi.Algo.Bipartite do
   @spec project(Graph.t(), [any()] | MapSet.t()) :: Graph.t()
   def project(%Graph{} = g, side_vertices) do
     side =
-      case side_vertices do
-        %MapSet{} -> side_vertices
-        list when is_list(list) -> MapSet.new(list)
-      end
+      if is_struct(side_vertices, MapSet),
+        do: side_vertices,
+        else: MapSet.new(side_vertices)
 
     keep = Enum.filter(side, &Graph.has_vertex?(g, &1))
 

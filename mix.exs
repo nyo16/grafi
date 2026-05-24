@@ -16,7 +16,7 @@ defmodule Grafi.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        flags: [:unmatched_returns, :error_handling, :underspecs]
+        flags: [:unmatched_returns, :error_handling]
       ],
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",

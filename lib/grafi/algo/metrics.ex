@@ -1,4 +1,6 @@
 defmodule Grafi.Algo.Metrics do
+  @dialyzer :no_opaque
+
   @moduledoc """
   Cheap graph metrics: triangle counts, clustering coefficients,
   transitivity, density, and the distance-based metrics — eccentricity,

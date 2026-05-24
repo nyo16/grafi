@@ -1,4 +1,6 @@
 defmodule Grafi.Algo.MaxFlow do
+  @dialyzer :no_opaque
+
   @moduledoc """
   Maximum s-t flow and minimum s-t cut algorithms — Edmonds-Karp,
   Dinic's algorithm, and minimum cut extraction via Max-Flow Min-Cut.

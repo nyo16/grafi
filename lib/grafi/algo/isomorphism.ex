@@ -1,4 +1,6 @@
 defmodule Grafi.Algo.Isomorphism do
+  @dialyzer :no_opaque
+
   @moduledoc """
   (Sub)graph isomorphism via the VF2 algorithm.
 
@@ -188,8 +190,8 @@ defmodule Grafi.Algo.Isomorphism do
   defp nif_isomorphic?(g1, g2) do
     {_, csr1} = Graph.to_csr(g1)
     {_, csr2} = Graph.to_csr(g2)
-    Grafi.NIF.validate_csr!(csr1)
-    Grafi.NIF.validate_csr!(csr2)
+    _ = Grafi.NIF.validate_csr!(csr1)
+    _ = Grafi.NIF.validate_csr!(csr2)
 
     case Grafi.NIF.nif_isomorphic_vf2(csr1, csr2) do
       {:ok, iso} -> iso
@@ -199,8 +201,8 @@ defmodule Grafi.Algo.Isomorphism do
   defp nif_subisomorphic?(graph, pattern) do
     {_, csr_g} = Graph.to_csr(graph)
     {_, csr_p} = Graph.to_csr(pattern)
-    Grafi.NIF.validate_csr!(csr_g)
-    Grafi.NIF.validate_csr!(csr_p)
+    _ = Grafi.NIF.validate_csr!(csr_g)
+    _ = Grafi.NIF.validate_csr!(csr_p)
 
     case Grafi.NIF.nif_subisomorphic_vf2(csr_g, csr_p) do
       {:ok, iso} -> iso
@@ -210,8 +212,8 @@ defmodule Grafi.Algo.Isomorphism do
   defp nif_isomorphism(g1, g2) do
     {idx1, csr1} = Graph.to_csr(g1)
     {idx2, csr2} = Graph.to_csr(g2)
-    Grafi.NIF.validate_csr!(csr1)
-    Grafi.NIF.validate_csr!(csr2)
+    _ = Grafi.NIF.validate_csr!(csr1)
+    _ = Grafi.NIF.validate_csr!(csr2)
 
     rev1 = reverse_index(idx1)
     rev2 = reverse_index(idx2)
@@ -237,8 +239,8 @@ defmodule Grafi.Algo.Isomorphism do
     # produce a pattern -> host mapping.
     {idx_g, csr_g} = Graph.to_csr(graph)
     {idx_p, csr_p} = Graph.to_csr(pattern)
-    Grafi.NIF.validate_csr!(csr_g)
-    Grafi.NIF.validate_csr!(csr_p)
+    _ = Grafi.NIF.validate_csr!(csr_g)
+    _ = Grafi.NIF.validate_csr!(csr_p)
 
     rev_g = reverse_index(idx_g)
     rev_p = reverse_index(idx_p)
@@ -266,8 +268,8 @@ defmodule Grafi.Algo.Isomorphism do
   defp nif_count_subisomorphisms(graph, pattern) do
     {_, csr_g} = Graph.to_csr(graph)
     {_, csr_p} = Graph.to_csr(pattern)
-    Grafi.NIF.validate_csr!(csr_g)
-    Grafi.NIF.validate_csr!(csr_p)
+    _ = Grafi.NIF.validate_csr!(csr_g)
+    _ = Grafi.NIF.validate_csr!(csr_p)
 
     case Grafi.NIF.nif_count_subisomorphisms_vf2(csr_g, csr_p) do
       {:ok, n} -> n

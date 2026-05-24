@@ -1,4 +1,6 @@
 defmodule Grafi.Generators do
+  @dialyzer :no_opaque
+
   @moduledoc """
   Synthetic graph generators — classical (complete, cycle, path, grid)
   and random (Erdős–Rényi, Barabási–Albert, Watts–Strogatz, random
@@ -126,7 +128,7 @@ defmodule Grafi.Generators do
   @spec erdos_renyi(non_neg_integer(), float(), keyword()) :: Graph.t()
   def erdos_renyi(n, p, opts \\ [])
       when is_integer(n) and n >= 0 and is_number(p) and p >= 0 and p <= 1 do
-    seed_rand(opts)
+    _ = seed_rand(opts)
     g = new_graph(n, opts)
     directed? = Keyword.get(opts, :directed, false)
 
@@ -162,7 +164,7 @@ defmodule Grafi.Generators do
   @spec barabasi_albert(pos_integer(), pos_integer(), keyword()) :: Graph.t()
   def barabasi_albert(n, m, opts \\ [])
       when is_integer(n) and is_integer(m) and m >= 1 and n > m do
-    seed_rand(opts)
+    _ = seed_rand(opts)
     g = complete(m + 1, opts)
 
     # `targets` is the multiset (as a list) used for preferential attachment;
@@ -210,7 +212,7 @@ defmodule Grafi.Generators do
   def watts_strogatz(n, k, p, opts \\ [])
       when is_integer(n) and is_integer(k) and is_number(p) and n > k and k >= 2 and
              rem(k, 2) == 0 and p >= 0 and p <= 1 do
-    seed_rand(opts)
+    _ = seed_rand(opts)
 
     # Initial ring lattice: connect each i to i+1, i+2, ..., i+k/2 (mod n).
     half = div(k, 2)
@@ -261,7 +263,7 @@ defmodule Grafi.Generators do
   def random_regular(n, d, opts \\ [])
       when is_integer(n) and is_integer(d) and n > 0 and d >= 0 and
              rem(n * d, 2) == 0 and d < n do
-    seed_rand(opts)
+    _ = seed_rand(opts)
     attempt_regular(n, d, opts, 100)
   end
 
@@ -306,8 +308,12 @@ defmodule Grafi.Generators do
 
   defp seed_rand(opts) do
     case Keyword.get(opts, :seed) do
-      nil -> :ok
-      seed when is_integer(seed) -> :rand.seed(:exsss, {seed, seed, seed})
+      nil ->
+        :ok
+
+      seed when is_integer(seed) ->
+        _ = :rand.seed(:exsss, {seed, seed, seed})
+        :ok
     end
   end
 

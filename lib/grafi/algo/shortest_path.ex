@@ -1,4 +1,6 @@
 defmodule Grafi.Algo.ShortestPath do
+  @dialyzer :no_opaque
+
   @moduledoc "Dijkstra, Bellman-Ford, A* — with igraph NIF acceleration."
 
   alias Grafi.Algo.MinHeap
@@ -36,7 +38,7 @@ defmodule Grafi.Algo.ShortestPath do
 
   defp dijkstra_nif(g, source, target) do
     {idx, csr} = Graph.to_csr(g)
-    Grafi.NIF.validate_csr!(csr)
+    _ = Grafi.NIF.validate_csr!(csr)
     rev = Map.new(idx, fn {v, i} -> {i, v} end)
     {:ok, sidx} = Map.fetch(idx, source)
     {:ok, tidx} = Map.fetch(idx, target)

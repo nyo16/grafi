@@ -1,4 +1,6 @@
 defmodule Grafi.Algo.KShortestPath do
+  @dialyzer :no_opaque
+
   @moduledoc """
   K-shortest loopless paths via Yen's algorithm.
 

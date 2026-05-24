@@ -110,7 +110,7 @@ defmodule Grafi.Algo.Community do
   defp with_nif(g, fun) do
     if Grafi.NIF.available?() do
       {idx, csr} = Graph.to_csr(g)
-      Grafi.NIF.validate_csr!(csr)
+      _ = Grafi.NIF.validate_csr!(csr)
       rev = Map.new(idx, fn {v, i} -> {i, v} end)
       {:ok, fun.(idx, csr, rev)}
     else

@@ -25,7 +25,7 @@ defmodule Grafi.Algo.Centrality do
 
     if use_nif?(g) do
       {idx, csr} = Graph.to_csr(g)
-      Grafi.NIF.validate_csr!(csr)
+      _ = Grafi.NIF.validate_csr!(csr)
       ranks = Grafi.NIF.nif_pagerank(csr, damping, max_iter)
       reverse_idx = Map.new(idx, fn {v, i} -> {i, v} end)
       ranks |> Enum.with_index() |> Map.new(fn {r, i} -> {reverse_idx[i], r} end)
@@ -41,7 +41,7 @@ defmodule Grafi.Algo.Centrality do
   def betweenness(%Graph{} = g) do
     if use_nif?(g) do
       {idx, csr} = Graph.to_csr(g)
-      Grafi.NIF.validate_csr!(csr)
+      _ = Grafi.NIF.validate_csr!(csr)
       scores = Grafi.NIF.nif_betweenness(csr)
       reverse_idx = Map.new(idx, fn {v, i} -> {i, v} end)
       scores |> Enum.with_index() |> Map.new(fn {s, i} -> {reverse_idx[i], s} end)
@@ -69,7 +69,7 @@ defmodule Grafi.Algo.Centrality do
 
       use_nif?(g) ->
         {idx, csr} = Graph.to_csr(g)
-        Grafi.NIF.validate_csr!(csr)
+        _ = Grafi.NIF.validate_csr!(csr)
         scores = Grafi.NIF.nif_closeness(csr)
         reverse_idx = Map.new(idx, fn {v, i} -> {i, v} end)
         scores |> Enum.with_index() |> Map.new(fn {s, i} -> {reverse_idx[i], s} end)

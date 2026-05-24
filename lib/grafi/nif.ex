@@ -64,10 +64,14 @@ defmodule Grafi.NIF do
   This duplicates checks the C++ NIF should also perform; defence-in-depth
   prevents passing junk to the NIF.
   """
-  @spec validate_csr!(map()) :: map()
-  def validate_csr!(
-        %{row_offsets: ro, col_indices: ci, weights: w, n_vertices: n, directed: d} = csr
-      )
+  @spec validate_csr!(map()) :: :ok
+  def validate_csr!(%{
+        row_offsets: ro,
+        col_indices: ci,
+        weights: w,
+        n_vertices: n,
+        directed: d
+      })
       when is_list(ro) and is_list(ci) and is_list(w) and is_integer(n) and is_boolean(d) do
     unless n >= 0,
       do: raise(ArgumentError, "n_vertices must be non-negative")
@@ -92,7 +96,7 @@ defmodule Grafi.NIF do
 
     validate_col_indices!(ci, n)
 
-    csr
+    :ok
   end
 
   def validate_csr!(_), do: raise(ArgumentError, "invalid CSR map structure")

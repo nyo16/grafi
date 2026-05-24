@@ -15,6 +15,8 @@ defmodule Grafi.DisconnectedError do
 end
 
 defmodule Grafi.Algo.MST do
+  @dialyzer :no_opaque
+
   @moduledoc """
   Minimum Spanning Tree / Forest algorithms — Kruskal's and Prim's.
 

@@ -141,7 +141,7 @@ defmodule Grafi.EdgeCasesTest do
         directed: true
       }
 
-      assert Grafi.NIF.validate_csr!(csr) == csr
+      assert Grafi.NIF.validate_csr!(csr) == :ok
     end
 
     test "rejects row_offsets not starting at 0" do

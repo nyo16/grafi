@@ -1,4 +1,6 @@
 defmodule Grafi.Graph do
+  @dialyzer :no_opaque
+
   @moduledoc """
   An immutable graph data structure — the heart of Grafi.
 

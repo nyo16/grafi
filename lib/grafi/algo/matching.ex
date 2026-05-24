@@ -65,10 +65,9 @@ defmodule Grafi.Algo.Matching do
           | {:error, :not_bipartite}
   def hopcroft_karp(%Graph{} = g, left_side, _opts \\ []) do
     left_set =
-      case left_side do
-        %MapSet{} -> left_side
-        list when is_list(list) -> MapSet.new(list)
-      end
+      if is_struct(left_side, MapSet),
+        do: left_side,
+        else: MapSet.new(left_side)
 
     with :ok <- maybe_check_bipartite(g) do
       lefts = left_set |> Enum.filter(&Graph.has_vertex?(g, &1))
@@ -507,10 +506,9 @@ defmodule Grafi.Algo.Matching do
     maximize? = Keyword.get(opts, :maximize, true)
 
     left_set =
-      case left_side do
-        %MapSet{} -> left_side
-        list when is_list(list) -> MapSet.new(list)
-      end
+      if is_struct(left_side, MapSet),
+        do: left_side,
+        else: MapSet.new(left_side)
 
     with :ok <- maybe_check_bipartite(g) do
       lefts =

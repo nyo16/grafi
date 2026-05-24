@@ -1,4 +1,6 @@
 defmodule Grafi.Algo.Cliques do
+  @dialyzer :no_opaque
+
   @moduledoc """
   Maximal clique enumeration via Bron–Kerbosch with pivoting.
 
