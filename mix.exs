@@ -9,7 +9,7 @@ defmodule Grafi.MixProject do
     [
       app: :grafi,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       compilers: [:elixir_make] ++ Mix.compilers(),
       deps: deps(),
