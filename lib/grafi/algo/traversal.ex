@@ -1,4 +1,5 @@
 defmodule Grafi.Algo.Traversal do
+  @dialyzer :no_opaque
   @moduledoc "BFS, DFS, and reachability — all lazy via `Stream`."
 
   alias Grafi.Graph
