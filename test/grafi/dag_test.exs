@@ -1,5 +1,6 @@
 defmodule Grafi.DAGTest do
   use ExUnit.Case, async: true
+  doctest Grafi.DAG
   alias Grafi.DAG
 
   test "topological sort" do

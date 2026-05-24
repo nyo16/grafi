@@ -1,4 +1,6 @@
 defmodule Grafi.Graph do
+  @dialyzer :no_opaque
+
   @moduledoc """
   An immutable graph data structure — the heart of Grafi.
 
@@ -10,7 +12,7 @@ defmodule Grafi.Graph do
   Uses adjacency maps for fast mutation and traversal. For heavy algorithms
   the graph is converted to CSR format and dispatched to igraph via NIF.
 
-      iex> g = Grafi.Graph.new()
+      iex> Grafi.Graph.new()
       ...>   |> Grafi.Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
       #Grafi.Graph<directed, V: 3, E: 3>
   """
@@ -23,6 +25,8 @@ defmodule Grafi.Graph do
           vertex_labels: %{vertex_id() => any()},
           out_edges: %{vertex_id() => %{vertex_id() => [Edge.t()]}},
           in_edges: %{vertex_id() => %{vertex_id() => [Edge.t()]}},
+          out_degrees: %{vertex_id() => non_neg_integer()},
+          in_degrees: %{vertex_id() => non_neg_integer()},
           num_edges: non_neg_integer(),
           num_vertices: non_neg_integer(),
           type: :directed | :undirected
@@ -32,6 +36,8 @@ defmodule Grafi.Graph do
             vertex_labels: %{},
             out_edges: %{},
             in_edges: %{},
+            out_degrees: %{},
+            in_degrees: %{},
             num_edges: 0,
             num_vertices: 0,
             type: :directed
@@ -42,7 +48,16 @@ defmodule Grafi.Graph do
   Creates a new empty graph.
 
   ## Options
-    - `:type` — `:directed` (default) or `:undirected`
+    * `:type` — `:directed` (default) or `:undirected`
+
+  ## Examples
+
+      iex> g = Grafi.Graph.new()
+      iex> {g.type, Grafi.Graph.num_vertices(g), Grafi.Graph.num_edges(g)}
+      {:directed, 0, 0}
+
+      iex> Grafi.Graph.new(type: :undirected).type
+      :undirected
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
@@ -67,6 +82,8 @@ defmodule Grafi.Graph do
         | vertices: Map.put(g.vertices, v, true),
           out_edges: Map.put_new(g.out_edges, v, %{}),
           in_edges: Map.put_new(g.in_edges, v, %{}),
+          out_degrees: Map.put_new(g.out_degrees, v, 0),
+          in_degrees: Map.put_new(g.in_degrees, v, 0),
           num_vertices: g.num_vertices + 1
       }
 
@@ -93,8 +110,28 @@ defmodule Grafi.Graph do
       in_count = g.in_edges |> Map.get(v, %{}) |> edge_count_in_map()
       reduction = if g.type == :undirected, do: out_count, else: out_count + in_count
 
+      # Distinct neighbors that had an edge involving v (for degree maintenance)
+      out_targets = g.out_edges |> Map.get(v, %{}) |> Map.keys()
+      in_sources = g.in_edges |> Map.get(v, %{}) |> Map.keys()
+
       out_edges = g.out_edges |> Map.delete(v) |> strip_target(v)
       in_edges = g.in_edges |> Map.delete(v) |> strip_target(v)
+
+      # For directed: each out-target loses an in-edge from v; each in-source loses an out-edge to v.
+      # For undirected: out_targets == in_sources; decrement both sides once.
+      out_degrees =
+        in_sources
+        |> Enum.reduce(g.out_degrees, fn s, acc ->
+          Map.update(acc, s, 0, &max(&1 - 1, 0))
+        end)
+        |> Map.delete(v)
+
+      in_degrees =
+        out_targets
+        |> Enum.reduce(g.in_degrees, fn t, acc ->
+          Map.update(acc, t, 0, &max(&1 - 1, 0))
+        end)
+        |> Map.delete(v)
 
       %{
         g
@@ -102,6 +139,8 @@ defmodule Grafi.Graph do
           vertex_labels: Map.delete(g.vertex_labels, v),
           out_edges: out_edges,
           in_edges: in_edges,
+          out_degrees: out_degrees,
+          in_degrees: in_degrees,
           num_edges: g.num_edges - reduction,
           num_vertices: g.num_vertices - 1
       }
@@ -113,9 +152,19 @@ defmodule Grafi.Graph do
   @doc """
   Add an edge from `v1` to `v2`. Auto-creates missing vertices.
 
+  Edges are multi-edges: adding `(:a, :b)` twice yields two edges. Out/in
+  degrees count distinct neighbors, not multi-edges.
+
   ## Options
-    - `:weight` — numeric weight (default `1.0`)
-    - `:label` — arbitrary label
+    * `:weight` — numeric weight (default `1.0`)
+    * `:label` — arbitrary label
+
+  ## Examples
+
+      iex> g = Grafi.Graph.new() |> Grafi.Graph.add_edge(:x, :y)
+      iex> {Grafi.Graph.has_vertex?(g, :x), Grafi.Graph.has_vertex?(g, :y),
+      ...>  Grafi.Graph.has_edge?(g, :x, :y), Grafi.Graph.num_edges(g)}
+      {true, true, true, 1}
   """
   @spec add_edge(t(), vertex_id(), vertex_id(), keyword()) :: t()
   def add_edge(%__MODULE__{} = g, v1, v2, opts \\ []) do
@@ -124,13 +173,38 @@ defmodule Grafi.Graph do
     edge = %Edge{from: v1, to: v2, weight: weight, label: label}
 
     g = g |> add_vertex(v1) |> add_vertex(v2)
+
+    new_neighbor? = not has_neighbor_entry?(g.out_edges, v1, v2)
+
     g = push_edge(g, :out_edges, v1, v2, edge)
     g = push_edge(g, :in_edges, v2, v1, edge)
 
     g =
+      if new_neighbor? do
+        %{
+          g
+          | out_degrees: Map.update(g.out_degrees, v1, 1, &(&1 + 1)),
+            in_degrees: Map.update(g.in_degrees, v2, 1, &(&1 + 1))
+        }
+      else
+        g
+      end
+
+    g =
       if g.type == :undirected do
         rev = %Edge{from: v2, to: v1, weight: weight, label: label}
-        g |> push_edge(:out_edges, v2, v1, rev) |> push_edge(:in_edges, v1, v2, rev)
+        new_rev? = not has_neighbor_entry?(g.out_edges, v2, v1)
+        g = g |> push_edge(:out_edges, v2, v1, rev) |> push_edge(:in_edges, v1, v2, rev)
+
+        if new_rev? do
+          %{
+            g
+            | out_degrees: Map.update(g.out_degrees, v2, 1, &(&1 + 1)),
+              in_degrees: Map.update(g.in_degrees, v1, 1, &(&1 + 1))
+          }
+        else
+          g
+        end
       else
         g
       end
@@ -159,8 +233,32 @@ defmodule Grafi.Graph do
         g = remove_first_in(g, :in_edges, v2, v1)
 
         g =
+          if rest == [] do
+            %{
+              g
+              | out_degrees: Map.update(g.out_degrees, v1, 0, &max(&1 - 1, 0)),
+                in_degrees: Map.update(g.in_degrees, v2, 0, &max(&1 - 1, 0))
+            }
+          else
+            g
+          end
+
+        g =
           if g.type == :undirected do
-            g |> remove_first_in(:out_edges, v2, v1) |> remove_first_in(:in_edges, v1, v2)
+            rev_list = get_in(g.out_edges, [v2, v1]) || []
+            g = g |> remove_first_in(:out_edges, v2, v1) |> remove_first_in(:in_edges, v1, v2)
+
+            case rev_list do
+              [_only] ->
+                %{
+                  g
+                  | out_degrees: Map.update(g.out_degrees, v2, 0, &max(&1 - 1, 0)),
+                    in_degrees: Map.update(g.in_degrees, v1, 0, &max(&1 - 1, 0))
+                }
+
+              _ ->
+                g
+            end
           else
             g
           end
@@ -217,13 +315,21 @@ defmodule Grafi.Graph do
   def neighbors(%__MODULE__{} = g, v),
     do: (out_neighbors(g, v) ++ in_neighbors(g, v)) |> Enum.uniq()
 
-  @doc "Returns the number of outgoing edges from a vertex."
-  @spec out_degree(t(), vertex_id()) :: non_neg_integer()
-  def out_degree(%__MODULE__{} = g, v), do: length(out_neighbors(g, v))
+  @doc """
+  Returns the number of distinct outgoing neighbors of a vertex.
 
-  @doc "Returns the number of incoming edges to a vertex."
+  Cached on the struct for O(log n) lookup. Returns `0` for missing vertices.
+  """
+  @spec out_degree(t(), vertex_id()) :: non_neg_integer()
+  def out_degree(%__MODULE__{out_degrees: od}, v), do: Map.get(od, v, 0)
+
+  @doc """
+  Returns the number of distinct incoming neighbors of a vertex.
+
+  Cached on the struct for O(log n) lookup. Returns `0` for missing vertices.
+  """
   @spec in_degree(t(), vertex_id()) :: non_neg_integer()
-  def in_degree(%__MODULE__{} = g, v), do: length(in_neighbors(g, v))
+  def in_degree(%__MODULE__{in_degrees: id}, v), do: Map.get(id, v, 0)
 
   @doc "Returns the total degree of a vertex."
   @spec degree(t(), vertex_id()) :: non_neg_integer()
@@ -290,37 +396,44 @@ defmodule Grafi.Graph do
   # ── CSR conversion (for NIF dispatch) ─────────────────────────────────
 
   @doc """
-  Converts to CSR format for the igraph NIF engine.
+  Converts to CSR (Compressed Sparse Row) format for the igraph NIF engine.
+
   Returns `{index_map, csr_map}` where `index_map` maps vertex_ids to
-  integer indices, and `csr_map` is the map consumed by `Grafi.NIF`.
+  integer indices `[0, n_vertices)`, and `csr_map` has the keys
+  `:row_offsets`, `:col_indices`, `:weights`, `:n_vertices`, `:directed`
+  consumed by `Grafi.NIF`.
   """
   @spec to_csr(t()) :: {%{vertex_id() => non_neg_integer()}, map()}
   def to_csr(%__MODULE__{} = g) do
     sorted = vertices(g) |> Enum.sort()
     idx = sorted |> Enum.with_index() |> Map.new()
 
+    # Accumulate row_offsets in reverse (cheap, length n+1), and accumulate
+    # cols/weights in *reverse* order across all vertices, then reverse once
+    # at the end. Avoids the per-vertex Enum.reverse that the old impl did.
     {rev_offsets, rev_cols, rev_weights} =
-      Enum.reduce(sorted, {[0], [], []}, fn v, {off, c, w} ->
+      Enum.reduce(sorted, {[0], [], []}, fn v, {[prev_off | _] = off, c, w} ->
         out = Map.get(g.out_edges, v, %{})
 
         pairs =
           Enum.flat_map(out, fn {to, el} ->
-            Enum.map(el, fn e -> {Map.fetch!(idx, to), e.weight} end)
+            i = Map.fetch!(idx, to)
+            Enum.map(el, fn e -> {i, e.weight} end)
           end)
           |> Enum.sort_by(&elem(&1, 0))
 
-        {new_c, new_w} = Enum.unzip(pairs)
-        {[hd(off) + length(pairs) | off], Enum.reverse(new_c) ++ c, Enum.reverse(new_w) ++ w}
+        {new_off, c, w} =
+          Enum.reduce(pairs, {prev_off, c, w}, fn {i, weight}, {n, c_acc, w_acc} ->
+            {n + 1, [i | c_acc], [weight | w_acc]}
+          end)
+
+        {[new_off | off], c, w}
       end)
 
-    offsets = Enum.reverse(rev_offsets)
-    cols = Enum.reverse(rev_cols)
-    weights = Enum.reverse(rev_weights)
-
     csr_map = %{
-      row_offsets: offsets,
-      col_indices: cols,
-      weights: weights,
+      row_offsets: Enum.reverse(rev_offsets),
+      col_indices: Enum.reverse(rev_cols),
+      weights: Enum.reverse(rev_weights),
       n_vertices: g.num_vertices,
       directed: g.type == :directed
     }
@@ -391,6 +504,13 @@ defmodule Grafi.Graph do
 
   defp strip_target(map, v) do
     Map.new(map, fn {from, targets} -> {from, Map.delete(targets, v)} end)
+  end
+
+  defp has_neighbor_entry?(adj, from, to) do
+    case adj do
+      %{^from => %{^to => [_ | _]}} -> true
+      _ -> false
+    end
   end
 
   # ── Protocols ─────────────────────────────────────────────────────────

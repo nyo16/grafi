@@ -3,6 +3,8 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/grafi.svg)](https://hex.pm/packages/grafi)
 [![Docs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/grafi)
 
+*Hex and HexDocs links activate once v0.1.0 is published.*
+
 A high-performance graph library for Elixir with igraph NIF acceleration.
 
 The name comes from ancient Greek **γραφή** (*graphē*) — "to write, to draw, to describe" —
@@ -18,7 +20,10 @@ the etymological ancestor of the English word "graph." Returning the word to its
   [fine](https://github.com/elixir-nx/fine) on dirty CPU schedulers
 - **Graceful fallback** — every NIF-accelerated algorithm has a pure Elixir
   implementation that kicks in if igraph is not installed
-- **Serialization** — DOT (Graphviz), JSON, with more formats planned
+- **Serialization** — DOT, JSON, GraphML, GEXF, Pajek, edge-list,
+  adjacency-list, Matrix Market, and Mermaid (with Livebook/Kino glue)
+- **Layout & viz** — Sugiyama DAG layout and a Graphviz shelling
+  helper for direct SVG/PNG/PDF rendering
 
 ## Algorithms
 
@@ -42,14 +47,41 @@ the etymological ancestor of the English word "graph." Returning the word to its
 | | Layer assignment | ✅ | — |
 | | Critical path | ✅ | — |
 | | Cycle prevention | ✅ | — |
+| **Metrics** | Triangle count, clustering coefficient, transitivity, density | ✅ | — |
+| | Diameter, radius, eccentricity, center, periphery | ✅ | — |
+| **Connectivity** | Bridges, articulation points, biconnected components | ✅ | — |
+| | Bipartite detection, 2-coloring, bipartite projection | ✅ | — |
+| | k-core decomposition, degeneracy | ✅ | — |
+| | Maximal cliques (Bron–Kerbosch with Tomita pivot) | ✅ | — |
+| **MST** | Kruskal, Prim (with `Grafi.UnionFind` primitive) | ✅ | — |
+| **All-pairs SP** | Floyd–Warshall, Johnson, transitive closure | ✅ | — |
+| **K-shortest** | Yen's algorithm, bidirectional Dijkstra | ✅ | — |
+| **Centrality extras** | HITS, Katz, eigenvector, harmonic | ✅ | — |
+| **Link prediction** | Jaccard, Adamic–Adar, resource allocation, preferential attachment | ✅ | — |
+| **Flows & matching** | Max-flow: Edmonds–Karp, Dinic; min s–t cut | ✅ | — |
+| | Hopcroft–Karp bipartite matching | ✅ | — |
+| | Hungarian (Jonker–Volgenant) assignment | ✅ | — |
+| **Isomorphism** | VF2 / sub-isomorphism, count subisomorphisms | ✅ (backtracking) | ✅ (igraph VF2) |
+| **Generators** | Erdős–Rényi, Barabási–Albert, Watts–Strogatz, random-regular, complete, cycle, path, grid | ✅ | — |
+| **Layout** | Sugiyama (layered DAG, barycenter crossing reduction) | ✅ | — |
+| **Viz** | Graphviz `dot`/`neato`/`circo`/`twopi`/`fdp`/`sfdp` shelling | ✅ (System.cmd) | — |
 
 ## Installation
+
+> **Pre-release notice**: v0.1.0 is not yet on Hex. Use the `git:` dep form
+> until the first published release.
 
 Add `grafi` to your `mix.exs`:
 
 ```elixir
 def deps do
-  [{:grafi, "~> 0.1.0"}]
+  [
+    # Once published:
+    {:grafi, "~> 0.1.0"}
+
+    # Until then:
+    # {:grafi, git: "https://github.com/nmaroulis/grafi"}
+  ]
 end
 ```
 
@@ -90,9 +122,9 @@ g = Grafi.new()
 Grafi.shortest_path(g, :athens, :olympia)
 #=> {:ok, {[:athens, :corinth, :olympia], 230.0}}
 
-# PageRank
+# PageRank — exact values depend on damping factor and iteration count
 Grafi.pagerank(g)
-#=> %{athens: 0.15, corinth: 0.28, sparta: 0.30, olympia: 0.27}
+#=> %{athens: _, corinth: _, sparta: _, olympia: _}
 
 # Cycle detection
 Grafi.has_cycle?(g)
@@ -150,10 +182,54 @@ DAG.add_edge(dag, :link, :parse)
     └───────────────┘    └────────────────────┘
 ```
 
-The NIF threshold is 500 vertices — below that, pure Elixir runs.
-Above that, graphs are converted to CSR (Compressed Sparse Row) format
-and dispatched to igraph. All NIFs run on dirty CPU schedulers so they
-never block the BEAM.
+Heavy compute paths (PageRank, betweenness, closeness, Dijkstra on
+large graphs, Louvain, Leiden, label propagation, SCC, topological sort)
+dispatch to igraph through the NIF; everything else runs in pure
+Elixir on the immutable graph struct.
+
+The default NIF threshold is **500 vertices** — below that, pure Elixir
+runs even when the NIF is loaded. Above that, the graph is converted
+to **CSR (Compressed Sparse Row)** — a compact two-array adjacency
+representation (`row_offsets` + `col_indices`) that igraph consumes
+directly without re-copying — and handed to the NIF.
+
+The threshold is configurable at runtime:
+
+```elixir
+# In runtime.exs, or anywhere during boot:
+Application.put_env(:grafi, :nif_threshold, 1_000)
+
+# Or via env var (read by config/runtime.exs):
+# GRAFI_NIF_THRESHOLD=1000
+```
+
+You can also disable NIF dispatch entirely (forces pure-Elixir paths
+on every algorithm) with `GRAFI_NIF_ENABLED=false`, which is what CI
+uses to exercise the fallback codepath.
+
+All NIFs are registered as `ERL_NIF_DIRTY_JOB_CPU_BOUND`, so even
+multi-second runs (e.g. Louvain on a 100k-vertex graph) execute on a
+dirty CPU scheduler and never stall the BEAM's normal schedulers.
+
+## Benchmarks
+
+Grafi includes a `mix bench` task (aliased to `run bench/run.exs`) that
+exercises the major algorithms across pure-Elixir, NIF, and `:digraph`
+backends. Sample numbers on Apple M1 / Linux x86 are below — your
+results will vary with graph topology, edge count, and hardware.
+
+| Algorithm | Graph size | Grafi (Elixir) | Grafi (NIF) | `:digraph` |
+|---|---|---|---|---|
+| Dijkstra single-pair | 1k vertices / 3k edges | TBD | TBD | TBD |
+| Dijkstra single-pair | 10k vertices / 30k edges | TBD | TBD | TBD |
+| PageRank (100 iter)   | 1k vertices / 3k edges | TBD | TBD | — |
+| PageRank (100 iter)   | 10k vertices / 30k edges | TBD | TBD | — |
+| Betweenness           | 1k vertices / 3k edges | TBD | TBD | — |
+| Louvain               | 10k vertices / 30k edges | — | TBD | — |
+
+> Real numbers will be filled in once `mix bench` has been run in a
+> clean environment. Run it locally with `mix bench` to compare against
+> your hardware.
 
 ## Comparison with libgraph
 
@@ -170,6 +246,59 @@ never block the BEAM.
 | Serialization | DOT only | DOT, JSON, more planned |
 | Large graph perf | Pure Elixir | igraph NIF (C, optimized) |
 
+## When to use Grafi
+
+- **Use Grafi** if you need PageRank, betweenness, closeness, community
+  detection (Louvain / Leiden / label propagation), DAG cycle prevention,
+  or igraph-backed performance on graphs above a few hundred vertices.
+- **Use Erlang's [`:digraph`](https://www.erlang.org/doc/man/digraph.html)**
+  if you need a *mutable* graph stored in ETS and only basic traversal,
+  reachability, or topological sort — and you don't want a NIF dependency.
+- **Use [libgraph](https://hex.pm/packages/libgraph)** if you need a stable,
+  battle-tested, pure-Elixir map-based graph with the basic algorithms
+  (shortest path, MST, components) and you specifically *don't* want
+  C extensions in your build.
+
+## Troubleshooting
+
+- **Check NIF availability** from IEx:
+
+  ```elixir
+  iex> Grafi.NIF.available?()
+  true
+  ```
+
+- **Force pure-Elixir mode** (skip NIF dispatch on every algorithm),
+  useful for CI matrices and for verifying the fallback path:
+
+  ```bash
+  GRAFI_NIF_ENABLED=false mix test
+  ```
+
+  Or set it permanently in `config/runtime.exs`:
+
+  ```elixir
+  config :grafi, nif_enabled: false
+  ```
+
+- **`igraph` not found at compile time** — install the development
+  headers, then recompile:
+
+  ```bash
+  # macOS
+  brew install igraph
+
+  # Ubuntu / Debian
+  sudo apt install libigraph-dev
+  ```
+
+- **Linker can't find `libigraph` at runtime** — on Linux, the loader
+  may not look in `/usr/local/lib` by default. Either set
+  `LD_LIBRARY_PATH=/usr/local/lib`, add the path to `/etc/ld.so.conf.d/`
+  and run `ldconfig`, or reinstall igraph through your package manager
+  so it lands in a default search path. After fixing, rebuild Grafi
+  with `mix deps.compile grafi --force`.
+
 ## License
 
-MIT
+[Apache 2.0](LICENSE)

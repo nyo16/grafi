@@ -102,4 +102,113 @@ defmodule Grafi.EdgeCasesTest do
       assert dist == 0.0
     end
   end
+
+  describe "Dijkstra with missing vertices" do
+    test "missing source returns {:error, :no_such_vertex}" do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+      assert Grafi.shortest_path(g, :missing, :b) == {:error, :no_such_vertex}
+    end
+
+    test "missing target returns {:error, :no_such_vertex}" do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+      assert Grafi.shortest_path(g, :a, :missing) == {:error, :no_such_vertex}
+    end
+
+    test "A* missing endpoints returns {:error, :no_such_vertex}" do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+      assert Grafi.a_star(g, :missing, :b, fn _ -> 0 end) == {:error, :no_such_vertex}
+    end
+  end
+
+  describe "closeness on tiny graphs" do
+    test "empty graph returns %{}" do
+      assert Grafi.closeness(Grafi.new()) == %{}
+    end
+
+    test "single vertex returns %{}" do
+      g = Grafi.new() |> Grafi.add_vertex(:solo)
+      assert Grafi.closeness(g) == %{}
+    end
+  end
+
+  describe "CSR structural validation" do
+    test "valid CSR passes" do
+      csr = %{
+        row_offsets: [0, 1, 1],
+        col_indices: [1],
+        weights: [1.0],
+        n_vertices: 2,
+        directed: true
+      }
+
+      assert Grafi.NIF.validate_csr!(csr) == :ok
+    end
+
+    test "rejects row_offsets not starting at 0" do
+      csr = %{
+        row_offsets: [1, 2],
+        col_indices: [0],
+        weights: [1.0],
+        n_vertices: 1,
+        directed: true
+      }
+
+      assert_raise ArgumentError, ~r/row_offsets\[0\]/, fn ->
+        Grafi.NIF.validate_csr!(csr)
+      end
+    end
+
+    test "rejects non-monotonic row_offsets" do
+      csr = %{
+        row_offsets: [0, 2, 1],
+        col_indices: [0, 1],
+        weights: [1.0, 1.0],
+        n_vertices: 2,
+        directed: true
+      }
+
+      assert_raise ArgumentError, ~r/monotonically/, fn ->
+        Grafi.NIF.validate_csr!(csr)
+      end
+    end
+
+    test "rejects out-of-bounds col_indices" do
+      csr = %{
+        row_offsets: [0, 1],
+        col_indices: [5],
+        weights: [1.0],
+        n_vertices: 1,
+        directed: true
+      }
+
+      assert_raise ArgumentError, ~r/out of bounds/, fn ->
+        Grafi.NIF.validate_csr!(csr)
+      end
+    end
+
+    test "rejects last offset != length(col_indices)" do
+      csr = %{
+        row_offsets: [0, 1],
+        col_indices: [0, 0],
+        weights: [1.0, 1.0],
+        n_vertices: 1,
+        directed: true
+      }
+
+      assert_raise ArgumentError, ~r/last row_offset/, fn ->
+        Grafi.NIF.validate_csr!(csr)
+      end
+    end
+  end
+
+  describe "DAG add_edge with auto-inserted vertices" do
+    test "cycle detected even when vertices are inserted by add_edge" do
+      # First edge auto-inserts both :a and :b; then :b -> :a should raise
+      dag = Grafi.DAG.new() |> Grafi.DAG.add_edge(:a, :b)
+
+      assert_raise Grafi.CycleError, fn ->
+        Grafi.DAG.add_edge(dag, :b, :a)
+      end
+    end
+  end
 end

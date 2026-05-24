@@ -91,5 +91,42 @@ defmodule Grafi.SerializeTest do
       assert json =~ "b"
       assert json =~ "5.0"
     end
+
+    test "from_json with invalid JSON returns :malformed_json" do
+      assert Grafi.from_json("{not json") == {:error, :malformed_json}
+    end
+
+    test "from_json missing keys returns :malformed_json" do
+      assert Grafi.from_json(~s({"type": "directed"})) == {:error, :malformed_json}
+      assert Grafi.from_json(~s({"vertices": [], "edges": []})) == {:error, :malformed_json}
+    end
+
+    test "from_json with wrong-typed fields returns :malformed_json" do
+      assert Grafi.from_json(~s({"type": "directed", "vertices": "x", "edges": []})) ==
+               {:error, :malformed_json}
+    end
+  end
+
+  describe "DOT escaping" do
+    test "vertex names with quotes are escaped" do
+      g = Grafi.new() |> Grafi.add_edge("a\"b", "c")
+      dot = Grafi.to_dot(g)
+      # The embedded double-quote should be escaped as a backslash-quote.
+      assert String.contains?(dot, "\"a\\\"b\"")
+    end
+
+    test "vertex names with backslashes are escaped" do
+      g = Grafi.new() |> Grafi.add_edge("a\\b", "c")
+      dot = Grafi.to_dot(g)
+      assert String.contains?(dot, "\"a\\\\b\"")
+    end
+
+    test "control characters in vertex names raise" do
+      g = Grafi.new() |> Grafi.add_edge("bad\x01name", "c")
+
+      assert_raise ArgumentError, ~r/control characters/, fn ->
+        Grafi.to_dot(g)
+      end
+    end
   end
 end

@@ -1,5 +1,19 @@
 defmodule Grafi.Edge do
-  @moduledoc "Represents a weighted, labelled edge between two vertices."
+  @moduledoc """
+  A weighted, labelled edge between two vertices.
+
+  ## Fields
+
+    * `:from`   — the source vertex id (any term)
+    * `:to`     — the destination vertex id (any term)
+    * `:weight` — numeric edge weight, defaults to `1.0`. Used by Dijkstra,
+                  A*, Bellman-Ford, PageRank-with-weights, etc.
+    * `:label`  — arbitrary user-defined term (any/nil). Carried through
+                  serialization and ignored by algorithms.
+
+  `Grafi.Graph` permits multi-edges, so multiple `%Edge{}` values may exist
+  between the same `(from, to)` pair.
+  """
 
   @type t :: %__MODULE__{
           from: any(),

@@ -9,14 +9,14 @@ defmodule Grafi.MixProject do
     [
       app: :grafi,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       compilers: [:elixir_make] ++ Mix.compilers(),
       deps: deps(),
       elixirc_paths: elixirc_paths(Mix.env()),
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        flags: [:unmatched_returns, :error_handling, :underspecs]
+        flags: [:unmatched_returns, :error_handling]
       ],
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",
@@ -59,7 +59,7 @@ defmodule Grafi.MixProject do
   defp package do
     [
       name: "grafi",
-      licenses: ["MIT"],
+      licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
       files: ~w(lib c_src Makefile checksum-*.exs .formatter.exs mix.exs README.md LICENSE)
     ]
@@ -70,7 +70,7 @@ defmodule Grafi.MixProject do
       main: "Grafi",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "CHANGELOG.md"],
+      extras: ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE"],
       groups_for_modules: [
         Core: [Grafi.Graph, Grafi.DAG, Grafi.Edge],
         Algorithms: [

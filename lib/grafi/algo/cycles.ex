@@ -1,5 +1,11 @@
 defmodule Grafi.Algo.Cycles do
-  @moduledoc "Cycle detection, SCC (Tarjan), and graph condensation."
+  @moduledoc """
+  Cycle detection, strongly connected components (Tarjan), connected
+  components, and graph condensation.
+
+  > For DAGs with build-time cycle prevention, use `Grafi.DAG` — it raises
+  > `Grafi.CycleError` on any edge that would close a cycle.
+  """
 
   alias Grafi.Graph
 

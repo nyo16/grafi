@@ -1,12 +1,18 @@
 defmodule Grafi.Algo.Community do
   @moduledoc """
-  Community detection algorithms powered by igraph.
+  Community detection algorithms.
 
-  These algorithms identify densely connected groups of vertices.
-  All dispatch to igraph NIFs — there is no pure Elixir fallback for
-  community detection as the algorithms are inherently complex.
+  ## Function map
 
-  If the NIF is unavailable, functions return `{:error, :nif_not_available}`.
+    * `louvain/1`               — **requires NIF** (igraph)
+    * `leiden/2`                — **requires NIF** (igraph)
+    * `label_propagation/1`     — **requires NIF** (igraph)
+    * `label_propagation_simple/2` — **pure Elixir**, always available; less
+      accurate but useful for small graphs or when the NIF is not installed.
+
+  NIF-backed functions return `{:ok, result}` on success or
+  `{:error, :nif_not_available}` when igraph isn't loaded. The pure-Elixir
+  fallback returns the result map directly.
   """
 
   alias Grafi.Graph
@@ -104,7 +110,7 @@ defmodule Grafi.Algo.Community do
   defp with_nif(g, fun) do
     if Grafi.NIF.available?() do
       {idx, csr} = Graph.to_csr(g)
-      Grafi.NIF.validate_csr!(csr)
+      _ = Grafi.NIF.validate_csr!(csr)
       rev = Map.new(idx, fn {v, i} -> {i, v} end)
       {:ok, fun.(idx, csr, rev)}
     else
