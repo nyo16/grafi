@@ -49,10 +49,7 @@ defmodule Grafi.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.1", only: [:test, :dev]},
-      {:benchee, "~> 1.3", only: :bench},
-
-      # Optional serialization
-      {:jason, "~> 1.4", optional: true}
+      {:benchee, "~> 1.3", only: :bench}
     ]
   end
 

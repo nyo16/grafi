@@ -105,6 +105,24 @@ defmodule Grafi.SerializeTest do
       assert Grafi.from_json(~s({"type": "directed", "vertices": "x", "edges": []})) ==
                {:error, :malformed_json}
     end
+
+    test "from_json preserves an explicit zero weight (not coerced to 1.0)" do
+      json =
+        ~s({"type":"directed","vertices":[{"id":"a"},{"id":"b"}],"edges":[{"from":"a","to":"b","weight":0}]})
+
+      g = Grafi.from_json(json)
+      [edge] = Graph.edges_between(g, "a", "b")
+      assert edge.weight == 0
+    end
+
+    test "from_json defaults weight to 1.0 when absent" do
+      json =
+        ~s({"type":"directed","vertices":[{"id":"a"},{"id":"b"}],"edges":[{"from":"a","to":"b"}]})
+
+      g = Grafi.from_json(json)
+      [edge] = Graph.edges_between(g, "a", "b")
+      assert edge.weight == 1.0
+    end
   end
 
   describe "DOT escaping" do

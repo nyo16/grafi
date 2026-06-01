@@ -188,6 +188,11 @@ defmodule Grafi.Algo.Centrality do
     end
   end
 
+  # Uses Wasserman–Faust normalization: each vertex's closeness is
+  # (reachable - 1) / sum_of_distances_to_reachable, i.e. normalized by the
+  # size of its *reachable* set rather than n - 1. This differs from
+  # NetworkX's default (which scales by (reachable-1)/(n-1)); it is the more
+  # meaningful variant on disconnected graphs.
   defp closeness_elixir(g) do
     n = Graph.num_vertices(g)
 

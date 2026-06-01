@@ -124,7 +124,7 @@ defmodule Grafi.Algo.MaxFlowTest do
     end
 
     test "min_cut value = 23" do
-      assert %{cut_value: 23} = MaxFlow.min_cut(clrs_network(), :s, :t)
+      assert {:ok, %{cut_value: 23}} = MaxFlow.min_cut(clrs_network(), :s, :t)
     end
   end
 
@@ -197,19 +197,20 @@ defmodule Grafi.Algo.MaxFlowTest do
     test "max-flow min-cut equality on classic 4-vertex" do
       g = classic_4()
       {:ok, %{flow: max_flow}} = MaxFlow.edmonds_karp(g, :s, :t)
-      assert %{cut_value: cv} = MaxFlow.min_cut(g, :s, :t)
+      assert {:ok, %{cut_value: cv}} = MaxFlow.min_cut(g, :s, :t)
       assert cv == max_flow
     end
 
     test "partition covers all vertices and cut edges are cross edges" do
       g = clrs_network()
 
-      %{
-        cut_value: cv,
-        source_side: src,
-        sink_side: snk,
-        cut_edges: edges
-      } = MaxFlow.min_cut(g, :s, :t)
+      {:ok,
+       %{
+         cut_value: cv,
+         source_side: src,
+         sink_side: snk,
+         cut_edges: edges
+       }} = MaxFlow.min_cut(g, :s, :t)
 
       all = MapSet.new(Graph.vertices(g))
       assert MapSet.union(src, snk) == all
@@ -229,14 +230,14 @@ defmodule Grafi.Algo.MaxFlowTest do
 
     test ":algo option chooses backend" do
       g = clrs_network()
-      assert %{cut_value: 23} = MaxFlow.min_cut(g, :s, :t, algo: :edmonds_karp)
-      assert %{cut_value: 23} = MaxFlow.min_cut(g, :s, :t, algo: :dinic)
+      assert {:ok, %{cut_value: 23}} = MaxFlow.min_cut(g, :s, :t, algo: :edmonds_karp)
+      assert {:ok, %{cut_value: 23}} = MaxFlow.min_cut(g, :s, :t, algo: :dinic)
     end
 
     test "disconnected: cut value 0, no cut edges" do
       g = Graph.new() |> Graph.add_vertices([:s, :t])
 
-      assert %{cut_value: 0, cut_edges: [], source_side: src, sink_side: snk} =
+      assert {:ok, %{cut_value: 0, cut_edges: [], source_side: src, sink_side: snk}} =
                MaxFlow.min_cut(g, :s, :t)
 
       assert MapSet.member?(src, :s)
@@ -246,7 +247,7 @@ defmodule Grafi.Algo.MaxFlowTest do
     test "source = sink: source_side = {source}, value = 0" do
       g = Graph.new() |> Graph.add_edges([{:a, :b, weight: 5}])
 
-      assert %{cut_value: 0, source_side: src, cut_edges: []} =
+      assert {:ok, %{cut_value: 0, source_side: src, cut_edges: []}} =
                MaxFlow.min_cut(g, :a, :a)
 
       assert MapSet.member?(src, :a)
@@ -357,7 +358,7 @@ defmodule Grafi.Algo.MaxFlowTest do
 
         {:ok, %{flow: max_flow}} = MaxFlow.dinic(g, source, sink)
 
-        %{cut_value: cv, cut_edges: edges, source_side: src, sink_side: snk} =
+        {:ok, %{cut_value: cv, cut_edges: edges, source_side: src, sink_side: snk}} =
           MaxFlow.min_cut(g, source, sink)
 
         assert cv == max_flow

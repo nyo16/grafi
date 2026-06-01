@@ -166,4 +166,17 @@ defmodule Grafi.Serialize.GEXFTest do
       assert Graph.label(g2, "a") == "Hello & World"
     end
   end
+
+  describe "from_gexf/2 :max_bytes" do
+    test "rejects input larger than the limit before parsing" do
+      xml = GEXF.to_gexf(Graph.new() |> Graph.add_edge(:a, :b))
+      assert {:error, :input_too_large} = GEXF.from_gexf(xml, max_bytes: 10)
+    end
+
+    test "accepts input within the limit" do
+      xml = GEXF.to_gexf(Graph.new() |> Graph.add_edge(:a, :b))
+      g = GEXF.from_gexf(xml, max_bytes: byte_size(xml))
+      assert Graph.has_edge?(g, "a", "b")
+    end
+  end
 end

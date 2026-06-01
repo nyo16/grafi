@@ -18,6 +18,20 @@ defmodule Grafi do
   - **Graceful fallback** — if igraph is not installed, every algorithm
     has a pure Elixir implementation (except community detection).
 
+  ## Return-value conventions
+
+  Two families of functions behave differently when the NIF is absent, by
+  design:
+
+    * **Algorithms with a pure-Elixir fallback** (shortest path, centrality,
+      cycles, traversal, …) return their result directly and silently fall
+      back to Elixir — you never see a NIF-availability error.
+    * **NIF-only algorithms** (`Grafi.Algo.Community.louvain/1`, `leiden/2`,
+      `label_propagation/1`) return `{:ok, result}` or
+      `{:error, :nif_not_available}`. Use `Grafi.nif_available?/0` to check
+      up front, or `Grafi.Algo.Community.label_propagation_simple/2` for a
+      pure-Elixir alternative.
+
   ## Quick start
 
       # Build a graph
@@ -56,6 +70,16 @@ defmodule Grafi do
   """
 
   alias Grafi.Graph
+
+  @doc """
+  Returns `true` if the igraph NIF engine is loaded and available.
+
+  When `false`, NIF-only algorithms (e.g. `Grafi.Algo.Community.louvain/1`)
+  return `{:error, :nif_not_available}`; algorithms with a pure-Elixir
+  fallback are unaffected.
+  """
+  @spec nif_available?() :: boolean()
+  defdelegate nif_available?(), to: Grafi.NIF, as: :available?
 
   # ── Construction (delegated) ──────────────────────────────────────────
 
@@ -299,7 +323,7 @@ defmodule Grafi do
   def to_dot(g, opts \\ []),
     do: Grafi.Serialize.DOT.to_dot(g, opts)
 
-  @doc "Export to JSON (requires `:jason`)."
+  @doc "Export to JSON (uses the built-in `JSON` module)."
   def to_json(g),
     do: Grafi.Serialize.JSON.to_json(g)
 

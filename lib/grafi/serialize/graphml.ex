@@ -114,10 +114,17 @@ defmodule Grafi.Serialize.GraphML do
 
   Returns the graph on success or `{:error, reason}` on parse failure.
   Vertex ids round-trip as strings (XML has no atom or integer types).
+
+  ## Options
+    * `:max_bytes` — reject input larger than this many bytes with
+      `{:error, :input_too_large}` before parsing. Defaults to `:infinity`
+      (no limit). Set this when decoding untrusted input to bound the work
+      the regex-based parser will do.
   """
   @spec from_graphml(String.t(), keyword()) :: Graph.t() | {:error, term()}
-  def from_graphml(xml, _opts \\ []) when is_binary(xml) do
-    with {:ok, type} <- detect_edge_default(xml),
+  def from_graphml(xml, opts \\ []) when is_binary(xml) do
+    with :ok <- check_size(xml, Keyword.get(opts, :max_bytes, :infinity)),
+         {:ok, type} <- detect_edge_default(xml),
          {:ok, nodes} <- extract_nodes(xml),
          {:ok, edges} <- extract_edges(xml) do
       g = Graph.new(type: type)
@@ -139,6 +146,12 @@ defmodule Grafi.Serialize.GraphML do
   end
 
   # ── Parsing helpers ──────────────────────────────────────────────────
+
+  defp check_size(_xml, :infinity), do: :ok
+
+  defp check_size(xml, max) when is_integer(max) do
+    if byte_size(xml) > max, do: {:error, :input_too_large}, else: :ok
+  end
 
   defp detect_edge_default(xml) do
     case Regex.run(~r/<graph\b[^>]*\bedgedefault\s*=\s*(["'])(directed|undirected)\1/, xml) do
