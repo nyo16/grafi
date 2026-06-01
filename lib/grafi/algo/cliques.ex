@@ -26,6 +26,12 @@ defmodule Grafi.Algo.Cliques do
 
   Returns a list of `MapSet`s. Order of the result is unspecified.
 
+  ## Options
+    * `:max_results` — stop after this many maximal cliques have been found
+      and return them. Defaults to `:infinity` (enumerate all). Because
+      enumeration is worst-case exponential, set this when running on
+      untrusted or large dense graphs to bound the work.
+
   ## Examples
 
       iex> g = Grafi.Graph.new(type: :undirected)
@@ -36,8 +42,9 @@ defmodule Grafi.Algo.Cliques do
       iex> MapSet.equal?(hd(cliques), MapSet.new([:a, :b, :c]))
       true
   """
-  @spec maximal_cliques(Graph.t()) :: [MapSet.t()]
-  def maximal_cliques(%Graph{} = g) do
+  @spec maximal_cliques(Graph.t(), keyword()) :: [MapSet.t()]
+  def maximal_cliques(%Graph{} = g, opts \\ []) do
+    max = Keyword.get(opts, :max_results, :infinity)
     vs = Graph.vertices(g)
 
     if vs == [] do
@@ -45,13 +52,14 @@ defmodule Grafi.Algo.Cliques do
     else
       adj = build_adj(g, vs)
 
-      bron_kerbosch(
-        MapSet.new(),
-        MapSet.new(vs),
-        MapSet.new(),
-        adj,
-        []
-      )
+      # bron_kerbosch throws once `max` cliques are collected; catch unwinds
+      # the recursion and returns what we have. With the default :infinity the
+      # limit check is skipped entirely, so there is no overhead.
+      try do
+        bron_kerbosch(MapSet.new(), MapSet.new(vs), MapSet.new(), adj, [], max)
+      catch
+        {:max_results, acc} -> acc
+      end
     end
   end
 
@@ -97,15 +105,17 @@ defmodule Grafi.Algo.Cliques do
 
   # Bron–Kerbosch with pivot (Tomita-style choice: pivot maximizes
   # |P ∩ N(u)| to minimize the branching factor).
-  defp bron_kerbosch(r, p, x, adj, acc) do
+  defp bron_kerbosch(r, p, x, adj, acc, max) do
     if MapSet.size(p) == 0 and MapSet.size(x) == 0 do
-      [r | acc]
+      acc = [r | acc]
+      if max != :infinity and length(acc) >= max, do: throw({:max_results, acc})
+      acc
     else
-      do_bk(r, p, x, adj, acc)
+      do_bk(r, p, x, adj, acc, max)
     end
   end
 
-  defp do_bk(r, p, x, adj, acc) do
+  defp do_bk(r, p, x, adj, acc, max) do
     pivot = choose_pivot(p, x, adj)
     pivot_neighbors = Map.fetch!(adj, pivot)
     candidates = MapSet.difference(p, pivot_neighbors)
@@ -120,7 +130,8 @@ defmodule Grafi.Algo.Cliques do
             MapSet.intersection(p_cur, nv),
             MapSet.intersection(x_cur, nv),
             adj,
-            acc_cur
+            acc_cur,
+            max
           )
 
         {MapSet.delete(p_cur, v), MapSet.put(x_cur, v), acc_cur}

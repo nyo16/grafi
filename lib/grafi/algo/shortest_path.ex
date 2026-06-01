@@ -120,8 +120,8 @@ defmodule Grafi.Algo.ShortestPath do
         {:error, :no_such_vertex}
 
       true ->
-        heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source, [source]})
-        do_astar(g, target, h, heap, MapSet.new())
+        heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source})
+        do_astar(g, target, h, heap, %{source => 0.0}, %{}, MapSet.new())
     end
   end
 
@@ -177,33 +177,51 @@ defmodule Grafi.Algo.ShortestPath do
     end
   end
 
-  defp do_astar(g, target, h, heap, closed) do
+  # The heap holds only {f_score, g_score, vertex}; the path is reconstructed
+  # at the end from `came_from`. Storing the full path in every heap entry
+  # would cost O(|frontier| · path_length) memory, unbounded on large graphs.
+  defp do_astar(g, target, h, heap, g_score, came_from, closed) do
     case MinHeap.pop(heap) do
       :empty ->
         :no_path
 
-      {:ok, {_, gc, cur, path}, rest_heap} ->
+      {:ok, {_, gc, cur}, rest_heap} ->
         cond do
           cur == target ->
-            {:ok, {Enum.reverse(path), gc}}
+            {:ok, {rebuild_came_from(came_from, cur, [cur]), gc}}
 
           MapSet.member?(closed, cur) ->
-            do_astar(g, target, h, rest_heap, closed)
+            do_astar(g, target, h, rest_heap, g_score, came_from, closed)
 
           true ->
             closed = MapSet.put(closed, cur)
 
-            new_heap =
+            {new_heap, g_score, came_from} =
               Graph.out_neighbors(g, cur)
               |> Enum.reject(&MapSet.member?(closed, &1))
-              |> Enum.reduce(rest_heap, fn n, heap_acc ->
+              |> Enum.reduce({rest_heap, g_score, came_from}, fn n, {heap_acc, gs, cf} ->
                 w = Graph.edges_between(g, cur, n) |> Enum.map(& &1.weight) |> Enum.min()
                 ng = gc + w
-                MinHeap.insert(heap_acc, {ng + h.(n), ng, n, [n | path]})
+
+                if ng < Map.get(gs, n, :infinity) do
+                  {MinHeap.insert(heap_acc, {ng + h.(n), ng, n}), Map.put(gs, n, ng),
+                   Map.put(cf, n, cur)}
+                else
+                  {heap_acc, gs, cf}
+                end
               end)
 
-            do_astar(g, target, h, new_heap, closed)
+            do_astar(g, target, h, new_heap, g_score, came_from, closed)
         end
+    end
+  end
+
+  # Walk parent pointers from the target back to the source (which has no
+  # came_from entry), producing the path in source-to-target order.
+  defp rebuild_came_from(came_from, cur, acc) do
+    case Map.get(came_from, cur) do
+      nil -> acc
+      parent -> rebuild_came_from(came_from, parent, [parent | acc])
     end
   end
 

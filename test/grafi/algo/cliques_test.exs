@@ -158,15 +158,8 @@ defmodule Grafi.Algo.CliquesTest do
     property "all pairs inside a reported clique are adjacent" do
       check all(
               vs <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
-              edge_count <- integer(0..15)
+              edges <- list_of({member_of(vs), member_of(vs)}, max_length: 15)
             ) do
-        edges =
-          if edge_count > 0 do
-            for _ <- 1..edge_count, do: {Enum.random(vs), Enum.random(vs)}
-          else
-            []
-          end
-
         g =
           Graph.new(type: :undirected)
           |> Graph.add_vertices(vs)
@@ -182,6 +175,31 @@ defmodule Grafi.Algo.CliquesTest do
           end
         end
       end
+    end
+  end
+
+  describe "maximal_cliques/2 :max_results" do
+    test "caps the number of cliques returned" do
+      # 4 disconnected vertices => 4 singleton maximal cliques.
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_vertex(:a)
+        |> Graph.add_vertex(:b)
+        |> Graph.add_vertex(:c)
+        |> Graph.add_vertex(:d)
+
+      assert length(Cliques.maximal_cliques(g, max_results: 2)) == 2
+      assert length(Cliques.maximal_cliques(g, max_results: :infinity)) == 4
+    end
+
+    test "returned entries are still valid maximal cliques" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:x, :y}, {:y, :z}, {:z, :x}])
+
+      capped = Cliques.maximal_cliques(g, max_results: 1)
+      assert length(capped) == 1
+      assert Enum.all?(capped, &is_struct(&1, MapSet))
     end
   end
 end

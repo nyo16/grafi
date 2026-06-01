@@ -286,6 +286,10 @@ defmodule Grafi.Algo.Matching do
         if i == 0, do: acc, else: Map.put(acc, i, j)
       end)
 
+    # Tuple-of-tuples of the original (unpadded) costs for O(1) lookup while
+    # trimming — avoids an O(n²) Enum.at/Enum.at per assigned row.
+    orig_costs = cost_matrix |> Enum.map(&List.to_tuple/1) |> List.to_tuple()
+
     # Trim to original row count and mask padding columns as nil.
     {assignment, cost_sum, unmatched} =
       Enum.reduce(0..(n_rows - 1), {[], 0, []}, fn i, {as, sum, un} ->
@@ -295,7 +299,7 @@ defmodule Grafi.Algo.Matching do
         if j < 0 or j >= n_cols do
           {[nil | as], sum, [i | un]}
         else
-          orig = cost_matrix |> Enum.at(i) |> Enum.at(j)
+          orig = orig_costs |> elem(i) |> elem(j)
           {[j | as], sum + orig, un}
         end
       end)
@@ -537,6 +541,11 @@ defmodule Grafi.Algo.Matching do
 
         {:ok, %{assignment: assignment}} = hungarian(cost_matrix, maximize: maximize?)
 
+        # Tuples for O(1) indexed access inside the reduce below.
+        lefts_t = List.to_tuple(lefts)
+        rights_t = List.to_tuple(rights)
+        costs_t = cost_matrix |> Enum.map(&List.to_tuple/1) |> List.to_tuple()
+
         {matching, weight} =
           assignment
           |> Enum.with_index()
@@ -545,9 +554,9 @@ defmodule Grafi.Algo.Matching do
               acc
 
             {j, i}, {m, w} ->
-              l = Enum.at(lefts, i)
-              r = Enum.at(rights, j)
-              wt = cost_matrix |> Enum.at(i) |> Enum.at(j)
+              l = elem(lefts_t, i)
+              r = elem(rights_t, j)
+              wt = costs_t |> elem(i) |> elem(j)
 
               if wt == sentinel do
                 {m, w}

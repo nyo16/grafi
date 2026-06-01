@@ -195,6 +195,7 @@ defmodule Grafi.Algo.Isomorphism do
 
     case Grafi.NIF.nif_isomorphic_vf2(csr1, csr2) do
       {:ok, iso} -> iso
+      {:error, _reason} -> elixir_isomorphic?(g1, g2)
     end
   end
 
@@ -206,6 +207,7 @@ defmodule Grafi.Algo.Isomorphism do
 
     case Grafi.NIF.nif_subisomorphic_vf2(csr_g, csr_p) do
       {:ok, iso} -> iso
+      {:error, _reason} -> elixir_subgraph_isomorphic?(graph, pattern)
     end
   end
 
@@ -229,6 +231,9 @@ defmodule Grafi.Algo.Isomorphism do
 
       {:error, :no_isomorphism} ->
         :no_isomorphism
+
+      {:error, _reason} ->
+        elixir_isomorphism(g1, g2)
     end
   end
 
@@ -262,6 +267,9 @@ defmodule Grafi.Algo.Isomorphism do
 
       {:error, :no_isomorphism} ->
         :no_isomorphism
+
+      {:error, _reason} ->
+        elixir_subgraph_isomorphism(graph, pattern)
     end
   end
 
@@ -273,6 +281,7 @@ defmodule Grafi.Algo.Isomorphism do
 
     case Grafi.NIF.nif_count_subisomorphisms_vf2(csr_g, csr_p) do
       {:ok, n} -> n
+      {:error, _reason} -> elixir_count_subgraph_isomorphisms(graph, pattern)
     end
   end
 

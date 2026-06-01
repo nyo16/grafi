@@ -18,35 +18,49 @@ defmodule Grafi.Algo.MSTTest do
 
   defp edge_set(edges), do: edges |> Enum.map(&edge_key/1) |> MapSet.new()
 
-  # Build a random connected undirected graph on n vertices using
-  # :rand seeded explicitly. We grow a spanning tree first to guarantee
-  # connectivity, then sprinkle in extra random edges.
+  # Build a random connected undirected graph on n vertices. The RNG state is
+  # threaded explicitly via :rand.uniform_s/2 (seeded with :rand.seed_s/2)
+  # rather than the process-global :rand.seed/2 — the latter mutates shared
+  # state and is unsafe under `async: true`. We grow a spanning tree first to
+  # guarantee connectivity, then sprinkle in extra random edges.
   defp random_connected_graph(n, extra, seed) when n > 0 do
-    :rand.seed(:exsss, {seed, seed + 1, seed + 2})
+    rng = :rand.seed_s(:exsss, {seed, seed + 1, seed + 2})
     verts = Enum.to_list(0..(n - 1))
 
     g0 = Graph.new(type: :undirected) |> Graph.add_vertices(verts)
 
     # Spanning tree: connect each new vertex to a random earlier one.
-    g_tree =
-      Enum.reduce(1..(n - 1)//1, g0, fn i, acc ->
-        parent = :rand.uniform(i) - 1
-        w = :rand.uniform(100) / 1
-        Graph.add_edge(acc, parent, i, weight: w)
+    {g_tree, rng} =
+      Enum.reduce(1..(n - 1)//1, {g0, rng}, fn i, {acc, r} ->
+        {p, r} = rand_int(r, i)
+        parent = p - 1
+        {w, r} = rand_int(r, 100)
+        {Graph.add_edge(acc, parent, i, weight: w / 1), r}
       end)
 
     # Extra random edges.
-    Enum.reduce(1..extra//1, g_tree, fn _, acc ->
-      u = :rand.uniform(n) - 1
-      v = :rand.uniform(n) - 1
+    {g, _rng} =
+      Enum.reduce(1..extra//1, {g_tree, rng}, fn _, {acc, r} ->
+        {u1, r} = rand_int(r, n)
+        {v1, r} = rand_int(r, n)
+        u = u1 - 1
+        v = v1 - 1
 
-      if u == v do
-        acc
-      else
-        w = :rand.uniform(100) / 1
-        Graph.add_edge(acc, u, v, weight: w)
-      end
-    end)
+        if u == v do
+          {acc, r}
+        else
+          {w, r} = rand_int(r, 100)
+          {Graph.add_edge(acc, u, v, weight: w / 1), r}
+        end
+      end)
+
+    g
+  end
+
+  # Draw an integer in 1..max, returning the value and the next RNG state.
+  defp rand_int(rng, max) do
+    {f, rng} = :rand.uniform_s(rng)
+    {trunc(f * max) + 1, rng}
   end
 
   defp has_cycle?(edges, n_verts) do

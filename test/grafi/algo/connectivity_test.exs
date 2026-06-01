@@ -352,22 +352,9 @@ defmodule Grafi.Algo.ConnectivityTest do
   defp random_undirected_graph do
     gen all(
           verts <- uniq_list_of(integer(1..200), min_length: 2, max_length: 12),
-          edge_count <- integer(0..25)
+          edges <- list_of({member_of(verts), member_of(verts)}, max_length: 25)
         ) do
-      g = Graph.new(type: :undirected) |> Graph.add_vertices(verts)
-
-      edges =
-        if edge_count > 0 do
-          for _ <- 1..edge_count do
-            a = Enum.random(verts)
-            b = Enum.random(verts)
-            {a, b}
-          end
-        else
-          []
-        end
-
-      Graph.add_edges(g, edges)
+      Graph.new(type: :undirected) |> Graph.add_vertices(verts) |> Graph.add_edges(edges)
     end
   end
 

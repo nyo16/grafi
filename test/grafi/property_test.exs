@@ -11,24 +11,15 @@ defmodule Grafi.PropertyTest do
     end
   end
 
-  # Generator for a graph with random vertices and edges
+  # Generator for a graph with random vertices and edges. Edge endpoints are
+  # drawn with `member_of/1` (not `Enum.random/1`) so they stay under
+  # StreamData's control and counterexamples shrink reproducibly.
   defp random_graph do
     gen all(
           verts <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 15),
-          edge_count <- integer(0..30)
+          edges <- list_of({member_of(verts), member_of(verts)}, max_length: 30)
         ) do
-      g = Graph.new() |> Graph.add_vertices(verts)
-
-      edges =
-        if edge_count > 0 do
-          for _ <- 1..edge_count do
-            {Enum.random(verts), Enum.random(verts)}
-          end
-        else
-          []
-        end
-
-      Graph.add_edges(g, edges)
+      Graph.new() |> Graph.add_vertices(verts) |> Graph.add_edges(edges)
     end
   end
 

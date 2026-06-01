@@ -104,6 +104,35 @@ defmodule Grafi.AlgoTest do
     assert List.last(path) == :d
   end
 
+  test "A* returns the optimal path and cost (zero heuristic == Dijkstra)", %{g: g} do
+    # a->b->c->d = 1+2+1 = 4 beats a->c->d = 5+1 = 6.
+    assert {:ok, {[:a, :b, :c, :d], 4.0}} = Grafi.a_star(g, :a, :d, fn _ -> 0 end)
+    # Must agree with Dijkstra on the same graph.
+    assert Grafi.a_star(g, :a, :d, fn _ -> 0 end) == Grafi.shortest_path(g, :a, :d)
+  end
+
+  test "A* with an admissible heuristic still finds the optimal path", %{g: g} do
+    # An (arbitrary but admissible-here) heuristic must not change the result.
+    heur = fn
+      :a -> 3.0
+      :b -> 2.0
+      :c -> 1.0
+      :d -> 0.0
+    end
+
+    assert {:ok, {[:a, :b, :c, :d], 4.0}} = Grafi.a_star(g, :a, :d, heur)
+  end
+
+  test "A* returns :no_path when target is unreachable" do
+    g = Grafi.new() |> Grafi.add_vertices([:a, :b]) |> Grafi.add_edge(:a, :a)
+    assert Grafi.a_star(g, :a, :b, fn _ -> 0 end) == :no_path
+  end
+
+  test "A* trivial path from a vertex to itself", %{g: g} do
+    assert {:ok, {[:a], cost}} = Grafi.a_star(g, :a, :a, fn _ -> 0 end)
+    assert cost == 0.0
+  end
+
   # ── Stream D batch 6: extra centralities ────────────────────────────
 
   describe "extra centralities (HITS, Katz, eigenvector, harmonic)" do

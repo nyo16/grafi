@@ -32,7 +32,7 @@ defmodule Grafi.Algo.MaxFlow do
   is reported in the direction it was actually pushed.
 
   `min_cut/4` returns
-  `%{cut_value: number(), source_side: MapSet.t(), sink_side: MapSet.t(), cut_edges: [{u, v}]}`.
+  `{:ok, %{cut_value: number(), source_side: MapSet.t(), sink_side: MapSet.t(), cut_edges: [{u, v}]}}`.
   By the Max-Flow Min-Cut theorem, `cut_value` equals the maximum flow.
 
   ## Errors
@@ -108,7 +108,7 @@ defmodule Grafi.Algo.MaxFlow do
   the max-flow value.
 
   Returns
-  `%{cut_value: number(), source_side: MapSet.t(), sink_side: MapSet.t(), cut_edges: [{u, v}]}`,
+  `{:ok, %{cut_value: number(), source_side: MapSet.t(), sink_side: MapSet.t(), cut_edges: [{u, v}]}}`,
   or `{:error, :no_such_vertex}` / `{:error, :negative_capacity}`.
 
   ## Examples
@@ -117,17 +117,18 @@ defmodule Grafi.Algo.MaxFlow do
       ...>   {:s, :a, weight: 3}, {:s, :b, weight: 2},
       ...>   {:a, :b, weight: 2}, {:a, :t, weight: 2}, {:b, :t, weight: 3}
       ...> ])
-      iex> %{cut_value: v} = Grafi.Algo.MaxFlow.min_cut(g, :s, :t)
+      iex> {:ok, %{cut_value: v}} = Grafi.Algo.MaxFlow.min_cut(g, :s, :t)
       iex> v
       5
   """
   @spec min_cut(Graph.t(), any(), any(), keyword()) ::
-          %{
-            cut_value: number(),
-            source_side: MapSet.t(),
-            sink_side: MapSet.t(),
-            cut_edges: [{any(), any()}]
-          }
+          {:ok,
+           %{
+             cut_value: number(),
+             source_side: MapSet.t(),
+             sink_side: MapSet.t(),
+             cut_edges: [{any(), any()}]
+           }}
           | {:error, :no_such_vertex | :negative_capacity}
   def min_cut(%Graph{} = g, source, sink, opts \\ []) do
     algo = Keyword.get(opts, :algo, :dinic)
@@ -143,12 +144,13 @@ defmodule Grafi.Algo.MaxFlow do
       all_v = MapSet.new(Graph.vertices(g))
 
       if source == sink do
-        %{
-          cut_value: 0,
-          source_side: MapSet.new([source]),
-          sink_side: MapSet.delete(all_v, source),
-          cut_edges: []
-        }
+        {:ok,
+         %{
+           cut_value: 0,
+           source_side: MapSet.new([source]),
+           sink_side: MapSet.delete(all_v, source),
+           cut_edges: []
+         }}
       else
         caps = build_capacities(g)
         {residual, total} = run_full(caps, source, sink, run_fn)
@@ -156,12 +158,13 @@ defmodule Grafi.Algo.MaxFlow do
         sink_side = MapSet.difference(all_v, source_side)
         cut_edges = collect_cut_edges(caps, source_side, sink_side)
 
-        %{
-          cut_value: total,
-          source_side: source_side,
-          sink_side: sink_side,
-          cut_edges: cut_edges
-        }
+        {:ok,
+         %{
+           cut_value: total,
+           source_side: source_side,
+           sink_side: sink_side,
+           cut_edges: cut_edges
+         }}
       end
     end
   end

@@ -54,9 +54,12 @@ defmodule Grafi.Algo.Traversal do
   end
 
   @doc """
-  Returns the list of vertices reachable from `start` in DFS post-order
-  (children before parents). Useful for topological-sort-style traversals
-  and SCC algorithms.
+  Returns the vertices reachable from `start` in DFS **reverse post-order**:
+  a vertex always precedes its descendants, so for a DAG the result is a
+  topological ordering. This is the ordering consumed by topological-sort and
+  SCC (Kosaraju) algorithms.
+
+  For example, `a -> b -> c -> d` yields `[:a, :b, :c, :d]`.
   """
   @spec dfs_post(Graph.t(), any()) :: [any()]
   def dfs_post(%Graph{} = g, start) do

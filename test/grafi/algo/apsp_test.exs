@@ -298,25 +298,17 @@ defmodule Grafi.Algo.APSPTest do
 
   # ── Property test ────────────────────────────────────────────────────
 
+  # Endpoints and weights are drawn from StreamData generators (not
+  # Enum.random/:rand) so failures shrink reproducibly. Weight w/100 with
+  # w in 1..1001 gives a positive range of ~0.01..10.01.
   defp positive_weight_graph do
     gen all(
           verts <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
-          edge_count <- integer(0..20)
+          raw <-
+            list_of({member_of(verts), member_of(verts), integer(1..1001)}, max_length: 20)
         ) do
-      g = Grafi.new() |> Grafi.add_vertices(verts)
-
-      edges =
-        if edge_count > 0 do
-          for _ <- 1..edge_count do
-            u = Enum.random(verts)
-            v = Enum.random(verts)
-            {u, v, weight: :rand.uniform() * 10 + 0.01}
-          end
-        else
-          []
-        end
-
-      Grafi.add_edges(g, edges)
+      edges = Enum.map(raw, fn {u, v, w} -> {u, v, weight: w / 100} end)
+      Grafi.new() |> Grafi.add_vertices(verts) |> Grafi.add_edges(edges)
     end
   end
 

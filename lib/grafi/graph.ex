@@ -19,6 +19,11 @@ defmodule Grafi.Graph do
 
   alias Grafi.Edge
 
+  # A vertex id may be any term, but it MUST be a comparable Erlang term and
+  # used consistently: vertices are keyed in maps and, for undirected graphs,
+  # edge endpoints are canonicalised with Erlang term ordering (`f <= t`), so
+  # mixing incomparable id types in one graph gives surprising dedup results.
+  # Prefer a single id type per graph (all atoms, all integers, or all binaries).
   @type vertex_id :: any()
   @type t :: %__MODULE__{
           vertices: %{vertex_id() => true},
@@ -63,7 +68,7 @@ defmodule Grafi.Graph do
   def new(opts \\ []) do
     type = Keyword.get(opts, :type, :directed)
 
-    unless type in [:directed, :undirected],
+    if type not in [:directed, :undirected],
       do: raise(ArgumentError, "type must be :directed or :undirected")
 
     %__MODULE__{type: type}

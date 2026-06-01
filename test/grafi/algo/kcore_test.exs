@@ -134,15 +134,8 @@ defmodule Grafi.Algo.KCoreTest do
     property "every vertex's core number <= its degree" do
       check all(
               vs <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 10),
-              edge_count <- integer(0..20)
+              edges <- list_of({member_of(vs), member_of(vs)}, max_length: 20)
             ) do
-        edges =
-          if edge_count > 0 do
-            for _ <- 1..edge_count, do: {Enum.random(vs), Enum.random(vs)}
-          else
-            []
-          end
-
         g =
           Graph.new(type: :undirected)
           |> Graph.add_vertices(vs)

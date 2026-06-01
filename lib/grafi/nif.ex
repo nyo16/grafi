@@ -44,7 +44,11 @@ defmodule Grafi.NIF do
 
     true
   rescue
-    _ -> false
+    # The stub raises ErlangError (via :erlang.nif_error/1) only when the
+    # native library failed to load. Narrowed from a bare rescue so genuine
+    # bugs (e.g. a typo'd function) surface instead of masquerading as
+    # "NIF unavailable".
+    ErlangError -> false
   end
 
   @doc """

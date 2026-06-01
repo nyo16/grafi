@@ -1074,6 +1074,19 @@ static ERL_NIF_TERM nif_count_subisomorphisms_vf2(ErlNifEnv* env, int /*argc*/,
 // NIF registration
 // ═══════════════════════════════════════════════════════════════════════
 
+// Module load callback. igraph's default error handler calls abort(), which
+// would terminate the entire BEAM node before our igraph_error_t return value
+// ever reaches check_igraph(). Installing the non-aborting handler makes igraph
+// return error codes instead, so check_igraph() can throw and run_nif() can
+// turn the failure into an {:error, _} tuple (e.g. on IGRAPH_ENOMEM for a large
+// graph) rather than crashing the VM.
+static int grafi_nif_load(ErlNifEnv* /*env*/, void** /*priv_data*/,
+                          ERL_NIF_TERM /*load_info*/) {
+    igraph_set_error_handler(igraph_error_handler_ignore);
+    igraph_set_warning_handler(igraph_warning_handler_ignore);
+    return 0;
+}
+
 static ErlNifFunc nif_funcs[] = {
     {"nif_pagerank",           3, nif_pagerank,           ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_dijkstra",           3, nif_dijkstra,           ERL_NIF_DIRTY_JOB_CPU_BOUND},
@@ -1092,4 +1105,4 @@ static ErlNifFunc nif_funcs[] = {
     {"nif_count_subisomorphisms_vf2", 2, nif_count_subisomorphisms_vf2, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 };
 
-ERL_NIF_INIT(Elixir.Grafi.NIF, nif_funcs, NULL, NULL, NULL, NULL)
+ERL_NIF_INIT(Elixir.Grafi.NIF, nif_funcs, grafi_nif_load, NULL, NULL, NULL)

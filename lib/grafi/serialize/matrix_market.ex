@@ -238,7 +238,18 @@ defmodule Grafi.Serialize.MatrixMarket do
   defp encode_id(v) when is_float(v), do: "float:" <> Float.to_string(v)
   defp encode_id(v), do: percent_encode(inspect(v))
 
-  defp decode_id("atom:" <> rest), do: String.to_atom(percent_decode(rest))
+  # Use `to_existing_atom` so a malicious file cannot exhaust the atom table
+  # (atoms are never garbage-collected). Ids whose atom was never created in
+  # this VM degrade to their string form rather than minting a new atom.
+  defp decode_id("atom:" <> rest) do
+    decoded = percent_decode(rest)
+
+    try do
+      String.to_existing_atom(decoded)
+    rescue
+      ArgumentError -> decoded
+    end
+  end
 
   defp decode_id("int:" <> rest) do
     case Integer.parse(rest) do

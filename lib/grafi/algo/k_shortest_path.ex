@@ -97,8 +97,10 @@ defmodule Grafi.Algo.KShortestPath do
       {root_path, spur_node} = split_at_spur(prev_path, i)
 
       # Edges to forbid: the next-edge of every previously-found path that
-      # shares `root_path` as a prefix.
-      forbidden_edges = forbidden_for_root(results ++ enqueued_paths(acc, seen), root_path)
+      # shares `root_path` as a prefix. Yen's algorithm derives these solely
+      # from previously *yielded* paths (`results`), so no candidate-heap
+      # scan or list concatenation is needed here.
+      forbidden_edges = forbidden_for_root(results, root_path)
 
       # Vertices to forbid: all root-path vertices except the spur itself
       # (otherwise the spur Dijkstra cannot leave its starting node).
@@ -123,10 +125,6 @@ defmodule Grafi.Algo.KShortestPath do
       end
     end)
   end
-
-  # Yen's algorithm uses only *previously yielded* paths to derive
-  # forbidden edges. We don't need to look inside the candidates heap.
-  defp enqueued_paths(_candidates, _seen), do: []
 
   # path = [v0, v1, ..., vi, ..., vN].
   # Spur node is vi; root path is [v0..vi] (inclusive).

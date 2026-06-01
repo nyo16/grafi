@@ -10,7 +10,8 @@ defmodule Grafi.Serialize.JSON do
         "edges":    [{"from": <id>, "to": <id>, "weight": <number>, "label": <optional>}, ...]
       }
 
-  Requires the `:jason` dependency.
+  Uses Elixir's built-in `JSON` module (Elixir 1.18+) — no external JSON
+  dependency is required.
 
   Note: JSON has no atom type — atom vertex IDs round-trip as strings.
   """
@@ -18,8 +19,8 @@ defmodule Grafi.Serialize.JSON do
   alias Grafi.Graph
 
   @doc """
-  Encodes a graph as a pretty-printed JSON string using the schema in the
-  moduledoc. Vertex labels and edge labels are included only when present.
+  Encodes a graph as a JSON string using the schema in the moduledoc.
+  Vertex labels and edge labels are included only when present.
   """
   @spec to_json(Graph.t()) :: String.t()
   def to_json(%Graph{} = g) do
@@ -39,7 +40,7 @@ defmodule Grafi.Serialize.JSON do
         end)
     }
 
-    Jason.encode!(data, pretty: true)
+    JSON.encode!(data)
   end
 
   @doc """
@@ -52,7 +53,7 @@ defmodule Grafi.Serialize.JSON do
   """
   @spec from_json(String.t()) :: Graph.t() | {:error, :malformed_json}
   def from_json(json) when is_binary(json) do
-    with {:ok, data} <- Jason.decode(json),
+    with {:ok, data} <- JSON.decode(json),
          {:ok, type} <- decode_type(data),
          {:ok, vertices} <- fetch_list(data, "vertices"),
          {:ok, edges} <- fetch_list(data, "edges") do
@@ -96,7 +97,7 @@ defmodule Grafi.Serialize.JSON do
   defp reduce_edges(g, edges) do
     Enum.reduce_while(edges, {:ok, g}, fn
       %{"from" => from, "to" => to} = e, {:ok, acc} ->
-        weight = Map.get(e, "weight") || 1.0
+        weight = Map.get(e, "weight", 1.0)
         opts = [weight: weight]
         opts = if e["label"], do: Keyword.put(opts, :label, e["label"]), else: opts
         {:cont, {:ok, Graph.add_edge(acc, from, to, opts)}}
