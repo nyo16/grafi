@@ -8,6 +8,15 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+  # Dry run (build + smoke, no upload) on PRs that touch the native build.
+  pull_request:
+    branches: [main, master]
+    paths:
+      - c_src/**
+      - Makefile
+      - mix.exs
+      - mix.lock
+      - .github/workflows/release.yml
 
 permissions:
   contents: read
