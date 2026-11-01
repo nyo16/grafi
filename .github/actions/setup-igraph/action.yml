@@ -1,0 +1,57 @@
+name: Set up igraph
+description: >
+  Build igraph from its SHA-256-verified release tarball into ~/.igraph
+  (cached per runner image) and export IGRAPH_DIR for the grafi Makefile.
+  Linux only. Nothing is installed into system paths.
+
+inputs:
+  version:
+    description: igraph release version
+    required: true
+  sha256:
+    description: SHA-256 of igraph-<version>.tar.gz
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install igraph build dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake bison flex libxml2-dev libgmp-dev libglpk-dev pkg-config
+
+    # The runner image (and so its system libraries) is part of the key;
+    # ImageOS/ImageVersion are runner env vars, not in the `env` context.
+    - name: Compute the igraph cache key
+      id: key
+      shell: bash
+      run: echo "key=${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS}-${ImageVersion}-igraph-${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: cache
+      with:
+        path: ~/.igraph
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Build igraph
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        cd "$RUNNER_TEMP"
+        curl -fsSL -o igraph.tar.gz \
+          "https://github.com/igraph/igraph/releases/download/${{ inputs.version }}/igraph-${{ inputs.version }}.tar.gz"
+        echo "${{ inputs.sha256 }}  igraph.tar.gz" | sha256sum -c -
+        tar -xzf igraph.tar.gz
+        cmake -S "igraph-${{ inputs.version }}" -B igraph-build \
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF \
+          -DCMAKE_INSTALL_PREFIX="$HOME/.igraph" -DCMAKE_INSTALL_LIBDIR=lib
+        cmake --build igraph-build --parallel
+        cmake --install igraph-build
+
+    - name: Export IGRAPH_DIR
+      shell: bash
+      run: |
+        echo "IGRAPH_DIR=$HOME/.igraph" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$HOME/.igraph/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$HOME/.igraph/lib" >> "$GITHUB_ENV"

@@ -1,0 +1,167 @@
+name: Release
+
+# Builds the precompiled NIF for each target on a native runner, smoke-tests
+# it in a consumer app without igraph, and (on a v* tag, after the licence
+# sign-off) uploads it to the GitHub release. See RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IGRAPH_VERSION: "1.0.1"
+  IGRAPH_SHA256: "969f2d7d22f67e788d8638c9a8c96615f50d7819c08978b3ef4a787bb6daa96c"
+  # Artefacts are tagged with the build runtime's NIF version. OTP 26-28 is
+  # NIF 2.17 (mix.exs make_precompiler_nif_versions); OTP 29 loads it too.
+  OTP_VERSION: "28"
+  ELIXIR_VERSION: "1.19"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux artefacts are built on 22.04 so they load on glibc >= 2.35.
+          - runner: ubuntu-22.04
+            target: x86_64-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    env:
+      ELIXIR_MAKE_CACHE_DIR: ${{ github.workspace }}/elixir_make_cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      # Static, PIC, internal maths libraries, thread-local error handling
+      # (the NIF relies on it). GLPK and Infomap are off: they are the
+      # GPL-3.0 components of igraph 1.0.1 and grafi uses neither.
+      - name: Build static igraph
+        run: |
+          curl -fsSL -o igraph.tar.gz \
+            "https://github.com/igraph/igraph/releases/download/${IGRAPH_VERSION}/igraph-${IGRAPH_VERSION}.tar.gz"
+          echo "${IGRAPH_SHA256}  igraph.tar.gz" | shasum -a 256 -c -
+          tar -xzf igraph.tar.gz
+          cmake -S "igraph-${IGRAPH_VERSION}" -B igraph-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${RUNNER_TEMP}/igraph" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+            -DIGRAPH_GLPK_SUPPORT=OFF -DIGRAPH_GRAPHML_SUPPORT=OFF -DIGRAPH_OPENMP_SUPPORT=OFF \
+            -DIGRAPH_ENABLE_TLS=ON -DIGRAPH_INFOMAP_SUPPORT=OFF \
+            -DIGRAPH_USE_INTERNAL_BLAS=ON -DIGRAPH_USE_INTERNAL_LAPACK=ON \
+            -DIGRAPH_USE_INTERNAL_ARPACK=ON -DIGRAPH_USE_INTERNAL_GMP=ON \
+            -DIGRAPH_USE_INTERNAL_PLFIT=ON
+          cmake --build igraph-build --parallel
+          cmake --install igraph-build
+
+      - name: Precompile the NIF
+        env:
+          MIX_ENV: prod
+          IGRAPH_DIR: ${{ runner.temp }}/igraph
+          IGRAPH_STATIC: "1"
+          GRAFI_REQUIRE_NIF: "1"
+          CC_PRECOMPILER_PRECOMPILE_ONLY_LOCAL: "true"
+        run: |
+          mix deps.get
+          mix elixir_make.precompile
+          ls -la "$ELIXIR_MAKE_CACHE_DIR"
+
+      - name: Check the artefact exports only nif_init
+        run: |
+          mkdir -p artefact-check
+          tar -xzf "$ELIXIR_MAKE_CACHE_DIR"/grafi-nif-*.tar.gz -C artefact-check
+          so=artefact-check/grafi_nif.so
+          if [ "$(uname -s)" = Darwin ]; then
+            syms=$(nm -gU "$so"); otool -L "$so"
+          else
+            syms=$(nm -D --defined-only "$so"); ldd "$so" || true
+          fi
+          echo "$syms"
+          echo "$syms" | grep -q 'nif_init$' || { echo "nif_init is not exported" >&2; exit 1; }
+          if echo "$syms" | grep -q igraph; then echo "igraph symbols leak from the NIF" >&2; exit 1; fi
+
+      # A package-like copy (no .git, so no forced source build) consumed by a
+      # scratch app on a runner without igraph: elixir_make must take the
+      # artefact from the cache, verify its checksum and load it.
+      - name: Smoke-test the artefact in a consumer
+        run: |
+          src="${RUNNER_TEMP}/grafi_src"
+          mkdir -p "$src"
+          git archive HEAD | tar -x -C "$src"
+          {
+            echo "%{"
+            for f in "$ELIXIR_MAKE_CACHE_DIR"/*.tar.gz.sha256; do
+              read -r sum name < "$f"
+              echo "  \"$name\" => \"sha256:$sum\","
+            done
+            echo "}"
+          } > "$src/checksum.exs"
+          cat "$src/checksum.exs"
+          cd "$RUNNER_TEMP"
+          mix new consumer
+          cd consumer
+          cat > mix.exs <<EOF
+          defmodule Consumer.MixProject do
+            use Mix.Project
+            def project, do: [app: :consumer, version: "0.1.0", deps: [{:grafi, path: "$src"}]]
+            def application, do: [extra_applications: [:logger]]
+          end
+          EOF
+          mix deps.get
+          mix compile
+          mix run -e '
+            unless Grafi.NIF.available?(), do: Mix.raise("the precompiled NIF did not load")
+            g = Grafi.Generators.erdos_renyi(600, 0.01, seed: 1)
+            sum = g |> Grafi.Algo.Centrality.pagerank(engine: :nif) |> Map.values() |> Enum.sum()
+            if abs(sum - 1.0) > 1.0e-9, do: Mix.raise("pagerank sums to #{sum}")
+            IO.puts("precompiled NIF OK, pagerank sum #{sum}")
+          '
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nif-${{ matrix.target }}
+          path: |
+            ${{ env.ELIXIR_MAKE_CACHE_DIR }}/*.tar.gz
+            ${{ env.ELIXIR_MAKE_CACHE_DIR }}/*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Precompiled artefacts statically include igraph (GPL-2.0-or-later), so
+  # nothing is published until the licence review signs off (NOTICE,
+  # RELEASING.md) and sets the RELEASE_LICENSE_APPROVED repo variable.
+  upload:
+    name: Upload to the GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && vars.RELEASE_LICENSE_APPROVED == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: nif-*
+          path: artefacts
+          merge-multiple: true
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -la artefacts
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes "See CHANGELOG.md."
+          gh release upload "$TAG" artefacts/* --repo "$GITHUB_REPOSITORY" --clobber

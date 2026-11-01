@@ -2,8 +2,7 @@ defmodule Grafi.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  # TODO: Replace with your actual GitHub URL before publishing to Hex
-  @source_url "https://github.com/nmaroulis/grafi"
+  @source_url "https://github.com/nyo16/grafi"
 
   def project do
     [
@@ -20,8 +19,21 @@ defmodule Grafi.MixProject do
       ],
       # Floor for the merged three-engine-mode coverage in CI (86.9% when set).
       test_coverage: [summary: [threshold: 85]],
+      # A git checkout (contributors, CI, git deps) always compiles c_src;
+      # make's own dependencies decide what to rebuild. A Hex package has no
+      # .git, so consumers get the precompiled artefact. (Not `File.cwd!()`:
+      # Mix compiles a dependency from inside its own directory.) Consumers
+      # can force a source build with `config :elixir_make, :force_build, grafi: true`.
+      make_force_build: File.dir?(Path.join(__DIR__, ".git")),
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",
+      make_precompiler_filename: "grafi_nif",
+      make_precompiler_priv_paths: ["grafi_nif.*"],
+      # NIF 2.17 is OTP 26-28; OTP 29 (NIF 2.18) loads the 2.17 artefact via
+      # elixir_make's same-major fallback. Release builds must run on OTP 26-28.
+      make_precompiler_nif_versions: [versions: ["2.17"]],
+      make_env: fn -> %{"FINE_INCLUDE_DIR" => Fine.include_dir()} end,
+      cc_precompiler: cc_precompiler(),
       description: "High-performance graph library for Elixir — γραφή",
       package: package(),
       docs: docs(),
@@ -46,17 +58,44 @@ defmodule Grafi.MixProject do
 
   defp deps do
     [
-      # C++ NIF bridge (elixir-nx)
-      {:fine, "~> 0.1"},
-      {:elixir_make, "~> 0.8", runtime: false},
-      {:cc_precompiler, "~> 0.1", runtime: false, optional: true},
+      # C++ NIF bridge (elixir-nx); build-time only (headers).
+      {:fine, "~> 0.1.6", runtime: false},
+      {:elixir_make, "~> 0.10", runtime: false},
+      # Not optional: consumers need it to fetch artefacts or build from source.
+      {:cc_precompiler, "~> 0.1.11", runtime: false},
 
       # Dev / test
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:stream_data, "~> 1.1", only: [:test, :dev]},
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
+      {:stream_data, "~> 1.1", only: :test},
       {:benchee, "~> 1.3", only: :bench}
+    ]
+  end
+
+  # Precompiled targets, one native runner each in release.yml.
+  #
+  # `only_listed_targets` is on only while building release artefacts, so a
+  # runner never tries to cross-build the other macOS architecture. For
+  # consumers it stays off: on an unlisted target cc_precompiler then returns
+  # `:compile` (build from source, or pure Elixir without igraph) instead of
+  # `:ignore` (no NIF at all).
+  defp cc_precompiler do
+    [
+      only_listed_targets: System.get_env("CC_PRECOMPILER_PRECOMPILE_ONLY_LOCAL") == "true",
+      compilers: %{
+        {:unix, :linux} => %{
+          "x86_64-linux-gnu" => "x86_64-linux-gnu-",
+          "aarch64-linux-gnu" => "aarch64-linux-gnu-"
+        },
+        {:unix, :darwin} => %{
+          "x86_64-apple-darwin" =>
+            {"gcc", "g++", "<%= cc %> -arch x86_64", "<%= cxx %> -arch x86_64"},
+          "aarch64-apple-darwin" =>
+            {"gcc", "g++", "<%= cc %> -arch arm64", "<%= cxx %> -arch arm64"}
+        }
+      }
     ]
   end
 
@@ -65,7 +104,8 @@ defmodule Grafi.MixProject do
       name: "grafi",
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib c_src Makefile checksum-*.exs .formatter.exs mix.exs README.md LICENSE)
+      files:
+        ~w(lib c_src Makefile checksum.exs .formatter.exs mix.exs README.md LICENSE NOTICE CHANGELOG.md)
     ]
   end
 
@@ -74,21 +114,21 @@ defmodule Grafi.MixProject do
       main: "Grafi",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE"],
+      extras: ["README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE", "NOTICE"],
+      # Every public module must land in a group; check the "Modules" sidebar
+      # after `mix docs` when adding one.
       groups_for_modules: [
-        Core: [Grafi.Graph, Grafi.DAG, Grafi.Edge],
-        Algorithms: [
-          Grafi.Algo.Traversal,
-          Grafi.Algo.ShortestPath,
-          Grafi.Algo.Centrality,
-          Grafi.Algo.Community,
-          Grafi.Algo.Cycles
-        ],
-        Serialization: [
-          Grafi.Serialize.DOT,
-          Grafi.Serialize.JSON
-        ],
-        "NIF Engine": [Grafi.NIF]
+        Core: [Grafi, Grafi.Graph, Grafi.DAG, Grafi.Edge, Grafi.Generators, Grafi.UnionFind],
+        Algorithms: ~r/^Grafi\.Algo\./,
+        Serialization: ~r/^Grafi\.Serialize\./,
+        "Layout & Visualization": [Grafi.Layout, Grafi.Viz, Grafi.Kino],
+        "Native Engine & Errors": [
+          Grafi.NIF,
+          Grafi.NIFError,
+          Grafi.TimeoutError,
+          Grafi.CycleError,
+          Grafi.DisconnectedError
+        ]
       ]
     ]
   end

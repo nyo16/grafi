@@ -11,5 +11,8 @@ erl_crash.dump
 *.dylib
 *.dll
 /priv/grafi_nif.*
+/priv/.grafi_nif_skipped
+/priv/.igraph_version
 /bench/results/
 /priv/plts/
+/.expert/

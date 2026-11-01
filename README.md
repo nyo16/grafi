@@ -18,8 +18,9 @@ the etymological ancestor of the English word "graph." Returning the word to its
 - **igraph C++ NIFs** — PageRank (PRPACK), Dijkstra, betweenness, community detection
   dispatch to the battle-tested [igraph](https://igraph.org) C library via
   [fine](https://github.com/elixir-nx/fine) on dirty CPU schedulers
-- **Graceful fallback** — every NIF-accelerated algorithm has a pure Elixir
-  implementation that kicks in if igraph is not installed
+- **Graceful fallback** — without igraph, every algorithm except community
+  detection (Louvain, Leiden, label propagation) runs in pure Elixir;
+  those three return `{:error, :nif_not_available}`
 - **Serialization** — DOT, JSON, GraphML, GEXF, Pajek, edge-list,
   adjacency-list, Matrix Market, and Mermaid (with Livebook/Kino glue)
 - **Layout & viz** — Sugiyama DAG layout and a Graphviz shelling
@@ -80,30 +81,49 @@ def deps do
     {:grafi, "~> 0.1.0"}
 
     # Until then:
-    # {:grafi, git: "https://github.com/nmaroulis/grafi"}
+    # {:grafi, git: "https://github.com/nyo16/grafi"}
   ]
 end
 ```
 
-### Optional: igraph NIF acceleration
+### The igraph NIF (optional)
 
-For NIF-accelerated algorithms, install igraph system-wide:
+Grafi works without any native code. The NIF adds speed on large graphs and
+is required for community detection (Louvain, Leiden, label propagation).
+`mix compile` picks one of three paths:
+
+1. **Precompiled NIF** (from the first Hex release, once the licence review
+   in [RELEASING.md](https://github.com/nyo16/grafi/blob/master/RELEASING.md) is signed off): downloaded and
+   checksum-verified for x86_64/aarch64 Linux (glibc >= 2.35) and
+   x86_64/aarch64 macOS on OTP 26-29. It has igraph built in; nothing else
+   to install. See [Third-party licenses](#third-party-licenses).
+2. **Built from source** on other targets, for `git:`/`path:` deps, or when
+   you force it with `config :elixir_make, :force_build, grafi: true`. This
+   needs igraph >= 1.0 and a C++17 compiler.
+3. **Pure Elixir** when neither is possible. The build prints
+   `grafi: igraph >= 1.0 not found; building without NIF (pure Elixir)` and
+   succeeds.
+
+Installing igraph >= 1.0 for source builds:
 
 ```bash
 # macOS
 brew install igraph
 
-# Ubuntu / Debian
-sudo apt install libigraph-dev
-
-# From source
-git clone https://github.com/igraph/igraph.git
-cd igraph && mkdir build && cd build
-cmake .. && make && sudo make install
+# Linux: build the 1.0.1 release (distro packages such as Ubuntu's
+# libigraph-dev are often 0.10, which is not supported)
+curl -LO https://github.com/igraph/igraph/releases/download/1.0.1/igraph-1.0.1.tar.gz
+tar xzf igraph-1.0.1.tar.gz && cd igraph-1.0.1
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+cmake --build build --parallel && sudo cmake --install build
 ```
 
-The NIF compiles automatically during `mix compile`. If igraph is not found,
-Grafi falls back to pure Elixir — no build errors.
+Build knobs (environment variables at `mix compile` time):
+
+| Variable | Effect |
+|---|---|
+| `IGRAPH_DIR=/prefix` | Use only this igraph install (`include/`, `lib/`) |
+| `GRAFI_REQUIRE_NIF=1` | Fail the build instead of falling back to pure Elixir |
 
 ## Quick start
 
@@ -193,27 +213,24 @@ to **CSR (Compressed Sparse Row)** — a compact two-array adjacency
 representation (`row_offsets` + `col_indices`) that igraph consumes
 directly without re-copying — and handed to the NIF.
 
-The threshold is configurable at runtime:
+The threshold and the other runtime settings live in the `:grafi`
+application environment; set them in your app's config:
 
 ```elixir
-# In runtime.exs, or anywhere during boot:
-Application.put_env(:grafi, :nif_threshold, 1_000)
-
-# Or via env var (read by config/runtime.exs):
-# GRAFI_NIF_THRESHOLD=1000
+# config/config.exs or config/runtime.exs of your application
+config :grafi,
+  nif_threshold: 1_000,     # :auto uses the NIF above this many vertices
+  nif_enabled: true,        # false forces pure Elixir everywhere
+  vf2_timeout: :infinity    # isomorphism budget in ms; set finite for untrusted input
 ```
 
-You can also disable NIF dispatch entirely (forces pure-Elixir paths
-on every algorithm) with `GRAFI_NIF_ENABLED=false`, which is what CI
-uses to exercise the fallback codepath.
+Every NIF-capable function also takes `engine: :auto | :nif | :elixir` per
+call. Isomorphism searches are unbounded by default: `vf2_timeout` caps every
+VF2 search that has no explicit `:timeout`.
 
-Isomorphism searches are unbounded by default. Set
-`config :grafi, vf2_timeout: 5_000` (milliseconds) to cap every VF2 search
-that has no explicit `:timeout`; use a finite value for untrusted input.
-
-All NIFs are registered as `ERL_NIF_DIRTY_JOB_CPU_BOUND`, so even
-multi-second runs (e.g. Louvain on a 100k-vertex graph) execute on a
-dirty CPU scheduler and never stall the BEAM's normal schedulers.
+Every NIF except the O(1) load probe runs on a dirty CPU scheduler
+(`ERL_NIF_DIRTY_JOB_CPU_BOUND`), so even multi-second runs (e.g. Louvain on
+a 100k-vertex graph) never stall the BEAM's normal schedulers.
 
 ## Benchmarks
 
@@ -247,7 +264,7 @@ results will vary with graph topology, edge count, and hardware.
 | DAG type | ❌ | ✅ with cycle prevention |
 | Cycle enumeration | ❌ | ✅ |
 | Extensible traversals | Partial | ✅ (lazy streams) |
-| Serialization | DOT only | DOT, JSON, more planned |
+| Serialization | DOT only | DOT, JSON, GraphML, GEXF, Pajek, edge list, adjacency list, Matrix Market, Mermaid |
 | Large graph perf | Pure Elixir | igraph NIF (C, optimized) |
 
 ## When to use Grafi
@@ -272,37 +289,41 @@ results will vary with graph topology, edge count, and hardware.
   true
   ```
 
-- **Force pure-Elixir mode** (skip NIF dispatch on every algorithm),
-  useful for CI matrices and for verifying the fallback path:
-
-  ```bash
-  GRAFI_NIF_ENABLED=false mix test
-  ```
-
-  Or set it permanently in `config/runtime.exs`:
+- **Force pure-Elixir mode** (skip NIF dispatch on every algorithm) in your
+  app's config:
 
   ```elixir
   config :grafi, nif_enabled: false
   ```
 
-- **`igraph` not found at compile time** — install the development
-  headers, then recompile:
+  When working on grafi itself, its `config/runtime.exs` also reads the
+  `GRAFI_NIF_ENABLED` and `GRAFI_NIF_THRESHOLD` environment variables, e.g.
+  `GRAFI_NIF_ENABLED=false mix test`.
 
-  ```bash
-  # macOS
-  brew install igraph
+- **`grafi: igraph >= 1.0 not found; building without NIF`** — install
+  igraph >= 1.0 (see [Installation](#the-igraph-nif-optional)), or point the
+  build at it with `IGRAPH_DIR=/prefix`, then rebuild with
+  `mix deps.compile grafi --force`. An older igraph (e.g. 0.10 from a distro
+  package) is reported as `igraph 0.10.x found …, but >= 1.0 is required`.
 
-  # Ubuntu / Debian
-  sudo apt install libigraph-dev
-  ```
-
-- **Linker can't find `libigraph` at runtime** — on Linux, the loader
-  may not look in `/usr/local/lib` by default. Either set
-  `LD_LIBRARY_PATH=/usr/local/lib`, add the path to `/etc/ld.so.conf.d/`
-  and run `ldconfig`, or reinstall igraph through your package manager
-  so it lands in a default search path. After fixing, rebuild Grafi
-  with `mix deps.compile grafi --force`.
+- **Linker can't find `libigraph` at runtime** — source builds embed an
+  rpath to the igraph `lib/` directory they were linked against, so this
+  usually means igraph was moved or uninstalled after the build. Reinstall
+  it, or rebuild with `mix deps.compile grafi --force`.
 
 ## License
 
-[Apache 2.0](LICENSE)
+Grafi's source code is licensed under [Apache 2.0](LICENSE).
+
+### Third-party licenses
+
+The optional NIF bridges to [igraph](https://igraph.org), which is
+GPL-2.0-or-later and is not included in the Hex package:
+
+- **Built from source** (igraph installed on your machine): the NIF links
+  your igraph dynamically.
+- **Precompiled artefacts** from the GitHub releases page statically link
+  igraph 1.0.1, so each artefact is distributed under GPL-2.0-or-later. That
+  igraph build excludes its GPL-3.0 components (GLPK and Infomap).
+
+[NOTICE](NOTICE) has the details and the corresponding-source pointers.

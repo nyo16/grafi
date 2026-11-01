@@ -1,0 +1,35 @@
+Grafi
+Copyright the Grafi contributors
+
+The Grafi source code (this package: lib/, c_src/, Makefile and the other
+files distributed on Hex) is licensed under the Apache License, Version 2.0.
+See LICENSE.
+
+------------------------------------------------------------------------
+igraph
+------------------------------------------------------------------------
+
+Grafi's optional native extension (the NIF in c_src/) is a bridge to the
+igraph C library, https://igraph.org, which is licensed under the GNU General
+Public License, version 2 or later (GPL-2.0-or-later). igraph is not included
+in the Grafi source package.
+
+* Building from source: when igraph >= 1.0 is installed, the NIF is compiled
+  and dynamically linked against it on your machine. Without igraph, no NIF is
+  built and Grafi runs in pure Elixir.
+
+* Precompiled NIF artefacts (grafi-nif-*.tar.gz on the GitHub releases page)
+  statically link igraph 1.0.1. Each artefact is therefore a combined work
+  distributed under the GPL-2.0-or-later. The igraph build used for them
+  excludes the GPL-3.0 components (GLPK and Infomap). It includes igraph's
+  other vendored components (BLAS, LAPACK, ARPACK, mini-GMP, plfit,
+  CXSparse, qhull and others), whose licences ship in the igraph source
+  distribution (COPYING and vendor/).
+
+  Corresponding source for a precompiled artefact:
+    - igraph 1.0.1:
+      https://github.com/igraph/igraph/releases/download/1.0.1/igraph-1.0.1.tar.gz
+      (SHA-256 969f2d7d22f67e788d8638c9a8c96615f50d7819c08978b3ef4a787bb6daa96c)
+    - Grafi, at the git tag of the release the artefact is attached to:
+      https://github.com/nyo16/grafi
+    - The exact build configuration: .github/workflows/release.yml at that tag.

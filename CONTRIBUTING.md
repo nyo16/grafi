@@ -8,32 +8,34 @@ patches, new algorithms, and documentation are all fair game.
 
 Prerequisites:
 
-- Elixir 1.15+ and Erlang/OTP 26+
+- Elixir 1.18+ and Erlang/OTP 26+
 - A C++17 toolchain (`clang++` or `g++`) — only if you want to build
   the NIF
-- [igraph](https://igraph.org) C library (optional, for NIF
+- [igraph](https://igraph.org) >= 1.0 C library (optional, for NIF
   acceleration)
 
 ```bash
 # macOS
 brew install igraph
 
-# Debian / Ubuntu
-sudo apt install libigraph-dev
+# Linux: build the 1.0.1 release; distro packages are often 0.10
+# (see README "Installation")
 ```
 
 Clone and build:
 
 ```bash
-git clone https://github.com/nmaroulis/grafi.git
+git clone https://github.com/nyo16/grafi.git
 cd grafi
 mix deps.get
 mix compile
 ```
 
-If igraph is not installed, the NIF build is skipped and Grafi falls
-back to pure Elixir. There are no hard build failures from a missing
-igraph.
+In a git checkout the NIF is always built from source (never downloaded).
+If igraph >= 1.0 is not found, the build prints
+`grafi: igraph >= 1.0 not found; building without NIF (pure Elixir)` and
+succeeds; set `GRAFI_REQUIRE_NIF=1` to make that an error, or
+`IGRAPH_DIR=/prefix` to pick a specific igraph install.
 
 ## Running tests
 
@@ -124,7 +126,7 @@ igraph reference: https://igraph.org/c/doc/
 3. Add a `@doc false` Elixir stub in `lib/grafi/nif.ex` that raises
    `:nif_not_loaded` (the `@on_load` hook handles the rest).
 4. Add a pure-Elixir implementation in the appropriate `lib/grafi/algo/`
-   module. Validate options with `Grafi.Args` before dispatch, pick the
+   module. Validate options with the helpers in `lib/grafi/args.ex` before dispatch, pick the
    engine with `Grafi.NIF.engine/3`, and normalize the NIF result with
    `Grafi.NIF.call/1` (or `call!/1` for functions without an error
    return).
