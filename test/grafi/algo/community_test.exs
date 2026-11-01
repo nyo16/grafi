@@ -6,8 +6,8 @@ defmodule Grafi.Algo.CommunityTest do
 
   doctest Grafi.Algo.Community
 
-  # Only the pure-Elixir `label_propagation_simple/2` is always available.
-  # The NIF-backed functions are exercised in the NIF integration tests.
+  # `label_propagation_simple/2` is pure Elixir; the igraph-backed functions
+  # have no Elixir engine.
   describe "label_propagation_simple/2" do
     test "empty graph yields no communities" do
       result = Community.label_propagation_simple(Graph.new(type: :undirected))
@@ -67,18 +67,85 @@ defmodule Grafi.Algo.CommunityTest do
     end
   end
 
-  describe "NIF-backed functions when NIF unavailable" do
-    @describetag :nif_optional
-
-    test "return {:error, :nif_not_available} or {:ok, result}, never crash" do
+  describe "NIF-backed functions without the NIF engine" do
+    test "engine: :elixir returns {:error, :nif_not_available}" do
       g = Graph.new(type: :undirected) |> Graph.add_edges([{:a, :b}, {:b, :c}])
 
-      for fun <- [&Community.louvain/1, &Community.label_propagation/1] do
-        assert match?({:ok, _}, fun.(g)) or fun.(g) == {:error, :nif_not_available}
-      end
+      assert Community.louvain(g, engine: :elixir) == {:error, :nif_not_available}
+      assert Community.leiden(g, engine: :elixir) == {:error, :nif_not_available}
+      assert Community.label_propagation(g, engine: :elixir) == {:error, :nif_not_available}
+    end
+  end
 
-      assert match?({:ok, _}, Community.leiden(g)) or
-               Community.leiden(g) == {:error, :nif_not_available}
+  describe "NIF-backed functions on two disjoint K4s" do
+    @describetag :nif
+
+    setup do
+      k4 = fn off -> for i <- 0..2, j <- (i + 1)..3, do: {i + off, j + off} end
+      %{g: Graph.new(type: :undirected) |> Graph.add_edges(k4.(0) ++ k4.(10))}
+    end
+
+    # Two equal disjoint cliques, each with half of the 12 edges and half of
+    # the total degree: Q = 2 · (6/12 − (12/24)²) = 0.5.
+    @expected_modularity 0.5
+    @expected_partition MapSet.new([MapSet.new(0..3), MapSet.new(10..13)])
+
+    defp partition(%{communities: communities}),
+      do: communities |> Map.values() |> MapSet.new(&MapSet.new/1)
+
+    test "louvain finds the two cliques", %{g: g} do
+      assert {:ok, result} = Community.louvain(g)
+      assert result.n_communities == 2
+      assert partition(result) == @expected_partition
+      assert_in_delta result.modularity, @expected_modularity, 1.0e-12
+    end
+
+    test "leiden (modularity) finds the two cliques", %{g: g} do
+      assert {:ok, result} = Community.leiden(g)
+      assert result.n_communities == 2
+      assert partition(result) == @expected_partition
+      assert_in_delta result.modularity, @expected_modularity, 1.0e-12
+    end
+
+    test "leiden (cpm) finds the two cliques and reports modularity", %{g: g} do
+      assert {:ok, result} = Community.leiden(g, objective: :cpm, resolution: 0.5)
+      assert partition(result) == @expected_partition
+      assert_in_delta result.modularity, @expected_modularity, 1.0e-12
+    end
+
+    test "label propagation never merges disconnected cliques", %{g: g} do
+      assert {:ok, result} = Community.label_propagation(g)
+
+      for community <- partition(result) do
+        assert MapSet.subset?(community, MapSet.new(0..3)) or
+                 MapSet.subset?(community, MapSet.new(10..13))
+      end
+    end
+
+    test "label propagation runs on a directed graph without merging the cliques" do
+      k4 = fn off -> for i <- 0..3, j <- 0..3, i != j, do: {i + off, j + off} end
+      g = Graph.new(type: :directed) |> Graph.add_edges(k4.(0) ++ k4.(10))
+
+      assert {:ok, %{membership: m} = result} = Community.label_propagation(g)
+      assert Enum.sort(Map.keys(m)) == Enum.to_list(0..3) ++ Enum.to_list(10..13)
+
+      for community <- partition(result) do
+        assert MapSet.subset?(community, MapSet.new(0..3)) or
+                 MapSet.subset?(community, MapSet.new(10..13))
+      end
+    end
+
+    test "label propagation on one-directional directed cycles keeps the components apart" do
+      cycle = fn off -> for i <- 0..3, do: {i + off, rem(i + 1, 4) + off} end
+      g = Graph.new(type: :directed) |> Graph.add_edges(cycle.(0) ++ cycle.(10))
+
+      assert {:ok, %{membership: m} = result} = Community.label_propagation(g)
+      assert Enum.sort(Map.keys(m)) == Enum.to_list(0..3) ++ Enum.to_list(10..13)
+
+      for community <- partition(result) do
+        assert MapSet.subset?(community, MapSet.new(0..3)) or
+                 MapSet.subset?(community, MapSet.new(10..13))
+      end
     end
   end
 end

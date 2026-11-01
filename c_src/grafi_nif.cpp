@@ -3,21 +3,18 @@
 //
 // Each NIF receives the graph in CSR format from Elixir, converts to
 // igraph_t, runs the algorithm, and returns results as Elixir terms.
-// All NIFs are scheduled on dirty CPU schedulers via fine.
+// Everything except the O(1) `nif_loaded/0` probe runs on a dirty CPU
+// scheduler (see `nif_funcs` at the bottom).
 //
 // Compatible with igraph >= 1.0.0
-//
-// ─── TODO for Agent 2 (lib/grafi/nif.ex) ───────────────────────────────
-// No new NIF arities/registrations were added in this pass. The dead
-// `compute_bellman_ford` declaration was removed from grafi_nif.h; if
-// you want a `nif_bellman_ford/3` later, see the TODO in grafi_nif.h.
-// ───────────────────────────────────────────────────────────────────────
 
 #include "grafi_nif.h"
 #include <fine.hpp>
 #include <stdexcept>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <cstring>
@@ -191,15 +188,13 @@ void validate_csr_structure(const CsrGraph& csr) {
 }
 
 igraph_t csr_to_igraph(const CsrGraph& csr) {
-    IgraphVectorInt edges(0);
-
-    // Convert CSR to edge list
+    // Pre-sized edge list (2 entries per edge), filled by index.
+    IgraphVectorInt edges(static_cast<igraph_int_t>(2 * csr.col_indices.size()));
+    igraph_int_t k = 0;
     for (int64_t row = 0; row < csr.n_vertices; row++) {
         for (int64_t j = csr.row_offsets[row]; j < csr.row_offsets[row + 1]; j++) {
-            check_igraph(igraph_vector_int_push_back(edges.ptr(), row),
-                         "igraph_vector_int_push_back");
-            check_igraph(igraph_vector_int_push_back(edges.ptr(), csr.col_indices[j]),
-                         "igraph_vector_int_push_back");
+            VECTOR(*edges.ptr())[k++] = row;
+            VECTOR(*edges.ptr())[k++] = csr.col_indices[j];
         }
     }
 
@@ -208,16 +203,6 @@ igraph_t csr_to_igraph(const CsrGraph& csr) {
                                csr.directed ? IGRAPH_DIRECTED : IGRAPH_UNDIRECTED),
                  "igraph_create");
     return graph;
-}
-
-igraph_vector_t csr_to_weights(const CsrGraph& csr) {
-    igraph_vector_t weights;
-    check_igraph(igraph_vector_init(&weights, csr.weights.size()),
-                 "igraph_vector_init");
-    for (size_t i = 0; i < csr.weights.size(); i++) {
-        VECTOR(weights)[i] = csr.weights[i];
-    }
-    return weights;
 }
 
 // Builders that hand back an RAII guard with ownership transferred.
@@ -239,6 +224,13 @@ static void fill_weights(const CsrGraph& csr, IgraphVector& out) {
     for (size_t i = 0; i < csr.weights.size(); i++) {
         VECTOR(*out.ptr())[i] = csr.weights[i];
     }
+}
+
+static std::vector<int64_t> copy_int_vector(const igraph_vector_int_t* v) {
+    const igraph_int_t n = igraph_vector_int_size(v);
+    std::vector<int64_t> out(n);
+    for (igraph_int_t i = 0; i < n; i++) out[i] = VECTOR(*v)[i];
+    return out;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -281,71 +273,52 @@ ShortestPathResult compute_dijkstra(const CsrGraph& g, int64_t source, int64_t t
     IgraphVector weights;
     fill_weights(g, weights);
 
-    IgraphVectorIntList paths;
-
-    IgraphVectorInt targets(1);
-    VECTOR(*targets.ptr())[0] = target;
-
-    check_igraph(igraph_get_shortest_paths_dijkstra(
-                     graph.ptr(), paths.ptr(), NULL,
-                     source, igraph_vss_vector(targets.ptr()),
-                     weights.ptr(),
-                     g.directed ? IGRAPH_OUT : IGRAPH_ALL,
-                     NULL, NULL),
-                 "igraph_get_shortest_paths_dijkstra");
+    IgraphVectorInt vertices(0);
+    IgraphVectorInt edges(0);
+    check_igraph(igraph_get_shortest_path_dijkstra(
+                     graph.ptr(), vertices.ptr(), edges.ptr(),
+                     source, target, weights.ptr(),
+                     g.directed ? IGRAPH_OUT : IGRAPH_ALL),
+                 "igraph_get_shortest_path_dijkstra");
 
     ShortestPathResult result;
-    if (igraph_vector_int_list_size(paths.ptr()) > 0) {
-        igraph_vector_int_t* path = igraph_vector_int_list_get_ptr(paths.ptr(), 0);
-        igraph_integer_t path_len = igraph_vector_int_size(path);
-
-        if (path_len > 0) {
-            result.found = true;
-            result.path.resize(path_len);
-            result.distance = 0.0;
-
-            for (igraph_integer_t i = 0; i < path_len; i++) {
-                result.path[i] = VECTOR(*path)[i];
-            }
-
-            // Calculate total distance along path
-            for (igraph_integer_t i = 0; i < path_len - 1; i++) {
-                igraph_integer_t eid;
-                igraph_get_eid(graph.ptr(), &eid, result.path[i], result.path[i + 1],
-                               g.directed ? IGRAPH_DIRECTED : IGRAPH_UNDIRECTED, 0);
-                if (eid >= 0) {
-                    result.distance += VECTOR(*weights.ptr())[eid];
-                }
-            }
-        } else {
-            result.found = false;
-            result.distance = IGRAPH_INFINITY;
+    result.found = igraph_vector_int_size(vertices.ptr()) > 0;
+    result.distance = result.found ? 0.0 : IGRAPH_INFINITY;
+    if (result.found) {
+        result.path = copy_int_vector(vertices.ptr());
+        // Sum by edge id. On a multigraph the path runs over one specific
+        // parallel edge, which a vertex-pair lookup can't identify.
+        for (igraph_int_t i = 0; i < igraph_vector_int_size(edges.ptr()); i++) {
+            result.distance += VECTOR(*weights.ptr())[VECTOR(*edges.ptr())[i]];
         }
-    } else {
-        result.found = false;
-        result.distance = IGRAPH_INFINITY;
     }
     return result;
 }
 
-CentralityResult compute_betweenness(const CsrGraph& g) {
+// igraph counts each unordered pair once on undirected graphs. Normalization
+// is applied here rather than through igraph's flag so both engines share
+// one formula: 2/((n-1)(n-2)) undirected, 1/((n-1)(n-2)) directed, none for
+// n <= 2.
+CentralityResult compute_betweenness(const CsrGraph& g, bool weighted, bool normalized) {
     IgraphGraph graph = build_graph_owned(g);
     IgraphVector weights;
-    fill_weights(g, weights);
+    if (weighted) fill_weights(g, weights);
 
     IgraphVector result(0);
-
-    // igraph 1.0.x: weights 2nd arg, added normalized param
-    check_igraph(igraph_betweenness(graph.ptr(), weights.ptr(), result.ptr(),
-                                    igraph_vss_all(),
-                                    g.directed ? IGRAPH_DIRECTED : IGRAPH_UNDIRECTED,
-                                    false),
+    check_igraph(igraph_betweenness(graph.ptr(), weighted ? weights.ptr() : NULL,
+                                    result.ptr(), igraph_vss_all(),
+                                    g.directed, false),
                  "igraph_betweenness");
+
+    const double n = static_cast<double>(g.n_vertices);
+    const double scale = (normalized && g.n_vertices > 2)
+        ? (g.directed ? 1.0 : 2.0) / ((n - 1.0) * (n - 2.0))
+        : 1.0;
 
     CentralityResult cr;
     cr.scores.resize(igraph_vector_size(result.ptr()));
-    for (igraph_integer_t i = 0; i < igraph_vector_size(result.ptr()); i++) {
-        cr.scores[i] = VECTOR(*result.ptr())[i];
+    for (igraph_int_t i = 0; i < igraph_vector_size(result.ptr()); i++) {
+        cr.scores[i] = VECTOR(*result.ptr())[i] * scale;
     }
     return cr;
 }
@@ -438,31 +411,34 @@ CommunityResult compute_label_propagation(const CsrGraph& g) {
     return cr;
 }
 
-CommunityResult compute_leiden(const CsrGraph& g, double resolution) {
+// `objective` selects modularity (vertex strengths and the γ/(2m) scaling are
+// handled inside igraph_community_leiden_simple) or CPM. The reported
+// modularity is always igraph_modularity at resolution 1, so it is comparable
+// to Louvain's whatever objective and resolution produced the partition.
+CommunityResult compute_leiden(const CsrGraph& g, double resolution,
+                               igraph_leiden_objective_t objective) {
     IgraphGraph graph = build_graph_owned(g);
     IgraphVector weights;
     fill_weights(g, weights);
 
     IgraphVectorInt membership(0);
     igraph_real_t quality;
-    igraph_integer_t nb_clusters;
+    igraph_int_t nb_clusters;
 
-    // igraph 1.0.x: added vertex_out_weights and vertex_in_weights params
-    check_igraph(igraph_community_leiden(graph.ptr(), weights.ptr(),
-                                         NULL,  // vertex_out_weights
-                                         NULL,  // vertex_in_weights
-                                         resolution, 0.01, false,
-                                         -1,
-                                         membership.ptr(), &nb_clusters, &quality),
-                 "igraph_community_leiden");
+    check_igraph(igraph_community_leiden_simple(graph.ptr(), weights.ptr(), objective,
+                                                resolution, 0.01, false, -1,
+                                                membership.ptr(), &nb_clusters, &quality),
+                 "igraph_community_leiden_simple");
+
+    igraph_real_t modularity;
+    check_igraph(igraph_modularity(graph.ptr(), membership.ptr(), weights.ptr(),
+                                   1.0, false, &modularity),
+                 "igraph_modularity");
 
     CommunityResult cr;
-    cr.modularity = quality;
+    cr.modularity = modularity;
     cr.n_communities = nb_clusters;
-    cr.membership.resize(igraph_vector_int_size(membership.ptr()));
-    for (igraph_integer_t i = 0; i < igraph_vector_int_size(membership.ptr()); i++) {
-        cr.membership[i] = VECTOR(*membership.ptr())[i];
-    }
+    cr.membership = copy_int_vector(membership.ptr());
     return cr;
 }
 
@@ -493,18 +469,22 @@ bool compute_is_acyclic(const CsrGraph& g) {
     return is_dag;
 }
 
-std::vector<int64_t> compute_topological_sort(const CsrGraph& g) {
+// Returns false (leaving `out` empty) if the graph has a cycle, so the caller
+// can report {:error, :has_cycle} rather than an opaque igraph error string.
+// igraph's order is Kahn's algorithm with a FIFO of sources seeded in vertex
+// index order; Grafi.DAG's Elixir engine reproduces it exactly.
+bool compute_topological_sort(const CsrGraph& g, std::vector<int64_t>& out) {
     IgraphGraph graph = build_graph_owned(g);
+
+    igraph_bool_t is_dag;
+    check_igraph(igraph_is_dag(graph.ptr(), &is_dag), "igraph_is_dag");
+    if (!is_dag) return false;
 
     IgraphVectorInt order(0);
     check_igraph(igraph_topological_sorting(graph.ptr(), order.ptr(), IGRAPH_OUT),
                  "igraph_topological_sorting");
-
-    std::vector<int64_t> result(igraph_vector_int_size(order.ptr()));
-    for (igraph_integer_t i = 0; i < igraph_vector_int_size(order.ptr()); i++) {
-        result[i] = VECTOR(*order.ptr())[i];
-    }
-    return result;
+    out = copy_int_vector(order.ptr());
+    return true;
 }
 
 // ── VF2 (sub)isomorphism ──────────────────────────────────────────────
@@ -512,108 +492,107 @@ std::vector<int64_t> compute_topological_sort(const CsrGraph& g) {
 // VF2 doesn't use edge weights, but we keep the CSR's `directed` flag
 // because igraph's VF2 honours it (and refuses to mix). For sub-isomorphism
 // the caller passes the *host* as g1 and the *pattern* as g2.
+//
+// VF2 is exponential in the worst case. The deadline is enforced through the
+// node-compatibility callback: once it passes, the callback rejects every
+// candidate pair, so the search unwinds through igraph's normal success path.
+// igraph's interruption mechanism is not used because an interrupted VF2
+// call segfaults during cleanup in igraph 1.0.1.
 
-bool compute_isomorphic_vf2(const CsrGraph& g1, const CsrGraph& g2) {
-    if (g1.directed != g2.directed) {
-        throw std::invalid_argument("VF2 requires both graphs to have the same directedness");
+// Raw-NIF backstop. kMaxVf2TimeoutMs mirrors @max_timeout in
+// Grafi.Algo.Isomorphism, which rejects a larger :timeout; it is far below
+// the ms→ns overflow point (~9.2e12 ms). A larger value reaching the NIF
+// directly could overflow steady_clock's nanosecond time_point when added to
+// now(), so it means "no deadline".
+static constexpr int64_t kMaxVf2TimeoutMs = 0xFFFFFFFFLL;
+
+Vf2Budget::Vf2Budget(int64_t timeout_ms)
+    : enabled(timeout_ms > 0 && timeout_ms <= kMaxVf2TimeoutMs) {
+    if (enabled) {
+        deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
     }
-    IgraphGraph h1 = build_graph_owned(g1);
-    IgraphGraph h2 = build_graph_owned(g2);
-
-    igraph_bool_t iso = false;
-    check_igraph(igraph_isomorphic_vf2(h1.ptr(), h2.ptr(),
-                                       NULL, NULL, NULL, NULL,
-                                       &iso, NULL, NULL,
-                                       NULL, NULL, NULL),
-                 "igraph_isomorphic_vf2");
-    return iso;
 }
 
-bool compute_subisomorphic_vf2(const CsrGraph& g1, const CsrGraph& g2) {
-    if (g1.directed != g2.directed) {
-        throw std::invalid_argument("VF2 requires both graphs to have the same directedness");
+static igraph_bool_t vf2_budget_compat(const igraph_t*, const igraph_t*,
+                                       const igraph_int_t, const igraph_int_t,
+                                       void* arg) {
+    auto* budget = static_cast<Vf2Budget*>(arg);
+    if (budget->timed_out) return false;
+    // Checking the clock on every call would dominate a tight search. One
+    // call is ~0.1 µs (spike: ~1M calls per 100 ms), so every 1024th call
+    // bounds the overshoot to roughly 0.1 ms.
+    if ((++budget->tick & 1023u) == 0 &&
+        std::chrono::steady_clock::now() >= budget->deadline) {
+        budget->timed_out = true;
+        return false;
     }
-    IgraphGraph h1 = build_graph_owned(g1);
-    IgraphGraph h2 = build_graph_owned(g2);
-
-    igraph_bool_t iso = false;
-    check_igraph(igraph_subisomorphic_vf2(h1.ptr(), h2.ptr(),
-                                          NULL, NULL, NULL, NULL,
-                                          &iso, NULL, NULL,
-                                          NULL, NULL, NULL),
-                 "igraph_subisomorphic_vf2");
-    return iso;
+    return true;
 }
 
-IsomorphismResult compute_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2) {
-    if (g1.directed != g2.directed) {
-        throw std::invalid_argument("VF2 requires both graphs to have the same directedness");
-    }
-    IgraphGraph h1 = build_graph_owned(g1);
-    IgraphGraph h2 = build_graph_owned(g2);
-
-    igraph_bool_t iso = false;
-    IgraphVectorInt map12(0);
-    check_igraph(igraph_isomorphic_vf2(h1.ptr(), h2.ptr(),
-                                       NULL, NULL, NULL, NULL,
-                                       &iso, map12.ptr(), NULL,
-                                       NULL, NULL, NULL),
-                 "igraph_isomorphic_vf2");
-
-    IsomorphismResult result;
-    result.iso = iso;
-    if (iso) {
-        igraph_integer_t n = igraph_vector_int_size(map12.ptr());
-        result.mapping.resize(n);
-        for (igraph_integer_t i = 0; i < n; i++) {
-            result.mapping[i] = VECTOR(*map12.ptr())[i];
-        }
-    }
-    return result;
+static igraph_isocompat_t* budget_compat_fn(const Vf2Budget& budget) {
+    return budget.enabled ? vf2_budget_compat : nullptr;
 }
 
-IsomorphismResult compute_subgraph_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2) {
+static void require_same_directedness(const CsrGraph& g1, const CsrGraph& g2) {
     if (g1.directed != g2.directed) {
         throw std::invalid_argument("VF2 requires both graphs to have the same directedness");
     }
+}
+
+IsomorphismResult compute_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2,
+                                          bool want_mapping, Vf2Budget& budget) {
+    require_same_directedness(g1, g2);
     IgraphGraph h1 = build_graph_owned(g1);
     IgraphGraph h2 = build_graph_owned(g2);
 
     igraph_bool_t iso = false;
     IgraphVectorInt map12(0);
+    check_igraph(igraph_isomorphic_vf2(h1.ptr(), h2.ptr(),
+                                       NULL, NULL, NULL, NULL,
+                                       &iso, want_mapping ? map12.ptr() : NULL, NULL,
+                                       budget_compat_fn(budget), NULL, &budget),
+                 "igraph_isomorphic_vf2");
+
+    IsomorphismResult result;
+    result.iso = iso;
+    if (iso && want_mapping) result.mapping = copy_int_vector(map12.ptr());
+    return result;
+}
+
+// igraph's subisomorphic_vf2 returns map12 of length |V(g1)|, with -1 entries
+// for host vertices that aren't part of the matched pattern. The full vector
+// is returned and the caller interprets it.
+IsomorphismResult compute_subgraph_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2,
+                                                   bool want_mapping, Vf2Budget& budget) {
+    require_same_directedness(g1, g2);
+    IgraphGraph h1 = build_graph_owned(g1);
+    IgraphGraph h2 = build_graph_owned(g2);
+
+    igraph_bool_t iso = false;
+    IgraphVectorInt map12(0);
     check_igraph(igraph_subisomorphic_vf2(h1.ptr(), h2.ptr(),
                                           NULL, NULL, NULL, NULL,
-                                          &iso, map12.ptr(), NULL,
-                                          NULL, NULL, NULL),
+                                          &iso, want_mapping ? map12.ptr() : NULL, NULL,
+                                          budget_compat_fn(budget), NULL, &budget),
                  "igraph_subisomorphic_vf2");
 
     IsomorphismResult result;
     result.iso = iso;
-    if (iso) {
-        // igraph's subisomorphic_vf2 returns map12 of length |V(g1)|, with
-        // -1 entries for host vertices that aren't part of the matched
-        // pattern. We return the full vector and let the caller interpret.
-        igraph_integer_t n = igraph_vector_int_size(map12.ptr());
-        result.mapping.resize(n);
-        for (igraph_integer_t i = 0; i < n; i++) {
-            result.mapping[i] = VECTOR(*map12.ptr())[i];
-        }
-    }
+    if (iso && want_mapping) result.mapping = copy_int_vector(map12.ptr());
     return result;
 }
 
-int64_t compute_count_subisomorphisms_vf2(const CsrGraph& g1, const CsrGraph& g2) {
-    if (g1.directed != g2.directed) {
-        throw std::invalid_argument("VF2 requires both graphs to have the same directedness");
-    }
+int64_t compute_count_subisomorphisms_vf2(const CsrGraph& g1, const CsrGraph& g2,
+                                          Vf2Budget& budget) {
+    require_same_directedness(g1, g2);
     IgraphGraph h1 = build_graph_owned(g1);
     IgraphGraph h2 = build_graph_owned(g2);
 
-    igraph_integer_t count = 0;
+    igraph_int_t count = 0;
     check_igraph(igraph_count_subisomorphisms_vf2(h1.ptr(), h2.ptr(),
                                                   NULL, NULL, NULL, NULL,
                                                   &count,
-                                                  NULL, NULL, NULL),
+                                                  budget_compat_fn(budget), NULL, &budget),
                  "igraph_count_subisomorphisms_vf2");
     return static_cast<int64_t>(count);
 }
@@ -640,58 +619,64 @@ ERL_NIF_TERM make_error_atom(ErlNifEnv* env, const char* atom) {
         enif_make_atom(env, atom));
 }
 
+// Error reasons travel as binaries (Elixir strings), not charlists.
 ERL_NIF_TERM make_error_string(ErlNifEnv* env, const char* msg) {
-    return enif_make_tuple2(env,
-        enif_make_atom(env, "error"),
-        enif_make_string(env, msg, ERL_NIF_LATIN1));
+    const size_t len = std::strlen(msg);
+    ERL_NIF_TERM bin;
+    unsigned char* buf = enif_make_new_binary(env, len, &bin);
+    std::memcpy(buf, msg, len);
+    return enif_make_tuple2(env, enif_make_atom(env, "error"), bin);
 }
 
-// Helper: decode a list of int64 from Elixir. Throws NifError on malformed input.
-std::vector<int64_t> decode_int_list(ErlNifEnv* env, ERL_NIF_TERM list) {
-    unsigned len;
-    if (!enif_get_list_length(env, list, &len)) {
-        throw NifError("badarg_int_list");
-    }
-    std::vector<int64_t> result(len);
-    ERL_NIF_TERM head, tail = list;
-    for (unsigned i = 0; i < len; i++) {
-        if (!enif_get_list_cell(env, tail, &head, &tail)) {
-            throw NifError("badarg_int_list");
-        }
-        ErlNifSInt64 val;
-        if (!enif_get_int64(env, head, &val)) {
-            throw NifError("badarg_int_list");
-        }
-        result[i] = static_cast<int64_t>(val);
-    }
-    return result;
+// NaN/±Inf have no Erlang float representation (enif_make_double raises
+// badarg on them). Map them to 0.0, the Elixir-side contract for undefined
+// scores, e.g. closeness of a vertex that reaches nothing.
+ERL_NIF_TERM make_finite_double(ErlNifEnv* env, double x) {
+    return enif_make_double(env, std::isfinite(x) ? x : 0.0);
 }
 
-// Helper: decode a list of doubles from Elixir. Throws NifError on malformed input.
-// Accepts both float and integer terms (integers are promoted to double).
-std::vector<double> decode_float_list(ErlNifEnv* env, ERL_NIF_TERM list) {
-    unsigned len;
-    if (!enif_get_list_length(env, list, &len)) {
-        throw NifError("badarg_float_list");
+// Input guards for algorithms that igraph either rejects with an error code
+// (which would surface as an opaque string) or silently mis-computes.
+void require_undirected(const grafi::CsrGraph& csr) {
+    if (csr.directed) throw NifError("directed_unsupported");
+}
+
+void require_non_negative_weights(const grafi::CsrGraph& csr) {
+    for (double w : csr.weights) {
+        if (w < 0.0) throw NifError("negative_weight");
     }
-    std::vector<double> result(len);
-    ERL_NIF_TERM head, tail = list;
-    for (unsigned i = 0; i < len; i++) {
-        if (!enif_get_list_cell(env, tail, &head, &tail)) {
-            throw NifError("badarg_float_list");
-        }
-        double val;
-        if (!enif_get_double(env, head, &val)) {
-            // Allow integer weights too — they decode via enif_get_int64.
-            ErlNifSInt64 ival;
-            if (!enif_get_int64(env, head, &ival)) {
-                throw NifError("badarg_float_list");
-            }
-            val = static_cast<double>(ival);
-        }
-        result[i] = val;
+}
+
+// Closeness and weighted betweenness: a zero-length edge makes distinct
+// vertices coincide, so igraph's distances (and path counts) are not
+// meaningful there. Grafi.Args.positive_weights!/1 rejects these first.
+void require_positive_weights(const grafi::CsrGraph& csr) {
+    for (double w : csr.weights) {
+        if (w <= 0.0) throw NifError("non_positive_weight");
     }
-    return result;
+}
+
+// Helper: decode one CSR array, a binary of native-endian 8-byte elements
+// (`signed-native-64` / `float-native-64` in Elixir). One memcpy replaces
+// per-element term decoding. The data is copied rather than aliased because a
+// sub-binary's data pointer need not be 8-byte aligned.
+template <typename T>
+std::vector<T> decode_array_binary(ErlNifEnv* env, ERL_NIF_TERM term, const char* error_atom) {
+    static_assert(sizeof(T) == 8, "CSR arrays use 8-byte elements");
+    ErlNifBinary bin;
+    if (!enif_inspect_binary(env, term, &bin) || bin.size % sizeof(T) != 0) {
+        throw NifError(error_atom);
+    }
+    std::vector<T> out(bin.size / sizeof(T));
+    if (!out.empty()) std::memcpy(out.data(), bin.data, bin.size);
+    return out;
+}
+
+// Helper: decode an Elixir boolean. Throws NifError(error_atom) otherwise.
+bool decode_bool(ErlNifEnv* env, ERL_NIF_TERM term, const char* error_atom) {
+    if (enif_is_identical(term, enif_make_atom(env, "true"))) return true;
+    if (enif_is_identical(term, enif_make_atom(env, "false"))) return false;
+    throw NifError(error_atom);
 }
 
 // Helper: decode CSR graph from Elixir map. Throws NifError on malformed input.
@@ -706,17 +691,17 @@ grafi::CsrGraph decode_csr(ErlNifEnv* env, ERL_NIF_TERM map) {
     if (!enif_get_map_value(env, map, enif_make_atom(env, "row_offsets"), &val)) {
         throw NifError("missing_row_offsets");
     }
-    csr.row_offsets = decode_int_list(env, val);
+    csr.row_offsets = decode_array_binary<int64_t>(env, val, "badarg_row_offsets");
 
     if (!enif_get_map_value(env, map, enif_make_atom(env, "col_indices"), &val)) {
         throw NifError("missing_col_indices");
     }
-    csr.col_indices = decode_int_list(env, val);
+    csr.col_indices = decode_array_binary<int64_t>(env, val, "badarg_col_indices");
 
     if (!enif_get_map_value(env, map, enif_make_atom(env, "weights"), &val)) {
         throw NifError("missing_weights");
     }
-    csr.weights = decode_float_list(env, val);
+    csr.weights = decode_array_binary<double>(env, val, "badarg_weights");
 
     if (!enif_get_map_value(env, map, enif_make_atom(env, "n_vertices"), &val)) {
         throw NifError("missing_n_vertices");
@@ -730,19 +715,7 @@ grafi::CsrGraph decode_csr(ErlNifEnv* env, ERL_NIF_TERM map) {
     if (!enif_get_map_value(env, map, enif_make_atom(env, "directed"), &val)) {
         throw NifError("missing_directed");
     }
-    // Use a 64-byte buffer (was 16) and check the return — atoms can be up
-    // to 255 bytes; a 16-byte buffer would silently truncate.
-    char atom_buf[64];
-    if (!enif_get_atom(env, val, atom_buf, sizeof(atom_buf), ERL_NIF_LATIN1)) {
-        throw NifError("badarg_directed");
-    }
-    if (std::strcmp(atom_buf, "true") == 0) {
-        csr.directed = true;
-    } else if (std::strcmp(atom_buf, "false") == 0) {
-        csr.directed = false;
-    } else {
-        throw NifError("badarg_directed");
-    }
+    csr.directed = decode_bool(env, val, "badarg_directed");
 
     return csr;
 }
@@ -762,7 +735,7 @@ grafi::CsrGraph decode_and_validate_csr(ErlNifEnv* env, ERL_NIF_TERM map) {
 ERL_NIF_TERM encode_float_list(ErlNifEnv* env, const std::vector<double>& v) {
     std::vector<ERL_NIF_TERM> terms(v.size());
     for (size_t i = 0; i < v.size(); i++) {
-        terms[i] = enif_make_double(env, v[i]);
+        terms[i] = make_finite_double(env, v[i]);
     }
     return enif_make_list_from_array(env, terms.data(), terms.size());
 }
@@ -776,10 +749,34 @@ ERL_NIF_TERM encode_int_list(ErlNifEnv* env, const std::vector<int64_t>& v) {
     return enif_make_list_from_array(env, terms.data(), terms.size());
 }
 
+// igraph 1.0.x is built with IGRAPH_THREAD_SAFE 1, so the error, warning and
+// fatal handlers are thread-local. NIFs run on whichever (dirty) scheduler
+// thread picks them up, so each thread installs the handlers the first time
+// it enters a NIF. Without this a dirty thread keeps igraph's default
+// handler, which calls abort() and takes the whole VM down (V1).
+//
+// No interruption handler is installed: an interrupted VF2 call segfaults
+// while igraph 1.0.1 unwinds its cleanup stack (see the nif-safety
+// scratchpad). VF2 is bounded by a compat-callback deadline instead.
+[[noreturn]] void grafi_fatal_handler(const char* reason, const char* file, int line) {
+    std::fprintf(stderr, "grafi_nif: igraph fatal error at %s:%d: %s\n", file, line, reason);
+    std::abort();
+}
+
+void install_thread_handlers() {
+    static thread_local bool installed = false;
+    if (installed) return;
+    igraph_set_error_handler(igraph_error_handler_ignore);
+    igraph_set_warning_handler(igraph_warning_handler_ignore);
+    igraph_set_fatal_handler(grafi_fatal_handler);
+    installed = true;
+}
+
 // Catch-all wrapper that turns C++ exceptions into Elixir error tuples.
 // Use as: return run_nif(env, [&]() -> ERL_NIF_TERM { ... });
 template <typename F>
 ERL_NIF_TERM run_nif(ErlNifEnv* env, F&& body) {
+    install_thread_handlers();
     try {
         return body();
     } catch (const NifError& e) {
@@ -801,13 +798,15 @@ static ERL_NIF_TERM nif_pagerank(ErlNifEnv* env, int /*argc*/,
                                   const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
+        // igraph silently accepts negative PageRank weights.
+        require_non_negative_weights(csr);
 
         double damping;
         if (!enif_get_double(env, argv[1], &damping)) {
             return make_error_atom(env, "badarg_damping");
         }
         if (std::isnan(damping) || std::isinf(damping) ||
-            damping <= 0.0 || damping >= 1.0) {
+            damping < 0.0 || damping >= 1.0) {
             return make_error_atom(env, "invalid_damping");
         }
 
@@ -846,13 +845,8 @@ static ERL_NIF_TERM nif_dijkstra(ErlNifEnv* env, int /*argc*/,
             return make_error_atom(env, "out_of_bounds");
         }
 
-        // Dijkstra is undefined on negative weights. Reject them up front
-        // so callers can fall back to Bellman-Ford in pure Elixir.
-        for (double w : csr.weights) {
-            if (w < 0.0) {
-                return make_error_atom(env, "negative_weight");
-            }
-        }
+        // Dijkstra is undefined on negative weights.
+        require_non_negative_weights(csr);
 
         auto result = grafi::compute_dijkstra(csr, source, target);
 
@@ -860,7 +854,7 @@ static ERL_NIF_TERM nif_dijkstra(ErlNifEnv* env, int /*argc*/,
             return enif_make_tuple3(env,
                 enif_make_atom(env, "ok"),
                 encode_int_list(env, result.path),
-                enif_make_double(env, result.distance));
+                make_finite_double(env, result.distance));
         } else {
             return enif_make_atom(env, "no_path");
         }
@@ -869,11 +863,15 @@ static ERL_NIF_TERM nif_dijkstra(ErlNifEnv* env, int /*argc*/,
 
 // ── NIF: Betweenness centrality ────────────────────────────────────────
 
+// argv: (csr, weighted?, normalized?)
 static ERL_NIF_TERM nif_betweenness(ErlNifEnv* env, int /*argc*/,
                                      const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
-        auto result = grafi::compute_betweenness(csr);
+        const bool weighted = decode_bool(env, argv[1], "badarg_weighted");
+        const bool normalized = decode_bool(env, argv[2], "badarg_normalized");
+        if (weighted) require_positive_weights(csr);
+        auto result = grafi::compute_betweenness(csr, weighted, normalized);
         return encode_float_list(env, result.scores);
     });
 }
@@ -884,47 +882,50 @@ static ERL_NIF_TERM nif_closeness(ErlNifEnv* env, int /*argc*/,
                                    const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
+        require_positive_weights(csr);
         auto result = grafi::compute_closeness(csr);
         return encode_float_list(env, result.scores);
     });
 }
 
-// ── NIF: Louvain community detection ───────────────────────────────────
+// ── Community detection ────────────────────────────────────────────────
+
+static ERL_NIF_TERM encode_community(ErlNifEnv* env, const grafi::CommunityResult& r) {
+    return enif_make_tuple3(env,
+        encode_int_list(env, r.membership),
+        make_finite_double(env, r.modularity),
+        enif_make_int64(env, r.n_communities));
+}
 
 static ERL_NIF_TERM nif_louvain(ErlNifEnv* env, int /*argc*/,
                                  const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
-        auto result = grafi::compute_louvain(csr);
-
-        return enif_make_tuple3(env,
-            encode_int_list(env, result.membership),
-            enif_make_double(env, result.modularity),
-            enif_make_int64(env, result.n_communities));
+        require_undirected(csr);
+        require_non_negative_weights(csr);
+        return encode_community(env, grafi::compute_louvain(csr));
     });
 }
 
-// ── NIF: Label propagation ─────────────────────────────────────────────
-
+// Label propagation runs in IGRAPH_ALL mode, which igraph accepts on
+// directed graphs, so there is no direction check here.
 static ERL_NIF_TERM nif_label_propagation(ErlNifEnv* env, int /*argc*/,
                                            const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
-        auto result = grafi::compute_label_propagation(csr);
-
-        return enif_make_tuple3(env,
-            encode_int_list(env, result.membership),
-            enif_make_double(env, result.modularity),
-            enif_make_int64(env, result.n_communities));
+        require_non_negative_weights(csr);
+        return encode_community(env, grafi::compute_label_propagation(csr));
     });
 }
 
-// ── NIF: Leiden ─────────────────────────────────────────────────────────
-
+// argv: (csr, resolution, objective) where objective is :modularity | :cpm.
 static ERL_NIF_TERM nif_leiden(ErlNifEnv* env, int /*argc*/,
                                 const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
+        require_undirected(csr);
+        // igraph silently accepts negative Leiden weights.
+        require_non_negative_weights(csr);
 
         double resolution;
         if (!enif_get_double(env, argv[1], &resolution)) {
@@ -934,12 +935,16 @@ static ERL_NIF_TERM nif_leiden(ErlNifEnv* env, int /*argc*/,
             return make_error_atom(env, "invalid_resolution");
         }
 
-        auto result = grafi::compute_leiden(csr, resolution);
+        igraph_leiden_objective_t objective;
+        if (enif_is_identical(argv[2], enif_make_atom(env, "modularity"))) {
+            objective = IGRAPH_LEIDEN_OBJECTIVE_MODULARITY;
+        } else if (enif_is_identical(argv[2], enif_make_atom(env, "cpm"))) {
+            objective = IGRAPH_LEIDEN_OBJECTIVE_CPM;
+        } else {
+            return make_error_atom(env, "badarg_objective");
+        }
 
-        return enif_make_tuple3(env,
-            encode_int_list(env, result.membership),
-            enif_make_double(env, result.modularity),
-            enif_make_int64(env, result.n_communities));
+        return encode_community(env, grafi::compute_leiden(csr, resolution, objective));
     });
 }
 
@@ -974,135 +979,158 @@ static ERL_NIF_TERM nif_topological_sort(ErlNifEnv* env, int /*argc*/,
                                           const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
         auto csr = decode_and_validate_csr(env, argv[0]);
-        auto result = grafi::compute_topological_sort(csr);
-        return encode_int_list(env, result);
+        std::vector<int64_t> order;
+        if (!grafi::compute_topological_sort(csr, order)) {
+            return make_error_atom(env, "has_cycle");
+        }
+        return enif_make_tuple2(env, enif_make_atom(env, "ok"), encode_int_list(env, order));
     });
 }
 
-// ── NIF: VF2 isomorphism (boolean) ─────────────────────────────────────
+// ── NIF: VF2 (sub)isomorphism ──────────────────────────────────────────
+//
+// Every VF2 NIF takes (g1, g2, timeout_ms). For the sub-isomorphism variants
+// g1 is the host and g2 the pattern. A timeout_ms of 0, or anything above
+// kMaxVf2TimeoutMs, disables the deadline; a search that hits it returns
+// {:error, :timeout}. A negative timeout_ms, or one that is not an int64
+// (e.g. 2**63), returns {:error, :badarg_timeout}.
+
+struct Vf2Args {
+    grafi::CsrGraph g1;
+    grafi::CsrGraph g2;
+    int64_t timeout_ms;
+};
+
+static Vf2Args decode_vf2_args(ErlNifEnv* env, const ERL_NIF_TERM argv[]) {
+    Vf2Args args{decode_and_validate_csr(env, argv[0]),
+                 decode_and_validate_csr(env, argv[1]), 0};
+    ErlNifSInt64 timeout_ms;
+    if (!enif_get_int64(env, argv[2], &timeout_ms) || timeout_ms < 0) {
+        throw NifError("badarg_timeout");
+    }
+    if (args.g1.directed != args.g2.directed) {
+        throw NifError("mixed_directedness");
+    }
+    args.timeout_ms = static_cast<int64_t>(timeout_ms);
+    return args;
+}
+
+static ERL_NIF_TERM encode_vf2_bool(ErlNifEnv* env, const grafi::IsomorphismResult& r,
+                                    const grafi::Vf2Budget& budget) {
+    if (!r.iso && budget.timed_out) return make_error_atom(env, "timeout");
+    return enif_make_tuple2(env,
+        enif_make_atom(env, "ok"),
+        enif_make_atom(env, r.iso ? "true" : "false"));
+}
+
+static ERL_NIF_TERM encode_vf2_mapping(ErlNifEnv* env, const grafi::IsomorphismResult& r,
+                                       const grafi::Vf2Budget& budget) {
+    if (!r.iso) {
+        return make_error_atom(env, budget.timed_out ? "timeout" : "no_isomorphism");
+    }
+    return enif_make_tuple2(env,
+        enif_make_atom(env, "ok"),
+        encode_int_list(env, r.mapping));
+}
 
 static ERL_NIF_TERM nif_isomorphic_vf2(ErlNifEnv* env, int /*argc*/,
                                         const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
-        auto csr1 = decode_and_validate_csr(env, argv[0]);
-        auto csr2 = decode_and_validate_csr(env, argv[1]);
-        if (csr1.directed != csr2.directed) {
-            return make_error_atom(env, "mixed_directedness");
-        }
-        bool iso = grafi::compute_isomorphic_vf2(csr1, csr2);
-        return enif_make_tuple2(env,
-            enif_make_atom(env, "ok"),
-            enif_make_atom(env, iso ? "true" : "false"));
+        auto args = decode_vf2_args(env, argv);
+        grafi::Vf2Budget budget(args.timeout_ms);
+        auto r = grafi::compute_isomorphism_vf2(args.g1, args.g2, false, budget);
+        return encode_vf2_bool(env, r, budget);
     });
 }
-
-// ── NIF: VF2 sub-isomorphism (boolean) ─────────────────────────────────
 
 static ERL_NIF_TERM nif_subisomorphic_vf2(ErlNifEnv* env, int /*argc*/,
                                            const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
-        auto csr1 = decode_and_validate_csr(env, argv[0]);
-        auto csr2 = decode_and_validate_csr(env, argv[1]);
-        if (csr1.directed != csr2.directed) {
-            return make_error_atom(env, "mixed_directedness");
-        }
-        bool iso = grafi::compute_subisomorphic_vf2(csr1, csr2);
-        return enif_make_tuple2(env,
-            enif_make_atom(env, "ok"),
-            enif_make_atom(env, iso ? "true" : "false"));
+        auto args = decode_vf2_args(env, argv);
+        grafi::Vf2Budget budget(args.timeout_ms);
+        auto r = grafi::compute_subgraph_isomorphism_vf2(args.g1, args.g2, false, budget);
+        return encode_vf2_bool(env, r, budget);
     });
 }
-
-// ── NIF: VF2 isomorphism mapping ───────────────────────────────────────
 
 static ERL_NIF_TERM nif_isomorphism_vf2(ErlNifEnv* env, int /*argc*/,
                                          const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
-        auto csr1 = decode_and_validate_csr(env, argv[0]);
-        auto csr2 = decode_and_validate_csr(env, argv[1]);
-        if (csr1.directed != csr2.directed) {
-            return make_error_atom(env, "mixed_directedness");
-        }
-        auto result = grafi::compute_isomorphism_vf2(csr1, csr2);
-        if (!result.iso) {
-            return make_error_atom(env, "no_isomorphism");
-        }
-        return enif_make_tuple2(env,
-            enif_make_atom(env, "ok"),
-            encode_int_list(env, result.mapping));
+        auto args = decode_vf2_args(env, argv);
+        grafi::Vf2Budget budget(args.timeout_ms);
+        auto r = grafi::compute_isomorphism_vf2(args.g1, args.g2, true, budget);
+        return encode_vf2_mapping(env, r, budget);
     });
 }
-
-// ── NIF: VF2 subgraph isomorphism mapping ──────────────────────────────
 
 static ERL_NIF_TERM nif_subgraph_isomorphism_vf2(ErlNifEnv* env, int /*argc*/,
                                                   const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
-        auto csr1 = decode_and_validate_csr(env, argv[0]);
-        auto csr2 = decode_and_validate_csr(env, argv[1]);
-        if (csr1.directed != csr2.directed) {
-            return make_error_atom(env, "mixed_directedness");
-        }
-        auto result = grafi::compute_subgraph_isomorphism_vf2(csr1, csr2);
-        if (!result.iso) {
-            return make_error_atom(env, "no_isomorphism");
-        }
-        return enif_make_tuple2(env,
-            enif_make_atom(env, "ok"),
-            encode_int_list(env, result.mapping));
+        auto args = decode_vf2_args(env, argv);
+        grafi::Vf2Budget budget(args.timeout_ms);
+        auto r = grafi::compute_subgraph_isomorphism_vf2(args.g1, args.g2, true, budget);
+        return encode_vf2_mapping(env, r, budget);
     });
 }
-
-// ── NIF: VF2 count of subisomorphisms ──────────────────────────────────
 
 static ERL_NIF_TERM nif_count_subisomorphisms_vf2(ErlNifEnv* env, int /*argc*/,
                                                    const ERL_NIF_TERM argv[]) {
     return run_nif(env, [&]() -> ERL_NIF_TERM {
-        auto csr1 = decode_and_validate_csr(env, argv[0]);
-        auto csr2 = decode_and_validate_csr(env, argv[1]);
-        if (csr1.directed != csr2.directed) {
-            return make_error_atom(env, "mixed_directedness");
-        }
-        int64_t count = grafi::compute_count_subisomorphisms_vf2(csr1, csr2);
+        auto args = decode_vf2_args(env, argv);
+        grafi::Vf2Budget budget(args.timeout_ms);
+        int64_t count = grafi::compute_count_subisomorphisms_vf2(args.g1, args.g2, budget);
+        if (budget.timed_out) return make_error_atom(env, "timeout");
         return enif_make_tuple2(env,
             enif_make_atom(env, "ok"),
             enif_make_int64(env, count));
     });
 }
 
+// ── NIF: load probe ────────────────────────────────────────────────────
+
+// O(1), so it stays on a normal scheduler. Grafi.NIF.load_nif/0 calls it to
+// confirm the library is callable.
+static ERL_NIF_TERM nif_loaded(ErlNifEnv* env, int /*argc*/,
+                               const ERL_NIF_TERM /*argv*/[]) {
+    return enif_make_atom(env, "ok");
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // NIF registration
 // ═══════════════════════════════════════════════════════════════════════
 
-// Module load callback. igraph's default error handler calls abort(), which
-// would terminate the entire BEAM node before our igraph_error_t return value
-// ever reaches check_igraph(). Installing the non-aborting handler makes igraph
-// return error codes instead, so check_igraph() can throw and run_nif() can
-// turn the failure into an {:error, _} tuple (e.g. on IGRAPH_ENOMEM for a large
-// graph) rather than crashing the VM.
+// Module load callback. igraph's default error handler calls abort(); the
+// non-aborting handler makes igraph return error codes instead, so
+// check_igraph() can throw and run_nif() can turn the failure into an
+// {:error, _} tuple. The handlers are thread-local (IGRAPH_THREAD_SAFE 1), so
+// this only covers the loading thread; every NIF entry point re-installs
+// them for its own thread via run_nif() -> install_thread_handlers().
 static int grafi_nif_load(ErlNifEnv* /*env*/, void** /*priv_data*/,
                           ERL_NIF_TERM /*load_info*/) {
-    igraph_set_error_handler(igraph_error_handler_ignore);
-    igraph_set_warning_handler(igraph_warning_handler_ignore);
+    install_thread_handlers();
     return 0;
 }
 
+// Every NIF that builds an igraph graph from a CSR is O(V + E) or worse and
+// runs on a dirty CPU scheduler. Only the O(1) load probe stays on a normal
+// scheduler.
 static ErlNifFunc nif_funcs[] = {
+    {"nif_loaded",             0, nif_loaded,             0},
     {"nif_pagerank",           3, nif_pagerank,           ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_dijkstra",           3, nif_dijkstra,           ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_betweenness",        1, nif_betweenness,        ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_betweenness",        3, nif_betweenness,        ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_closeness",          1, nif_closeness,          ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_louvain",            1, nif_louvain,            ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_label_propagation",  1, nif_label_propagation,  ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_leiden",             2, nif_leiden,              ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_leiden",             3, nif_leiden,             ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_scc",                1, nif_scc,                ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_is_acyclic",         1, nif_is_acyclic,         0},
+    {"nif_is_acyclic",         1, nif_is_acyclic,         ERL_NIF_DIRTY_JOB_CPU_BOUND},
     {"nif_topological_sort",   1, nif_topological_sort,   ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_isomorphic_vf2",     2, nif_isomorphic_vf2,     ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_subisomorphic_vf2",  2, nif_subisomorphic_vf2,  ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_isomorphism_vf2",    2, nif_isomorphism_vf2,    ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_subgraph_isomorphism_vf2", 2, nif_subgraph_isomorphism_vf2, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-    {"nif_count_subisomorphisms_vf2", 2, nif_count_subisomorphisms_vf2, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_isomorphic_vf2",     3, nif_isomorphic_vf2,     ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_subisomorphic_vf2",  3, nif_subisomorphic_vf2,  ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_isomorphism_vf2",    3, nif_isomorphism_vf2,    ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_subgraph_isomorphism_vf2",  3, nif_subgraph_isomorphism_vf2,  ERL_NIF_DIRTY_JOB_CPU_BOUND},
+    {"nif_count_subisomorphisms_vf2", 3, nif_count_subisomorphisms_vf2, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 };
 
 ERL_NIF_INIT(Elixir.Grafi.NIF, nif_funcs, grafi_nif_load, NULL, NULL, NULL)

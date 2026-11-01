@@ -4,51 +4,55 @@ defmodule Grafi.Algo.ShortestPath do
   @moduledoc "Dijkstra, Bellman-Ford, A* — with igraph NIF acceleration."
 
   alias Grafi.Algo.MinHeap
+  alias Grafi.Args
   alias Grafi.Graph
+  alias Grafi.NIF
 
   @doc """
   Computes the shortest weighted path from `source` to `target` using Dijkstra's
   algorithm.
 
-  Returns `{:ok, {path, distance}}` on success, `:no_path` if no path exists, or
-  `{:error, :no_such_vertex}` if either endpoint is not in the graph.
+  Returns `{:ok, {path, distance}}` on success, `:no_path` if no path exists,
+  `{:error, :no_such_vertex}` if either endpoint is not in the graph, or
+  `{:error, :negative_weight}` if any edge weight is negative (Dijkstra is
+  undefined there; use `bellman_ford/2`).
 
-  For graphs larger than the configured `:nif_threshold` (default `500` vertices)
-  and when `Grafi.NIF.available?/0` returns `true`, the computation is dispatched
-  to the igraph C++ NIF on a dirty scheduler. Otherwise a pure Elixir
-  implementation runs.
+  ## Options
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`. With `:auto`,
+      graphs above the configured `:nif_threshold` (default `500` vertices) run
+      in igraph on a dirty scheduler. `engine: :nif` without the NIF returns
+      `{:error, :nif_not_available}`.
   """
   @spec dijkstra(Graph.t(), any(), any(), keyword()) ::
-          {:ok, {[any()], number()}} | :no_path | {:error, :no_such_vertex}
+          {:ok, {[any()], number()}}
+          | :no_path
+          | {:error,
+             :no_such_vertex | :negative_weight | :nif_not_available | {:igraph, String.t()}}
   def dijkstra(%Graph{} = g, source, target, opts \\ []) do
+    Args.engine!(opts)
+
     cond do
-      not Graph.has_vertex?(g, source) ->
+      not Graph.has_vertex?(g, source) or not Graph.has_vertex?(g, target) ->
         {:error, :no_such_vertex}
 
-      not Graph.has_vertex?(g, target) ->
-        {:error, :no_such_vertex}
-
-      Graph.num_vertices(g) > nif_threshold() and Grafi.NIF.available?() ->
-        dijkstra_nif(g, source, target)
+      Args.negative_weight?(g) ->
+        {:error, :negative_weight}
 
       true ->
-        dijkstra_elixir(g, source, target, opts)
+        case NIF.engine(g, opts) do
+          :nif -> dijkstra_nif(g, source, target)
+          :elixir -> dijkstra_elixir(g, source, target)
+          {:error, _} = error -> error
+        end
     end
   end
 
   defp dijkstra_nif(g, source, target) do
     {idx, csr} = Graph.to_csr(g)
-    _ = Grafi.NIF.validate_csr!(csr)
-    rev = Map.new(idx, fn {v, i} -> {i, v} end)
-    {:ok, sidx} = Map.fetch(idx, source)
-    {:ok, tidx} = Map.fetch(idx, target)
 
-    case Grafi.NIF.nif_dijkstra(csr, sidx, tidx) do
-      {:ok, path_indices, dist} ->
-        {:ok, {Enum.map(path_indices, &Map.fetch!(rev, &1)), dist}}
-
-      :no_path ->
-        :no_path
+    case NIF.call(NIF.nif_dijkstra(csr, Map.fetch!(idx, source), Map.fetch!(idx, target))) do
+      {:ok, path_indices, dist} -> {:ok, {Enum.map(path_indices, &elem(csr.vertices, &1)), dist}}
+      other -> other
     end
   end
 
@@ -72,6 +76,11 @@ defmodule Grafi.Algo.ShortestPath do
   Returns `{:ok, dists}` where `dists` is a map of `vertex => distance` (with
   unreachable vertices omitted), or `{:error, :negative_cycle}` if any negative
   cycle is reachable from `source`. O(|V|·|E|).
+
+  On undirected graphs every edge is relaxed in both directions, so a
+  negative-weight undirected edge reachable from `source` is itself a
+  negative cycle (`u → v → u`) and yields `{:error, :negative_cycle}`, as in
+  NetworkX.
   """
   @spec bellman_ford(Graph.t(), any()) :: {:ok, %{any() => number()}} | {:error, :negative_cycle}
   def bellman_ford(%Graph{} = g, source) do
@@ -82,23 +91,37 @@ defmodule Grafi.Algo.ShortestPath do
     vs = Graph.vertices(g)
     n = length(vs)
     dist = Map.new(vs, &{&1, if(&1 == source, do: 0.0, else: :infinity)})
-    all_e = Graph.edges(g)
+    arcs = relaxation_arcs(g)
 
     dist =
       Enum.reduce(1..(n - 1)//1, dist, fn _, d ->
-        Enum.reduce(all_e, d, fn e, d2 ->
-          if d2[e.from] != :infinity and d2[e.from] + e.weight < Map.get(d2, e.to, :infinity),
-            do: Map.put(d2, e.to, d2[e.from] + e.weight),
+        Enum.reduce(arcs, d, fn {from, to, w}, d2 ->
+          if d2[from] != :infinity and d2[from] + w < Map.get(d2, to, :infinity),
+            do: Map.put(d2, to, d2[from] + w),
             else: d2
         end)
       end)
 
     neg =
-      Enum.any?(all_e, &(dist[&1.from] != :infinity and dist[&1.from] + &1.weight < dist[&1.to]))
+      Enum.any?(arcs, fn {from, to, w} ->
+        dist[from] != :infinity and dist[from] + w < dist[to]
+      end)
 
     if neg,
       do: {:error, :negative_cycle},
       else: {:ok, Map.reject(dist, fn {_, v} -> v == :infinity end)}
+  end
+
+  # `{from, to, weight}` arcs to relax. An undirected edge can be traversed
+  # both ways; a self-loop's reverse is itself.
+  defp relaxation_arcs(%Graph{type: :directed} = g),
+    do: Enum.map(Graph.edges(g), &{&1.from, &1.to, &1.weight})
+
+  defp relaxation_arcs(%Graph{} = g) do
+    Enum.flat_map(Graph.edges(g), fn
+      %{from: v, to: v, weight: w} -> [{v, v, w}]
+      %{from: f, to: t, weight: w} -> [{f, t, w}, {t, f, w}]
+    end)
   end
 
   @doc """
@@ -127,7 +150,7 @@ defmodule Grafi.Algo.ShortestPath do
 
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp dijkstra_elixir(g, source, target, _opts) do
+  defp dijkstra_elixir(g, source, target) do
     {dists, parents} = do_dijkstra(g, source)
 
     case Map.get(dists, target) do
@@ -224,6 +247,4 @@ defmodule Grafi.Algo.ShortestPath do
       parent -> rebuild_came_from(came_from, parent, [parent | acc])
     end
   end
-
-  defp nif_threshold, do: Application.get_env(:grafi, :nif_threshold, 500)
 end

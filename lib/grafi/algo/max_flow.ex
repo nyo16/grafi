@@ -41,7 +41,7 @@ defmodule Grafi.Algo.MaxFlow do
   * `{:error, :negative_capacity}` — any edge weight is negative.
   """
 
-  alias Grafi.Graph
+  alias Grafi.{Args, Graph}
 
   @type flow_map :: %{{any(), any()} => number()}
   @type result :: %{flow: number(), flows: flow_map()}
@@ -175,17 +175,9 @@ defmodule Grafi.Algo.MaxFlow do
     cond do
       not Graph.has_vertex?(g, source) -> {:error, :no_such_vertex}
       not Graph.has_vertex?(g, sink) -> {:error, :no_such_vertex}
-      has_negative_weight?(g) -> {:error, :negative_capacity}
+      Args.negative_weight?(g) -> {:error, :negative_capacity}
       true -> :ok
     end
-  end
-
-  defp has_negative_weight?(%Graph{out_edges: out}) do
-    Enum.any?(out, fn {_from, targets} ->
-      Enum.any?(targets, fn {_to, edges} ->
-        Enum.any?(edges, fn e -> e.weight < 0 end)
-      end)
-    end)
   end
 
   # ── Top-level orchestration ───────────────────────────────────────────

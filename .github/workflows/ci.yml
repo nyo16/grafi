@@ -75,13 +75,38 @@ jobs:
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
-      - name: Run tests
-        run: mix test
+      # :nif-tagged tests are skipped when the NIF is unavailable, so fail
+      # loudly here instead of silently testing only the Elixir engine.
+      - name: Assert the NIF loaded
+        run: |
+          mix run -e 'Grafi.NIF.available?() || Mix.raise("the Grafi NIF did not load; :nif tests would be skipped")'
+
+      # Three engine modes; each exports coverage, merged at the end.
+      # packaging-release P3.5 must keep these steps.
+      - name: Run tests (default threshold)
+        run: mix test --cover --export-coverage default
+
+      - name: Run tests (NIF for every graph size)
+        env:
+          GRAFI_NIF_THRESHOLD: "0"
+        run: mix test --cover --export-coverage nif
+
+      # config/runtime.exs maps GRAFI_NIF_ENABLED to `nif_enabled`. If that
+      # wiring breaks, the next step silently re-runs the NIF suite and
+      # skips every :no_nif test.
+      - name: Assert the NIF is disabled
+        env:
+          GRAFI_NIF_ENABLED: "false"
+        run: |
+          mix run -e 'Grafi.NIF.available?() && Mix.raise("GRAFI_NIF_ENABLED=false did not disable the NIF; :no_nif tests would be skipped")'
 
       - name: Run tests (pure Elixir, no NIF)
         env:
           GRAFI_NIF_ENABLED: "false"
-        run: mix test
+        run: mix test --cover --export-coverage elixir
+
+      - name: Merge coverage
+        run: mix test.coverage
 
   quality:
     name: Code Quality

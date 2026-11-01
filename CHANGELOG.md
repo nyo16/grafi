@@ -9,6 +9,104 @@ All notable changes to Grafi are documented here, following
 > **v0.1.0 will be the first published release.** The entries below
 > describe the hardening work happening on the way to that release.
 
+### Breaking
+- `Grafi.Algo.Centrality.betweenness/2` follows NetworkX: unweighted
+  and normalized by default (`weighted: false`, `normalized: true`),
+  each undirected pair counted once. The middle of an undirected P3 now
+  scores `1.0` on both engines; the Elixir engine used to return `0.5`.
+- `Grafi.Algo.Centrality.pagerank/2` uses edge weights and spreads the
+  rank of dangling vertices uniformly, so ranks always sum to 1. The
+  Elixir engine's convergence test is NetworkX's (L1 change < n · tolerance).
+- `Grafi.Graph.to_csr/1` returns `row_offsets`, `col_indices` and
+  `weights` as native-endian binaries (`signed-native-64` /
+  `float-native-64`), adds a `:vertices` tuple, and lists each
+  undirected edge once. `Grafi.NIF.validate_csr!/1` validates that
+  format.
+- `Grafi.Algo.Cycles.strongly_connected_components/2` returns a
+  canonical order: members sorted, components ordered by their smallest
+  member. `Grafi.DAG.topological_sort/2` ties are broken by vertex term
+  order.
+- Isomorphism functions no longer fall back to Elixir silently when
+  the NIF fails. `isomorphism/3`, `subgraph_isomorphism/3` and
+  `count_subgraph_isomorphisms/3` return `{:error, {:igraph, message}}`.
+  `isomorphic?/3` and `subgraph_isomorphic?/3` always return a boolean:
+  they raise `Grafi.TimeoutError` on timeout and `Grafi.NIFError` on a
+  NIF failure or `engine: :nif` without the NIF.
+- `Grafi.Algo.Centrality.closeness/2` and `betweenness(weighted: true)`
+  require positive edge weights: a zero weight now raises
+  `ArgumentError` on both engines (the raw NIFs return
+  `{:error, :non_positive_weight}`). PageRank and Dijkstra still accept
+  zero weights.
+- `GRAFI_NIF_ENABLED=false` / `nif_enabled: false` now also disables
+  community detection, which returns `{:error, :nif_not_available}`.
+- The raw `Grafi.NIF.nif_*` functions are no longer documented, and
+  their arities changed (betweenness/3, leiden/3, VF2 functions/3).
+- `Grafi.Graph.edges/1` on undirected graphs returns every parallel
+  edge and orients each edge `from <= to`. Serializer output changes
+  for undirected multigraphs, and the endpoint order of an exported
+  edge can change for any undirected graph. Undirected
+  `Grafi.Algo.ShortestPath.bellman_ford/2` returns
+  `{:error, :negative_cycle}` for a negative edge reachable from
+  `source`. See Fixed below.
+
+### Added (NIF safety)
+- `engine: :auto | :nif | :elixir` option on every NIF-capable
+  function (PageRank, betweenness, closeness, Dijkstra, Louvain,
+  Leiden, label propagation, SCC, topological sort, all isomorphism
+  functions), backed by `Grafi.NIF.engine/3`.
+- `Grafi.NIFError`, raised when the NIF fails in a function that has no
+  error return.
+- `timeout:` option for every isomorphism function on both engines
+  (integer milliseconds up to `0xFFFFFFFF`, or `:infinity`).
+  `isomorphism/3`, `subgraph_isomorphism/3` and
+  `count_subgraph_isomorphisms/3` return `{:error, :timeout}`; the `?`
+  predicates raise `Grafi.TimeoutError`.
+- `config :grafi, vf2_timeout` (default `:infinity`): the isomorphism
+  timeout when no `:timeout` option is given. Set a finite value when
+  matching graphs from untrusted input.
+- `Grafi.TimeoutError`, raised by the isomorphism `?` predicates when
+  the search runs out of time.
+- `objective: :modularity | :cpm` for Leiden. The reported modularity
+  is now comparable to Louvain's.
+- NIF defaults (`nif_threshold: 500`, `nif_enabled: true`) live in the
+  application env, so they apply when grafi is a dependency.
+- CI runs the suite in three engine modes and merges coverage.
+
+### Fixed (NIF safety)
+- Directed `Community.louvain/1` aborted the whole VM (exit 134): igraph's
+  error handlers are thread-local and were only installed on the
+  loading thread. Every NIF thread now installs non-aborting handlers.
+  Louvain and Leiden return `{:error, :directed_unsupported}` on
+  directed graphs.
+- igraph silently accepted negative weights in PageRank and Leiden.
+  Weighted centralities now raise `ArgumentError`; Dijkstra and
+  community detection return `{:error, :negative_weight}` on both
+  engines.
+- Invalid options (`damping`, `iterations`, `tolerance`, `resolution`,
+  `engine`, `timeout`) raise `ArgumentError` before dispatch; integer
+  `resolution` is accepted.
+- Non-finite NIF results (e.g. igraph's NaN closeness for a vertex that
+  reaches nothing) are returned as `0.0`, matching the Elixir engine.
+- Dijkstra NIF distances on multigraphs sum the weights of the edges
+  actually used.
+- `nif_is_acyclic` ran on a normal scheduler; every CSR-consuming NIF
+  is now dirty.
+- NIF error messages are binaries, not charlists.
+- `Grafi.Graph.to_csr/1` sent igraph the wrong undirected self-loops
+  when a vertex had two or more: the newest loop was kept twice and the
+  older ones dropped, so PageRank, closeness, betweenness and Dijkstra
+  on the NIF engine disagreed with the Elixir engine. PageRank on both
+  engines counts an undirected self-loop twice (igraph's convention;
+  NetworkX counts it once).
+- An invalid `:engine` now raises `ArgumentError` on every input,
+  including early-return paths (e.g. closeness of a one-vertex graph).
+- A VF2 `timeout:` too large for the native clock overflowed into an
+  already-expired deadline, and `timeout: 2**63` returned
+  `{:error, :badarg_timeout}`. Such values now raise `ArgumentError`;
+  the raw NIF treats any int64 above `0xFFFFFFFF` as no deadline.
+- `Grafi.NIF.available?/0` raised when the `:grafi` application env
+  was not loaded; the NIF settings now fall back to their defaults.
+
 ### Added
 - README sections covering pre-Hex install instructions, benchmarks
   scaffolding, a "When to use Grafi" decision guide, and a
@@ -109,6 +207,24 @@ All notable changes to Grafi are documented here, following
   — values depend on damping factor and iteration count.
 
 ### Fixed
+- `Grafi.Graph.delete_vertex/2` miscounted `num_edges` when the vertex
+  had self-loops; the count could go negative.
+- `Grafi.Graph.subgraph/2` doubled undirected edges and self-loops,
+  doubled edges again for every repeated id in `keep`, and reversed the
+  order of parallel edges (so a later `delete_edge/3` removed the
+  oldest copy instead of the newest).
+- `Grafi.Graph.edges/1` collapsed undirected parallel edges that shared
+  a label (including unlabelled ones) and oriented undirected edges
+  arbitrarily. It now returns every edge exactly once, so
+  `length(edges(g)) == num_edges(g)`, with undirected edges oriented
+  `from <= to` in term order. An undirected edge between ids that
+  compare equal but differ (`1` and `1.0`) is listed once instead of
+  twice. The serializers now emit every parallel edge, and
+  MatrixMarket sums all of them.
+- `Grafi.Algo.ShortestPath.bellman_ford/2` relaxed undirected edges in
+  one direction only, so vertices reachable only "backwards" were
+  missing. A negative undirected edge reachable from `source` is now
+  reported as `{:error, :negative_cycle}`.
 - igraph 1.0.x and OTP 28 compatibility in the C++ NIF.
 - Replaced throw-for-flow-control with explicit conditionals in the
   pure-Elixir algorithms.

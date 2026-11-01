@@ -97,6 +97,32 @@ defmodule Grafi.AlgoTest do
     assert dists[:c] == -1.0
   end
 
+  test "Bellman-Ford relaxes undirected edges in both directions" do
+    g = Grafi.new(type: :undirected) |> Grafi.add_edges([{:a, :b}, {:b, :c}])
+
+    assert Grafi.Algo.ShortestPath.bellman_ford(g, :a) == {:ok, %{a: 0.0, b: 1.0, c: 2.0}}
+    assert Grafi.Algo.ShortestPath.bellman_ford(g, :c) == {:ok, %{a: 2.0, b: 1.0, c: 0.0}}
+  end
+
+  # The heavier edge is added last, so it is the newest copy: a collapse that
+  # keeps one copy per pair would keep 5.0.
+  test "Bellman-Ford uses the lighter of two undirected parallel edges from either end" do
+    g =
+      Grafi.new(type: :undirected)
+      |> Grafi.add_edges([{:a, :b, weight: 1.0}, {:a, :b, weight: 5.0}])
+
+    assert Grafi.Algo.ShortestPath.bellman_ford(g, :a) == {:ok, %{a: 0.0, b: 1.0}}
+    assert Grafi.Algo.ShortestPath.bellman_ford(g, :b) == {:ok, %{a: 1.0, b: 0.0}}
+  end
+
+  test "Bellman-Ford reports a negative undirected edge as a negative cycle" do
+    g =
+      Grafi.new(type: :undirected)
+      |> Grafi.add_edges([{:a, :b, weight: 1.0}, {:b, :c, weight: -1.0}])
+
+    assert Grafi.Algo.ShortestPath.bellman_ford(g, :a) == {:error, :negative_cycle}
+  end
+
   test "A* search", %{g: g} do
     # Simple heuristic: always 0 (reduces to Dijkstra)
     assert {:ok, {path, _}} = Grafi.a_star(g, :a, :d, fn _ -> 0 end)

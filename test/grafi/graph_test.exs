@@ -122,18 +122,164 @@ defmodule Grafi.GraphTest do
     end
   end
 
+  describe "multigraph edge accounting" do
+    test "edges/1 lists every unlabelled parallel edge" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b, weight: 1.0}, {:a, :b, weight: 5.0}])
+
+      edges = Graph.edges(g)
+      assert edges |> Enum.map(& &1.weight) |> Enum.sort() == [1.0, 5.0]
+      assert Enum.all?(edges, &(&1.from == :a and &1.to == :b))
+      assert length(edges) == Graph.num_edges(g)
+    end
+
+    test "edges/1 lists each of several self-loops once" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :a, weight: 1.0}, {:a, :a, weight: 7.0}])
+
+      edges = Graph.edges(g)
+      assert edges |> Enum.map(& &1.weight) |> Enum.sort() == [1.0, 7.0]
+      assert length(edges) == Graph.num_edges(g)
+    end
+
+    # More than 32 vertices, so the adjacency maps are hash-ordered and the
+    # first copy met is not always the lower endpoint's.
+    test "edges/1 orients each undirected edge from <= to" do
+      g = Graph.new(type: :undirected) |> Graph.add_edges(for i <- 39..1//-1, do: {i, i - 1})
+      edges = Graph.edges(g)
+
+      assert length(edges) == 39
+      assert Enum.all?(edges, &(&1.from <= &1.to))
+    end
+
+    test "edges/1 lists an undirected edge between ids that compare equal but differ once" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(1, 1.0, weight: 3.0)
+      {_idx, csr} = Graph.to_csr(g)
+
+      assert [%{weight: 3.0}] = Graph.edges(g)
+      assert byte_size(csr.col_indices) == 8
+
+      sg = Graph.subgraph(g, [1, 1.0])
+      assert Graph.num_edges(sg) == 1
+      assert length(Graph.edges(sg)) == 1
+
+      for {u, v} <- [{1, 1.0}, {1.0, 1}] do
+        deleted = Graph.delete_edge(g, u, v)
+        assert {Graph.num_edges(deleted), Graph.edges(deleted)} == {0, []}
+      end
+    end
+
+    test "delete_vertex/2 counts an undirected self-loop once" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :a}, {:a, :b}])
+        |> Graph.delete_vertex(:a)
+
+      assert Graph.num_edges(g) == 0
+    end
+
+    test "delete_vertex/2 counts a directed self-loop once" do
+      g =
+        Graph.new()
+        |> Graph.add_edges([{:a, :a}, {:a, :b}, {:c, :a}])
+        |> Graph.delete_vertex(:a)
+
+      assert Graph.num_edges(g) == 0
+    end
+
+    test "subgraph/2 copies each undirected edge and self-loop once" do
+      sg =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b}, {:a, :a}, {:b, :c}])
+        |> Graph.subgraph([:a, :b])
+
+      assert Graph.num_edges(sg) == 2
+      assert length(Graph.edges_between(sg, :a, :b)) == 1
+      assert length(Graph.edges(sg)) == 2
+    end
+
+    test "subgraph/2 keeps parallel-edge order, so delete_edge/3 still drops the newest" do
+      for type <- [:directed, :undirected] do
+        sg =
+          Graph.new(type: type)
+          |> Graph.add_edges([
+            {:a, :b, weight: 1.0},
+            {:a, :b, weight: 5.0},
+            {:a, :a, weight: 2.0},
+            {:a, :a, weight: 4.0}
+          ])
+          |> Graph.subgraph([:a, :b])
+          |> Graph.delete_edge(:a, :b)
+          |> Graph.delete_edge(:a, :a)
+
+        assert sg |> Graph.edges() |> Enum.map(& &1.weight) |> Enum.sort() == [1.0, 2.0],
+               "#{type}"
+      end
+    end
+  end
+
   describe "CSR conversion" do
+    defp ints(bin), do: for(<<i::signed-native-64 <- bin>>, do: i)
+    defp floats(bin), do: for(<<w::float-native-64 <- bin>>, do: w)
+
     test "to_csr produces valid format" do
       g = Graph.new() |> Graph.add_edges([{:a, :b, weight: 1.0}, {:b, :c, weight: 2.0}])
       {idx, csr} = Graph.to_csr(g)
 
-      assert map_size(idx) == 3
-      # n_vertices + 1
-      assert length(csr.row_offsets) == 4
-      assert length(csr.col_indices) == 2
-      assert length(csr.weights) == 2
+      assert idx == %{a: 0, b: 1, c: 2}
+      assert ints(csr.row_offsets) == [0, 1, 2, 2]
+      assert ints(csr.col_indices) == [1, 2]
+      assert floats(csr.weights) == [1.0, 2.0]
       assert csr.n_vertices == 3
       assert csr.directed == true
+      assert csr.vertices == {:a, :b, :c}
+    end
+
+    test "to_csr lists every undirected edge once, including parallel edges and self-loops" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([
+          {:a, :b, weight: 1.0},
+          {:a, :b, weight: 5.0},
+          {:b, :b, weight: 2.0},
+          {:b, :c, weight: 3.0}
+        ])
+
+      {idx, csr} = Graph.to_csr(g)
+      offsets = ints(csr.row_offsets)
+      cols = ints(csr.col_indices)
+      weights = floats(csr.weights)
+
+      assert length(cols) == Graph.num_edges(g)
+      assert List.last(offsets) == Graph.num_edges(g)
+
+      edges =
+        for row <- 0..(csr.n_vertices - 1),
+            j <- Enum.at(offsets, row)..(Enum.at(offsets, row + 1) - 1)//1 do
+          {row, Enum.at(cols, j), Enum.at(weights, j)}
+        end
+
+      a = idx[:a]
+      b = idx[:b]
+      c = idx[:c]
+      assert Enum.sort(edges) == Enum.sort([{a, b, 1.0}, {a, b, 5.0}, {b, b, 2.0}, {b, c, 3.0}])
+    end
+
+    test "to_csr keeps one copy of each of several undirected self-loops on a vertex" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :a, weight: 1.0}, {:a, :a, weight: 7.0}])
+
+      {_idx, csr} = Graph.to_csr(g)
+
+      assert Enum.sort(floats(csr.weights)) == [1.0, 7.0]
+      assert length(ints(csr.col_indices)) == Graph.num_edges(g)
+
+      # delete_edge/3 drops the newest loop; the older one must survive intact.
+      {_idx, csr} = g |> Graph.delete_edge(:a, :a) |> Graph.to_csr()
+      assert floats(csr.weights) == [1.0]
     end
   end
 

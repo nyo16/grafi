@@ -132,72 +132,61 @@ defmodule Grafi.EdgeCasesTest do
   end
 
   describe "CSR structural validation" do
-    test "valid CSR passes" do
-      csr = %{
-        row_offsets: [0, 1, 1],
-        col_indices: [1],
-        weights: [1.0],
-        n_vertices: 2,
+    defp csr(row_offsets, col_indices, weights, n) do
+      %{
+        row_offsets: for(i <- row_offsets, into: <<>>, do: <<i::signed-native-64>>),
+        col_indices: for(i <- col_indices, into: <<>>, do: <<i::signed-native-64>>),
+        weights: for(w <- weights, into: <<>>, do: <<w::float-native-64>>),
+        n_vertices: n,
         directed: true
       }
+    end
 
+    test "valid CSR passes" do
+      assert Grafi.NIF.validate_csr!(csr([0, 1, 1], [1], [1.0], 2)) == :ok
+    end
+
+    test "Graph.to_csr/1 output passes" do
+      g = Graph.new(type: :undirected) |> Graph.add_edges([{:a, :b}, {:b, :b}, {:b, :c}])
+      {_idx, csr} = Graph.to_csr(g)
       assert Grafi.NIF.validate_csr!(csr) == :ok
     end
 
     test "rejects row_offsets not starting at 0" do
-      csr = %{
-        row_offsets: [1, 2],
-        col_indices: [0],
-        weights: [1.0],
-        n_vertices: 1,
-        directed: true
-      }
-
       assert_raise ArgumentError, ~r/row_offsets\[0\]/, fn ->
-        Grafi.NIF.validate_csr!(csr)
+        Grafi.NIF.validate_csr!(csr([1, 2], [0], [1.0], 1))
       end
     end
 
     test "rejects non-monotonic row_offsets" do
-      csr = %{
-        row_offsets: [0, 2, 1],
-        col_indices: [0, 1],
-        weights: [1.0, 1.0],
-        n_vertices: 2,
-        directed: true
-      }
-
       assert_raise ArgumentError, ~r/monotonically/, fn ->
-        Grafi.NIF.validate_csr!(csr)
+        Grafi.NIF.validate_csr!(csr([0, 2, 1], [0, 1], [1.0, 1.0], 2))
       end
     end
 
     test "rejects out-of-bounds col_indices" do
-      csr = %{
-        row_offsets: [0, 1],
-        col_indices: [5],
-        weights: [1.0],
-        n_vertices: 1,
-        directed: true
-      }
-
       assert_raise ArgumentError, ~r/out of bounds/, fn ->
-        Grafi.NIF.validate_csr!(csr)
+        Grafi.NIF.validate_csr!(csr([0, 1], [5], [1.0], 1))
       end
     end
 
-    test "rejects last offset != length(col_indices)" do
-      csr = %{
-        row_offsets: [0, 1],
-        col_indices: [0, 0],
-        weights: [1.0, 1.0],
-        n_vertices: 1,
-        directed: true
-      }
-
+    test "rejects last offset != number of col_indices" do
       assert_raise ArgumentError, ~r/last row_offset/, fn ->
-        Grafi.NIF.validate_csr!(csr)
+        Grafi.NIF.validate_csr!(csr([0, 1], [0, 0], [1.0, 1.0], 1))
       end
+    end
+
+    test "rejects a truncated array" do
+      bad = %{csr([0, 1], [0], [1.0], 1) | col_indices: <<0::signed-native-32>>}
+
+      assert_raise ArgumentError, ~r/multiple of 8/, fn -> Grafi.NIF.validate_csr!(bad) end
+    end
+
+    test "rejects NaN weights" do
+      nan = <<0x7FF8000000000001::unsigned-native-64>>
+      bad = %{csr([0, 1], [0], [1.0], 1) | weights: nan}
+
+      assert_raise ArgumentError, ~r/finite/, fn -> Grafi.NIF.validate_csr!(bad) end
     end
   end
 

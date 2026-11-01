@@ -207,6 +207,10 @@ You can also disable NIF dispatch entirely (forces pure-Elixir paths
 on every algorithm) with `GRAFI_NIF_ENABLED=false`, which is what CI
 uses to exercise the fallback codepath.
 
+Isomorphism searches are unbounded by default. Set
+`config :grafi, vf2_timeout: 5_000` (milliseconds) to cap every VF2 search
+that has no explicit `:timeout`; use a finite value for untrusted input.
+
 All NIFs are registered as `ERL_NIF_DIRTY_JOB_CPU_BOUND`, so even
 multi-second runs (e.g. Louvain on a 100k-vertex graph) execute on a
 dirty CPU scheduler and never stall the BEAM's normal schedulers.

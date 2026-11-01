@@ -7,7 +7,9 @@ defmodule Grafi.Algo.Cycles do
   > `Grafi.CycleError` on any edge that would close a cycle.
   """
 
+  alias Grafi.Args
   alias Grafi.Graph
+  alias Grafi.NIF
 
   @doc "Returns true if the graph contains at least one cycle."
   @spec has_cycle?(Graph.t()) :: boolean()
@@ -51,9 +53,52 @@ defmodule Grafi.Algo.Cycles do
     end
   end
 
-  @doc "Returns all strongly connected components using Tarjan's algorithm."
-  @spec strongly_connected_components(Graph.t()) :: [[any()]]
-  def strongly_connected_components(%Graph{} = g) do
+  @doc """
+  Returns all strongly connected components.
+
+  The output is canonical: each component's vertices are sorted by term
+  order, and components are ordered by their smallest vertex. Both engines
+  return exactly this list.
+
+  ## Options
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`. The Elixir
+      engine uses Tarjan's algorithm. Raises `Grafi.NIFError` if the NIF
+      fails or `engine: :nif` is unavailable.
+  """
+  @spec strongly_connected_components(Graph.t(), keyword()) :: [[any()]]
+  def strongly_connected_components(%Graph{} = g, opts \\ []) do
+    Args.engine!(opts)
+
+    case NIF.engine(g, opts) do
+      :nif -> scc_nif(g)
+      :elixir -> g |> tarjan_sccs() |> Enum.map(&Enum.sort/1) |> Enum.sort_by(&hd/1)
+      {:error, reason} -> raise Grafi.NIFError, reason: reason
+    end
+  end
+
+  # igraph reports a component id per vertex index. Indices follow term order,
+  # so collecting members in index order yields sorted components, already
+  # ordered by their smallest vertex: the canonical form in O(V), no sort.
+  defp scc_nif(g) do
+    {_idx, csr} = Graph.to_csr(g)
+    {membership, _n_components} = NIF.call!(NIF.nif_scc(csr))
+
+    {members, order} =
+      membership
+      |> Enum.with_index()
+      |> Enum.reduce({%{}, []}, fn {c, i}, {members, order} ->
+        v = elem(csr.vertices, i)
+
+        case members do
+          %{^c => vs} -> {%{members | c => [v | vs]}, order}
+          _ -> {Map.put(members, c, [v]), [c | order]}
+        end
+      end)
+
+    order |> Enum.reverse() |> Enum.map(&Enum.reverse(members[&1]))
+  end
+
+  defp tarjan_sccs(g) do
     state = %{idx: 0, stack: [], on_stack: MapSet.new(), indices: %{}, lowlinks: %{}, sccs: []}
 
     state =
@@ -61,7 +106,7 @@ defmodule Grafi.Algo.Cycles do
         if Map.has_key?(st.indices, v), do: st, else: tarjan(g, v, st)
       end)
 
-    Enum.reverse(state.sccs)
+    state.sccs
   end
 
   @doc "Returns all connected components via BFS (ignores edge direction)."

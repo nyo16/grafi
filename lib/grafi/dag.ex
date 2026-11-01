@@ -14,7 +14,9 @@ defmodule Grafi.DAG do
       {:ok, [:compile, :test, :deploy]}
   """
 
+  alias Grafi.Args
   alias Grafi.Graph
+  alias Grafi.NIF
 
   @type t :: %__MODULE__{graph: Graph.t()}
   defstruct [:graph]
@@ -22,14 +24,20 @@ defmodule Grafi.DAG do
   @spec new() :: t()
   def new, do: %__MODULE__{graph: Graph.new(type: :directed)}
 
-  @doc "Wraps an existing directed graph as a DAG, returning an error if it contains a cycle."
+  @doc """
+  Wraps an existing directed graph as a DAG, returning an error if it
+  contains a cycle.
+
+  Raises `Grafi.NIFError` if the igraph cycle check fails unexpectedly.
+  """
   @spec from_graph(Graph.t()) :: {:ok, t()} | {:error, :has_cycle | :must_be_directed}
   def from_graph(%Graph{type: :undirected}), do: {:error, :must_be_directed}
 
   def from_graph(%Graph{type: :directed} = g) do
-    case topological_sort_graph(g) do
+    case topological_sort_graph(g, []) do
       {:ok, _} -> {:ok, %__MODULE__{graph: g}}
-      {:error, _} -> {:error, :has_cycle}
+      {:error, :has_cycle} = error -> error
+      {:error, reason} -> raise Grafi.NIFError, reason: reason
     end
   end
 
@@ -97,9 +105,17 @@ defmodule Grafi.DAG do
   @doc """
   Returns a topological ordering of the DAG's vertices via Kahn's algorithm.
 
-  Since a `Grafi.DAG` is cycle-free by construction this always succeeds with
+  The order is deterministic: sources start in vertex term order, and each
+  vertex releases its successors in term order (first in, first out). Both
+  engines produce this exact order.
+
+  Since a `Grafi.DAG` is cycle-free by construction this succeeds with
   `{:ok, sorted}` (the `{:error, :has_cycle}` arm exists for internal use on
   raw `Grafi.Graph`s).
+
+  ## Options
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`. `engine: :nif`
+      without the NIF returns `{:error, :nif_not_available}`.
 
   ## Examples
 
@@ -109,8 +125,13 @@ defmodule Grafi.DAG do
       ...> |> Grafi.DAG.topological_sort()
       {:ok, [:a, :b, :c]}
   """
-  @spec topological_sort(t()) :: {:ok, [any()]} | {:error, :has_cycle}
-  def topological_sort(%__MODULE__{graph: g}), do: topological_sort_graph(g)
+  @spec topological_sort(t(), keyword()) ::
+          {:ok, [any()]}
+          | {:error, :has_cycle | :nif_not_available | {:igraph, String.t()}}
+  def topological_sort(%__MODULE__{graph: g}, opts \\ []) do
+    Args.engine!(opts)
+    topological_sort_graph(g, opts)
+  end
 
   @doc "Groups vertices into layers by their longest-path depth from sources."
   @spec layers(t()) :: %{non_neg_integer() => [any()]}
@@ -210,30 +231,54 @@ defmodule Grafi.DAG do
       else: {d, p}
   end
 
-  defp topological_sort_graph(%Graph{} = g) do
-    in_deg = Graph.vertices(g) |> Map.new(&{&1, Graph.in_degree(g, &1)})
-    queue = for {v, 0} <- in_deg, do: v
-    kahn(g, :queue.from_list(queue), in_deg, [])
+  defp topological_sort_graph(%Graph{} = g, opts) do
+    case NIF.engine(g, opts) do
+      :nif ->
+        {_idx, csr} = Graph.to_csr(g)
+
+        case NIF.call(NIF.nif_topological_sort(csr)) do
+          {:ok, order} -> {:ok, Enum.map(order, &elem(csr.vertices, &1))}
+          {:error, _} = error -> error
+        end
+
+      :elixir ->
+        kahn(g)
+
+      {:error, _} = error ->
+        error
+    end
   end
 
-  defp kahn(g, q, in_deg, result) do
-    case :queue.out(q) do
-      {:empty, _} ->
-        if Enum.any?(in_deg, fn {_, d} -> d > 0 end),
-          do: {:error, :has_cycle},
-          else: {:ok, Enum.reverse(result)}
+  # Kahn's algorithm with ties broken by vertex term order, which is exactly
+  # igraph_topological_sorting's order on the CSR built by Graph.to_csr/1
+  # (vertex index = term order). Degrees count distinct neighbours, matching
+  # one decrement per distinct successor.
+  defp kahn(g) do
+    vs = g |> Graph.vertices() |> Enum.sort()
+    in_deg = Map.new(vs, &{&1, Graph.in_degree(g, &1)})
+    sources = Enum.filter(vs, &(in_deg[&1] == 0))
+    do_kahn(g, :queue.from_list(sources), in_deg, [], length(vs))
+  end
 
-      {{:value, v}, rest_q} ->
-        {adds, in_deg} =
-          Graph.out_neighbors(g, v)
-          |> Enum.reduce({[], in_deg}, fn n, {a, d} ->
-            nd = d[n] - 1
-            d = Map.put(d, n, nd)
-            if nd == 0, do: {[n | a], d}, else: {a, d}
+  defp do_kahn(g, q, in_deg, acc, remaining) do
+    case :queue.out(q) do
+      {:empty, _} when remaining == 0 ->
+        {:ok, Enum.reverse(acc)}
+
+      {:empty, _} ->
+        {:error, :has_cycle}
+
+      {{:value, v}, q} ->
+        {q, in_deg} =
+          g
+          |> Graph.out_neighbors(v)
+          |> Enum.sort()
+          |> Enum.reduce({q, in_deg}, fn n, {q, d} ->
+            d = Map.update!(d, n, &(&1 - 1))
+            if d[n] == 0, do: {:queue.in(n, q), d}, else: {q, d}
           end)
 
-        new_q = Enum.reduce(Enum.reverse(adds), rest_q, fn n, q -> :queue.in(n, q) end)
-        kahn(g, new_q, Map.put(in_deg, v, -1), [v | result])
+        do_kahn(g, q, in_deg, [v | acc], remaining - 1)
     end
   end
 

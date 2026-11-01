@@ -18,6 +18,8 @@ defmodule Grafi.MixProject do
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         flags: [:unmatched_returns, :error_handling]
       ],
+      # Floor for the merged three-engine-mode coverage in CI (86.9% when set).
+      test_coverage: [summary: [threshold: 85]],
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",
       description: "High-performance graph library for Elixir — γραφή",
@@ -32,7 +34,12 @@ defmodule Grafi.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [
+      extra_applications: [:logger],
+      # Defaults duplicated as module attributes in Grafi.NIF (nif_threshold,
+      # nif_enabled) and Grafi.Algo.Isomorphism (vf2_timeout); keep in sync.
+      env: [nif_threshold: 500, nif_enabled: true, vf2_timeout: :infinity]
+    ]
   end
 
   defp elixirc_paths(_), do: ["lib"]

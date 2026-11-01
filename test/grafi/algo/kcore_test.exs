@@ -75,7 +75,7 @@ defmodule Grafi.Algo.KCoreTest do
 
       sub = KCore.k_core(g, 2)
       assert Enum.sort(Graph.vertices(sub)) == [:a, :b, :c]
-      # `Graph.edges/1` deduplicates undirected pairs.
+      # `Graph.edges/1` lists each undirected edge once.
       assert length(Graph.edges(sub)) == 3
       assert sub.type == :undirected
     end
