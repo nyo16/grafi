@@ -65,12 +65,15 @@ defmodule Grafi.Serialize.Util do
 
   def parse_int(s) when is_binary(s), do: :error
 
-  @doc "Like `parse_number/1`, tagged for decoders: `{:error, {:invalid_weight, s}}`."
+  @doc """
+  Like `parse_number/1`, tagged for decoders: `{:error, {:invalid_weight,
+  text}}`, where `text` is an `excerpt/1` of the token.
+  """
   @spec parse_weight(String.t()) :: {:ok, float()} | {:error, {:invalid_weight, String.t()}}
   def parse_weight(s) when is_binary(s) do
     case parse_number(s) do
       {:ok, w} -> {:ok, w}
-      {:error, :bad_number} -> {:error, {:invalid_weight, s}}
+      {:error, :bad_number} -> {:error, {:invalid_weight, excerpt(s)}}
     end
   end
 
