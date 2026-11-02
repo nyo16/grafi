@@ -335,7 +335,7 @@ defmodule Grafi.Viz do
 
   defp append_output({acc, size}, data) do
     take = min(byte_size(data), @max_output - size)
-    {[acc | Util.own(binary_part(data, 0, take))], size + take}
+    {[acc, Util.own(binary_part(data, 0, take))], size + take}
   end
 
   defp deadline(:infinity), do: :infinity

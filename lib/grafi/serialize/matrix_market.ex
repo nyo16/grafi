@@ -378,7 +378,7 @@ defmodule Grafi.Serialize.MatrixMarket do
     percent_encode(rest, [acc | escaped])
   end
 
-  defp percent_encode(<<?%, rest::binary>>, acc), do: percent_encode(rest, [acc | "%25"])
+  defp percent_encode(<<?%, rest::binary>>, acc), do: percent_encode(rest, [acc, "%25"])
   defp percent_encode(<<c, rest::binary>>, acc), do: percent_encode(rest, [acc, c])
   defp percent_encode(<<>>, acc), do: acc
 
