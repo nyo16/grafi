@@ -18,9 +18,10 @@ defmodule Grafi.Serialize.DOT do
       identifier (letters, digits and `_`, not starting with a digit and not
       a DOT keyword) is quoted like a vertex ID.
 
-  Vertex IDs are quoted with embedded `"` and backslashes escaped. Control
-  characters in IDs, labels or the name raise `ArgumentError` — DOT does
-  not have a way to represent them safely.
+  Vertex IDs are quoted with embedded `"` and backslashes escaped; tabs and
+  newlines are kept inside the quotes. Other control characters in IDs,
+  labels or the name raise `ArgumentError`, because DOT cannot represent
+  them.
   """
   @spec to_dot(Graph.t(), keyword()) :: String.t()
   def to_dot(%Graph{} = g, opts \\ []) do

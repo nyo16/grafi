@@ -82,4 +82,19 @@ defmodule Grafi.Serialize.Util do
               "expected :max_bytes to be a positive integer or :infinity, got: #{inspect(other)}"
     end
   end
+
+  @doc """
+  A line-splitting function for the `:separator` option: `nil` splits on
+  runs of whitespace; a string splits on exactly that string and trims each
+  field (so fields may contain spaces). Raises `ArgumentError` otherwise.
+  """
+  @spec field_splitter(String.t() | nil) :: (String.t() -> [String.t()])
+  def field_splitter(nil), do: &String.split/1
+
+  def field_splitter(sep) when is_binary(sep) and sep != "" do
+    fn line -> line |> String.split(sep) |> Enum.map(&String.trim/1) end
+  end
+
+  def field_splitter(other),
+    do: raise(ArgumentError, "expected :separator to be a non-empty string, got: #{inspect(other)}")
 end

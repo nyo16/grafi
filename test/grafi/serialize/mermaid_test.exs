@@ -126,6 +126,14 @@ defmodule Grafi.Serialize.MermaidTest do
       assert length(lines(out)) == 4
     end
 
+    # Mermaid would render `#quot;` as a quote mark if `#` were left alone.
+    test "label text that looks like an entity code stays literal" do
+      g = Graph.new() |> Graph.add_vertex(:a)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> "say #quot;hi" end)
+
+      assert out =~ ~s(v0["say #35;quot;hi"])
+    end
+
     test "backticks, pipes and quotes in node labels become entity codes" do
       g = Graph.new() |> Graph.add_vertex("a`|\"b")
       assert Mermaid.to_mermaid(g) =~ ~s(v0["a#96;#124;#quot;b"])

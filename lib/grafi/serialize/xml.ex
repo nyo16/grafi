@@ -22,10 +22,16 @@ defmodule Grafi.Serialize.XML do
   @doc """
   Decodes the five predefined entities and numeric character references in
   one pass (so `&amp;lt;` becomes `&lt;`, not `<`). An unknown or invalid
-  reference is kept as is.
+  reference is kept as is. Text without `&` is returned untouched (the
+  common case, without a regex pass).
   """
   @spec unescape(String.t()) :: String.t()
-  def unescape(s) when is_binary(s), do: Regex.replace(@entity, s, &decode/2)
+  def unescape(s) when is_binary(s) do
+    case :binary.match(s, "&") do
+      :nomatch -> s
+      _ -> Regex.replace(@entity, s, &decode/2)
+    end
+  end
 
   defp decode(_, "lt"), do: "<"
   defp decode(_, "gt"), do: ">"

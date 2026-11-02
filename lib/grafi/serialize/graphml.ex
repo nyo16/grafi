@@ -69,7 +69,7 @@ defmodule Grafi.Serialize.GraphML do
             ~s(    <node id="#{id}"/>)
 
           label ->
-            label_str = label |> to_string() |> XML.escape()
+            label_str = label |> to_string() |> data_text()
 
             ~s(    <node id="#{id}"><data key="vlabel">#{label_str}</data></node>)
         end
@@ -92,7 +92,7 @@ defmodule Grafi.Serialize.GraphML do
         data_parts =
           if e.label,
             do: [
-              ~s(      <data key="elabel">#{XML.escape(to_string(e.label))}</data>)
+              ~s(      <data key="elabel">#{data_text(to_string(e.label))}</data>)
               | data_parts
             ],
             else: data_parts
@@ -244,18 +244,29 @@ defmodule Grafi.Serialize.GraphML do
 
   defp attribute(attrs, name) do
     case attrs do
-      %{^name => value} -> unescape(value)
+      %{^name => value} -> XML.unescape(value)
       _ -> nil
     end
   end
 
-  # Most values hold no entity; skip the regex pass for those.
-  defp unescape(text) do
-    case :binary.match(text, "&") do
-      :nomatch -> text
-      _ -> XML.unescape(text)
-    end
+  # Escaped `<data>` text. The decoder trims data text (tolerating
+  # pretty-printed input), so leading/trailing whitespace is written as
+  # character references, which survive the trim and decode back exactly.
+  defp data_text(s) do
+    {lead, rest} = split_while(s, &whitespace?/1)
+    {trail, core} = rest |> String.reverse() |> split_while(&whitespace?/1)
+
+    char_refs(lead) <> XML.escape(String.reverse(core)) <> char_refs(String.reverse(trail))
   end
+
+  defp split_while(s, pred) do
+    prefix = s |> String.codepoints() |> Enum.take_while(pred) |> Enum.join()
+    {prefix, binary_part(s, byte_size(prefix), byte_size(s) - byte_size(prefix))}
+  end
+
+  defp whitespace?(c), do: String.trim(c) == ""
+
+  defp char_refs(s), do: for(<<c::utf8 <- s>>, into: "", do: "&##{c};")
 
   # `<data key="...">text</data>` children as key => unescaped, trimmed text.
   defp parse_data(""), do: %{}
@@ -265,8 +276,8 @@ defmodule Grafi.Serialize.GraphML do
     |> Regex.scan(body, capture: :all_but_first)
     |> Map.new(fn [double_quoted | rest] ->
       # Exactly one of the two key groups took part; the other is "".
-      key = unescape(double_quoted <> Enum.at(rest, 0, ""))
-      text = rest |> Enum.at(1, "") |> String.trim() |> unescape()
+      key = XML.unescape(double_quoted <> Enum.at(rest, 0, ""))
+      text = rest |> Enum.at(1, "") |> String.trim() |> XML.unescape()
       {key, text}
     end)
   end

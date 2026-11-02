@@ -21,7 +21,8 @@ defmodule Grafi.Serialize.Mermaid do
   alias Grafi.Graph
   alias Grafi.Serialize.Util
 
-  @escaped ["\r\n", "\r", "\n", "`", "|", "\""]
+  # `#` is escaped too, so label text like `#quot;` stays literal.
+  @escaped ["\r\n", "\r", "\n", "`", "|", "\"", "#"]
 
   @type direction :: :td | :lr | :bt | :rl
   @type graph_type :: :flowchart | :graph
@@ -44,8 +45,9 @@ defmodule Grafi.Serialize.Mermaid do
       rendering of atoms, strings, and integers.
 
   In node and edge labels, newlines (`\\n`, `\\r`, `\\r\\n`) become `#10;`,
-  backticks `#96;`, `|` `#124;` and `"` `#quot;`, so a label cannot end its
-  node, its line, or an enclosing Markdown code fence.
+  backticks `#96;`, `|` `#124;`, `"` `#quot;` and `#` `#35;`, so a label
+  cannot end its node, its line, or an enclosing Markdown code fence, and
+  label text that looks like an entity code stays literal.
 
   ## Examples
 
@@ -170,6 +172,7 @@ defmodule Grafi.Serialize.Mermaid do
   defp entity("`"), do: "#96;"
   defp entity("|"), do: "#124;"
   defp entity("\""), do: "#quot;"
+  defp entity("#"), do: "#35;"
 
   # Compact display for whole floats (`80.0`), `Util.format_weight/1`
   # otherwise, which raises for a non-number.

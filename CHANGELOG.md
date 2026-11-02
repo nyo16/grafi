@@ -48,6 +48,42 @@ All notable changes to Grafi are documented here, following
   `Grafi.Algo.ShortestPath.bellman_ford/2` returns
   `{:error, :negative_cycle}` for a negative edge reachable from
   `source`. See Fixed below.
+- **Edge weights must be numbers.** `Grafi.Graph.add_edge/4` raises
+  `ArgumentError` for any other `:weight`. Decoders return
+  `{:error, {:invalid_weight, value}}` instead of silently using 1.0.
+- **Decoders enforce input limits:**
+  - every `from_*` decoder takes `:max_bytes`, default 64 MiB
+    (`:infinity` allowed), and returns `{:error, {:too_large, size, max}}`;
+    the GraphML/GEXF `{:error, :input_too_large}` is gone;
+  - MatrixMarket takes `:max_vertices`, default 10_000_000, and checks it
+    before allocating anything.
+
+  The `Grafi.from_*` facade functions pass options through.
+- **`vertices_as_atoms: true` never creates atoms.** In the edge list and
+  adjacency list decoders it uses existing atoms only; other tokens stay
+  strings.
+- **Stricter decoder errors:**
+  - Pajek rejects unknown sections (`{:unsupported_section, line}`) and
+    malformed or duplicate vertex lines;
+  - MatrixMarket reports `{:index_out_of_range, i}`,
+    `{:nnz_mismatch, declared, seen}` and negative sizes;
+  - GraphML/GEXF report `{:unclosed_element, tag}`;
+  - decoders no longer catch arbitrary exceptions and turn them into
+    error strings.
+- **Pajek semantics:** a file mixing `*Arcs` and `*Edges` decodes to a
+  directed graph with `*Edges` as arcs in both directions. Vertices that
+  share a label become `{label, index}` ids.
+- **Mermaid label escaping:** newlines become `#10;`, backticks `#96;`,
+  `|` `#124;`, `"` `#quot;` and `#` `#35;`. Edge-label pipes used to be
+  `\|`, and newlines used to become spaces.
+- **DOT quoting:** a `:name` that is not a plain identifier, and DOT
+  keywords used as ids, are quoted.
+- **`Grafi.Viz`:**
+  - `graphviz_available?/0` becomes `graphviz_available?/1` (default
+    `:dot`) and checks that engine's own executable;
+  - `render/3` takes `:timeout` (default 30 s) and returns
+    `{:error, :timeout}`;
+  - `{:graphviz_failed, output, code}` carries Graphviz's real output.
 
 ### Added (NIF safety)
 - `engine: :auto | :nif | :elixir` option on every NIF-capable
@@ -141,6 +177,30 @@ All notable changes to Grafi are documented here, following
   - `mix deps.audit`, `mix hex.audit` and `mix deps.unlock --check-unused`;
   - actions pinned by commit SHA, with Dependabot (7-day cooldown) for
     Mix and GitHub Actions.
+
+### Fixed (parser hardening)
+- Pajek no longer loops forever on `*Matrix`, `*Arcslist` or
+  `*Edgeslist` (V6). Section switching is honoured.
+- Quoted Pajek labels escape `\\`, `"`, `\n` and `\r` symmetrically, so a
+  label can no longer inject a section or an edge.
+- A MatrixMarket header declaring huge dimensions no longer allocates
+  them (Sec H1).
+- GraphML and GEXF use a linear tokenizer:
+  - a 10k-vertex/50k-edge round-trip takes under a second (GEXF used to
+    be quadratic: over 15 minutes);
+  - an attribute value containing `id=` is no longer read as the id;
+  - a self-closed node no longer takes the next node's label;
+  - single-quoted attributes and numeric character references are
+    decoded;
+  - GraphML labels with leading or trailing whitespace round-trip.
+- The edge list decoder honours `:separator` and detects weights per
+  line; the adjacency list decoder accepts `:separator`.
+- Numbers in input never raise: overflowing or 400-digit values are
+  rejected as invalid weights.
+- DOT `:name` and labels, and Mermaid/Kino labels, can no longer inject
+  statements or close the enclosing code fence.
+- `Grafi.Viz` creates private (0600), exclusive temp files and runs
+  Graphviz through a port with a timeout that kills the OS process.
 
 ### Fixed (packaging)
 - Using grafi as a dependency failed to compile: `cc_precompiler` was an

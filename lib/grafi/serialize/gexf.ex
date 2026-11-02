@@ -212,16 +212,8 @@ defmodule Grafi.Serialize.GEXF do
 
   defp attribute(attrs, name) do
     case attrs do
-      %{^name => value} -> unescape(value)
+      %{^name => value} -> XML.unescape(value)
       _ -> nil
-    end
-  end
-
-  # Most values hold no entity; skip the regex pass for those.
-  defp unescape(text) do
-    case :binary.match(text, "&") do
-      :nomatch -> text
-      _ -> XML.unescape(text)
     end
   end
 end

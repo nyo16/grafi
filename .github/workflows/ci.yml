@@ -101,6 +101,12 @@ jobs:
       - name: Merge coverage
         run: mix test.coverage
 
+      # Wall-clock budgets (e.g. the 10k-vertex GraphML/GEXF round-trips),
+      # excluded from the parallel runs above.
+      - name: Run slow tests alone
+        if: matrix.graphviz
+        run: mix test --only slow --max-cases 1
+
   # igraph absent: the build must succeed without a NIF and the suite must
   # pass in pure Elixir (test_helper excludes :nif tests).
   no-igraph:

@@ -97,7 +97,7 @@ defmodule Grafi.Serialize.AdjacencyList do
   defp parse(text, opts) do
     type = if Keyword.get(opts, :directed, true), do: :directed, else: :undirected
     atoms? = Keyword.get(opts, :vertices_as_atoms, false)
-    split = splitter(Keyword.get(opts, :separator))
+    split = Util.field_splitter(Keyword.get(opts, :separator))
 
     text
     |> String.split(["\n", "\r\n"])
@@ -120,13 +120,4 @@ defmodule Grafi.Serialize.AdjacencyList do
       Graph.add_edge(acc, s, Util.cast_vertex(n, atoms?))
     end)
   end
-
-  defp splitter(nil), do: &String.split/1
-
-  defp splitter(sep) when is_binary(sep) and sep != "" do
-    fn line -> line |> String.split(sep) |> Enum.map(&String.trim/1) end
-  end
-
-  defp splitter(other),
-    do: raise(ArgumentError, "expected :separator to be a non-empty string, got: #{inspect(other)}")
 end
