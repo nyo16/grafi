@@ -371,8 +371,15 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       assert v == digits
     end
 
-    test "an overlong int id reads back as a string" do
-      digits = String.duplicate("9", 1_000)
+    test "bignum integer ids round-trip" do
+      ids = [Integer.pow(10, 40), -Integer.pow(10, 40)]
+      g = Graph.new() |> Graph.add_edge(hd(ids), List.last(ids))
+      decoded = g |> MatrixMarket.to_matrix_market() |> MatrixMarket.from_matrix_market()
+      assert Enum.sort(Graph.vertices(decoded)) == Enum.sort(ids)
+    end
+
+    test "a hostile multi-kilobyte int id reads back as a string" do
+      digits = String.duplicate("9", 5_000)
 
       input = """
       %%MatrixMarket matrix coordinate real general

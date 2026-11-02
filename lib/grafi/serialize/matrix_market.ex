@@ -56,6 +56,7 @@ defmodule Grafi.Serialize.MatrixMarket do
 
   # A string starting with one of these would read back as another id type.
   @reserved_prefixes ["int:", "atom:", "float:", "str:"]
+  @max_int_id_bytes 1024
 
   # The codepoints String.trim/1 removes (Unicode White_Space): percent-
   # encoded in ids, since every line is trimmed on decode.
@@ -346,12 +347,17 @@ defmodule Grafi.Serialize.MatrixMarket do
   # this VM degrade to their string form rather than minting a new atom.
   defp decode_id("atom:" <> rest), do: rest |> percent_decode() |> Util.cast_vertex(true)
 
-  defp decode_id("int:" <> rest) do
-    case Util.parse_int(rest) do
-      {:ok, i} -> i
-      :error -> Util.own(rest)
+  # Integer ids may legitimately be bignums (Util.parse_int's 19-character
+  # cap is for indices and sizes); the bound only stops a hostile
+  # multi-megabyte digit run.
+  defp decode_id("int:" <> rest) when byte_size(rest) <= @max_int_id_bytes do
+    case Integer.parse(rest) do
+      {i, ""} -> i
+      _ -> Util.own(rest)
     end
   end
+
+  defp decode_id("int:" <> rest), do: Util.own(rest)
 
   defp decode_id("float:" <> rest) do
     case Util.parse_number(rest) do
