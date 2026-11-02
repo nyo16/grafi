@@ -106,7 +106,13 @@ defmodule Grafi.Graph do
     end)
   end
 
-  @doc "Removes a vertex and all its incident edges from the graph."
+  @doc """
+  Removes a vertex and all its incident edges from the graph.
+
+  Only the vertex's neighbours are touched, so the cost is O(d log V) for a
+  vertex with `d` distinct neighbours. Deleting a missing vertex returns
+  the graph unchanged.
+  """
   @spec delete_vertex(t(), vertex_id()) :: t()
   def delete_vertex(%__MODULE__{} = g, v) do
     if not Map.has_key?(g.vertices, v) do
@@ -127,8 +133,10 @@ defmodule Grafi.Graph do
       out_targets = Map.keys(out)
       in_sources = Map.keys(ine)
 
-      out_edges = g.out_edges |> Map.delete(v) |> strip_target(v)
-      in_edges = g.in_edges |> Map.delete(v) |> strip_target(v)
+      # Each in-source s stores v under out_edges[s], and each out-target t
+      # stores v under in_edges[t]; no other vertex refers to v.
+      out_edges = g.out_edges |> Map.delete(v) |> strip_target(in_sources, v)
+      in_edges = g.in_edges |> Map.delete(v) |> strip_target(out_targets, v)
 
       # For directed: each out-target loses an in-edge from v; each in-source loses an out-edge to v.
       # For undirected: out_targets == in_sources; decrement both sides once.
@@ -569,8 +577,17 @@ defmodule Grafi.Graph do
     Enum.reduce(map, 0, fn {_, el}, acc -> acc + length(el) end)
   end
 
-  defp strip_target(map, v) do
-    Map.new(map, fn {from, targets} -> {from, Map.delete(targets, v)} end)
+  defp strip_target(map, neighbours, v) do
+    Enum.reduce(neighbours, map, fn
+      ^v, acc ->
+        acc
+
+      u, acc ->
+        case acc do
+          %{^u => targets} -> Map.put(acc, u, Map.delete(targets, v))
+          _ -> acc
+        end
+    end)
   end
 
   defp has_neighbor_entry?(adj, from, to) do
