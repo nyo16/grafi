@@ -35,9 +35,11 @@ defmodule Grafi.Algo.KCore do
     if vs == [] do
       %{}
     else
-      neigh = Neighborhood.sets(g, self_loops: :drop)
-      degree = Map.new(neigh, fn {v, ns} -> {v, MapSet.size(ns)} end)
-      peel(neigh, degree)
+      neigh = Neighborhood.lists(g, self_loops: :drop)
+      degree = Map.new(neigh, fn {v, ns} -> {v, length(ns)} end)
+      buckets = Enum.group_by(vs, &Map.fetch!(degree, &1))
+      max_d = degree |> Map.values() |> Enum.max()
+      peel(0, max_d, buckets, degree, neigh, %{})
     end
   end
 
@@ -83,83 +85,45 @@ defmodule Grafi.Algo.KCore do
 
   # ── Internals ─────────────────────────────────────────────────────────
 
-  # Batagelj-Zaversnik peeling with bucket-by-degree.
-  defp peel(neigh, degree) do
-    max_d = degree |> Map.values() |> Enum.max(fn -> 0 end)
+  # Batagelj–Zaversnik peeling over `%{degree => [vertex]}` buckets, scanned
+  # in increasing degree. Lazy deletion: decrementing a vertex's degree
+  # pushes it onto the lower bucket without removing it from the old one,
+  # so a popped entry is stale when the vertex is already peeled or its
+  # degree has dropped since; stale entries are skipped. A neighbour whose
+  # degree exceeds the current level `d` drops to at least `d`, so it never
+  # lands below the scan. Each edge causes at most one push: O(V + E).
+  defp peel(d, max_d, _buckets, _degree, _neigh, cores) when d > max_d, do: cores
 
-    # Bucket: index 0..max_d, each a MapSet of vertices at that current degree.
-    buckets =
-      Enum.reduce(degree, init_buckets(max_d + 1), fn {v, d}, b ->
-        update_in_array(b, d, &MapSet.put(&1, v))
-      end)
+  defp peel(d, max_d, buckets, degree, neigh, cores) do
+    case Map.get(buckets, d, []) do
+      [] ->
+        peel(d + 1, max_d, Map.delete(buckets, d), degree, neigh, cores)
 
-    do_peel(buckets, degree, neigh, %{}, 0)
-  end
+      [v | rest] ->
+        buckets = Map.put(buckets, d, rest)
 
-  defp do_peel(buckets, degree, neigh, cores, cursor) do
-    case lowest_nonempty(buckets, cursor) do
-      :done ->
-        cores
+        # A vertex enters bucket k at most once (degrees only fall), so an
+        # entry is current iff the vertex still has degree d; once peeled,
+        # its degree stays at its core number and no bucket d entry remains.
+        if Map.fetch!(degree, v) != d do
+          peel(d, max_d, buckets, degree, neigh, cores)
+        else
+          {buckets, degree} =
+            Enum.reduce(Map.fetch!(neigh, v), {buckets, degree}, &decrement(&1, &2, d))
 
-      d ->
-        bucket = elem(buckets, d)
-        v = Enum.at(bucket, 0)
-        buckets = update_in_array(buckets, d, &MapSet.delete(&1, v))
-        cores = Map.put(cores, v, d)
-
-        # Remove v from all its neighbors; decrement their degree.
-        {buckets, degree} =
-          Enum.reduce(Map.fetch!(neigh, v), {buckets, degree}, fn u, {b, deg} ->
-            if not Map.has_key?(deg, u) do
-              {b, deg}
-            else
-              du = Map.fetch!(deg, u)
-
-              if du > d do
-                b =
-                  b
-                  |> update_in_array(du, &MapSet.delete(&1, u))
-                  |> update_in_array(du - 1, &MapSet.put(&1, u))
-
-                {b, Map.put(deg, u, du - 1)}
-              else
-                # Already in a bucket <= d; it will be peeled at its own d.
-                {b, deg}
-              end
-            end
-          end)
-
-        degree = Map.delete(degree, v)
-        # Strip v from its neighbors' sets so we don't revisit it.
-        neigh =
-          Enum.reduce(Map.fetch!(neigh, v), neigh, fn u, acc ->
-            case Map.fetch(acc, u) do
-              {:ok, ns} -> Map.put(acc, u, MapSet.delete(ns, v))
-              :error -> acc
-            end
-          end)
-          |> Map.delete(v)
-
-        # The next lowest non-empty bucket may be <= d (newly decremented
-        # vertices), so start the next scan at d - 1 (clamped to 0). Otherwise
-        # the algorithm would skip them and produce wrong core numbers.
-        next_cursor = max(d - 1, 0)
-        do_peel(buckets, degree, neigh, cores, next_cursor)
+          peel(d, max_d, buckets, degree, neigh, Map.put(cores, v, d))
+        end
     end
   end
 
-  defp init_buckets(n), do: Tuple.duplicate(MapSet.new(), n)
+  # A peeled neighbour has degree == its core <= d, so `du > d` also skips it.
+  defp decrement(u, {buckets, degree}, d) do
+    case Map.fetch!(degree, u) do
+      du when du > d ->
+        {Map.update(buckets, du - 1, [u], &[u | &1]), Map.put(degree, u, du - 1)}
 
-  defp update_in_array(t, i, fun), do: put_elem(t, i, fun.(elem(t, i)))
-
-  defp lowest_nonempty(buckets, start) do
-    size = tuple_size(buckets)
-    scan_buckets(buckets, start, size)
-  end
-
-  defp scan_buckets(_b, i, size) when i >= size, do: :done
-
-  defp scan_buckets(b, i, size) do
-    if MapSet.size(elem(b, i)) > 0, do: i, else: scan_buckets(b, i + 1, size)
+      _ ->
+        {buckets, degree}
+    end
   end
 end
