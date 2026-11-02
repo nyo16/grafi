@@ -131,7 +131,7 @@ jobs:
         run: mix test
 
   # grafi as a path dependency from a git archive (no .git, like the Hex
-  # package). The consumer forces a source build, so this always tests the
+  # package), with the consumer's default config: a source build of the
   # PR's c_src, never a published artefact; it must find igraph and load.
   consumer:
     name: Consumer build
@@ -165,8 +165,6 @@ jobs:
             def application, do: [extra_applications: [:logger]]
           end
           EOF
-          mkdir -p config
-          printf 'import Config\nconfig :elixir_make, :force_build, grafi: true\n' > config/config.exs
           mix deps.get
           mix compile
           mix run -e '

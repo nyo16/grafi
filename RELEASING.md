@@ -1,10 +1,12 @@
 # Releasing Grafi
 
 Grafi ships as a Hex package plus precompiled NIF artefacts attached to the
-matching GitHub release. Consumers download the artefact for their target and
-verify it against `checksum.exs` in the package; on any other target (or if
-the download fails) the NIF is built from source, which needs igraph >= 1.0,
-and without igraph Grafi runs in pure Elixir.
+matching GitHub release. The artefacts are GPL-3.0-or-later (static igraph),
+so consumers download one only after opting in with
+`config :grafi, precompiled_nif: true`, verified against `checksum.exs` in the
+package. By default, on any other target, or if the download fails, the NIF
+is built from source, which needs igraph >= 1.0, and without igraph Grafi runs
+in pure Elixir.
 
 Between releases `@version` in `mix.exs` ends in `-dev`. elixir_make always
 builds a `-dev` version from source, so development copies never pick up a
@@ -12,11 +14,10 @@ published artefact.
 
 ## One-time setup (before the first upload)
 
-1. **Licence sign-off.** The artefacts statically link igraph and are
+1. **Enable artefact uploads.** The artefacts statically link igraph and are
    distributed under GPL-3.0-or-later (see `NOTICE`; Apache-2.0 code combined
-   with GPL code is GPL-3.0-compatible only). Have `NOTICE`, the README
-   "Third-party licenses" section and the release notes written by
-   `release.yml` reviewed. Then set the repository variable
+   with GPL code is GPL-3.0-compatible only), and consumers get them only by
+   opting in. When you are ready to publish them, set the repository variable
    `RELEASE_LICENSE_APPROVED` to `true` (Settings → Secrets and variables →
    Actions → Variables). Until then the `upload` job does nothing.
 2. **Protected environment.** Create the environment `release` (Settings →

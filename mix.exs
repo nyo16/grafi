@@ -22,13 +22,19 @@ defmodule Grafi.MixProject do
       ],
       # Floor for the merged three-engine-mode coverage in CI (86.9% when set).
       test_coverage: [summary: [threshold: 85]],
-      # A git checkout (contributors, CI, git deps) always compiles c_src;
-      # make's own dependencies decide what to rebuild. A Hex package has no
-      # .git, so consumers get the precompiled artefact. `.git` is a file in
-      # worktrees and submodules, hence `exists?`. (Not `File.cwd!()`: Mix
-      # compiles a dependency from inside its own directory.) Consumers can
-      # force a source build with `config :elixir_make, :force_build, grafi: true`.
-      make_force_build: File.exists?(Path.join(__DIR__, ".git")),
+      # The precompiled NIF statically links igraph and is GPL-3.0-or-later,
+      # so a consumer downloads it only after opting in, in their
+      # config/config.exs:
+      #
+      #     config :grafi, precompiled_nif: true
+      #
+      # Otherwise c_src is compiled against a local igraph, or Grafi runs in
+      # pure Elixir without one. A git checkout (contributors, CI, git deps)
+      # always compiles c_src. `.git` is a file in worktrees and submodules,
+      # hence `exists?`; not `File.cwd!()`, since Mix compiles a dependency
+      # from inside its own directory. The consumer's config is loaded before
+      # a dependency's project/0 is evaluated.
+      make_force_build: force_build?(),
       make_clean: ["clean"],
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",
@@ -41,7 +47,7 @@ defmodule Grafi.MixProject do
       cc_precompiler: cc_precompiler(),
       description:
         "High-performance graph library for Elixir — γραφή. Apache-2.0; the optional " <>
-          "precompiled NIF statically links igraph and is GPL-3.0-or-later (see NOTICE).",
+          "precompiled NIF (opt-in) statically links igraph and is GPL-3.0-or-later (see NOTICE).",
       package: package(),
       docs: docs(),
       aliases: aliases()
@@ -50,6 +56,11 @@ defmodule Grafi.MixProject do
 
   def cli do
     [preferred_envs: [bench: :bench]]
+  end
+
+  defp force_build? do
+    File.exists?(Path.join(__DIR__, ".git")) or
+      Application.get_env(:grafi, :precompiled_nif, false) != true
   end
 
   def application do
