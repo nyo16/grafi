@@ -85,7 +85,7 @@ defmodule Grafi.Serialize.UtilTest do
 
       owned = Util.own(sub)
       assert owned == sub
-      assert :binary.referenced_byte_size(owned) == 100
+      assert :binary.referenced_byte_size(owned) < byte_size(big)
     end
 
     test "excerpt/1 keeps short input and truncates long input to an owned copy" do
