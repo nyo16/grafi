@@ -16,7 +16,7 @@ defmodule Grafi.Graph do
 
   ## Memory
 
-  Measured with `:erts_debug.size/1` on random graphs (2,000 integer
+  Measured with `:erts_debug.size` on random graphs (2,000 integer
   vertices, 20,000 edges, 8-byte words):
 
     * a directed edge costs about 17 words (~135 bytes): one `Grafi.Edge`
@@ -33,7 +33,7 @@ defmodule Grafi.Graph do
       V) `out_degree/2` and `in_degree/2`.
 
   Copying a graph to another process or to ETS flattens the shared edge
-  structs (`:erts_debug.flat_size/1`): about 40 words per directed edge
+  structs (`:erts_debug.flat_size`): about 40 words per directed edge
   and 80 per undirected edge.
   """
 

@@ -98,8 +98,8 @@ defmodule Grafi do
       Grafi.to_json(g)   # JSON adjacency list
   """
 
-  alias Grafi.{Edge, Graph}
   alias Grafi.Algo.{APSP, Community, Connectivity, Isomorphism, LinkPrediction, MaxFlow}
+  alias Grafi.{Edge, Graph}
 
   @typep vertex :: Graph.vertex_id()
   @typep path_result :: {:ok, {[vertex()], number()}} | {:error, term()}

@@ -6,8 +6,8 @@ defmodule Grafi.Algo.InvariantsPropertyTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Grafi.{DAG, Graph}
   alias Grafi.Algo.{Cycles, Isomorphism, KCore, ShortestPath, Traversal}
+  alias Grafi.{DAG, Graph}
   alias Grafi.Test.Generators
 
   defp sorted_vertices(g), do: g |> Graph.vertices() |> Enum.sort()
