@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.MaxFlow do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Maximum s-t flow and minimum s-t cut algorithms — Edmonds-Karp,
   Dinic's algorithm, and minimum cut extraction via Max-Flow Min-Cut.
@@ -67,7 +65,7 @@ defmodule Grafi.Algo.MaxFlow do
   @spec edmonds_karp(Graph.t(), any(), any(), keyword()) ::
           {:ok, result()} | {:error, :no_such_vertex | :negative_capacity}
   def edmonds_karp(%Graph{} = g, source, sink, opts \\ []) do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
 
     with :ok <- validate(g, source, sink) do
       run(g, source, sink, &edmonds_karp_loop/3)
@@ -94,7 +92,7 @@ defmodule Grafi.Algo.MaxFlow do
   @spec dinic(Graph.t(), any(), any(), keyword()) ::
           {:ok, result()} | {:error, :no_such_vertex | :negative_capacity}
   def dinic(%Graph{} = g, source, sink, opts \\ []) do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
 
     with :ok <- validate(g, source, sink) do
       run(g, source, sink, &dinic_loop/3)

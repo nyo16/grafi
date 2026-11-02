@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.ShortestPath do
-  @dialyzer :no_opaque
-
   @moduledoc "Dijkstra, Bellman-Ford, A* — with igraph NIF acceleration."
 
   alias Grafi.Algo.MinHeap
@@ -8,6 +6,10 @@ defmodule Grafi.Algo.ShortestPath do
   alias Grafi.Edge
   alias Grafi.Graph
   alias Grafi.NIF
+
+  # Dialyzer reports MapSet's opaque type passed through the A* loop
+  # (`closed`) as a mismatch; the calls are correct.
+  @dialyzer {:no_opaque, do_astar: 7}
 
   @doc """
   Computes the shortest weighted path from `source` to `target` using Dijkstra's

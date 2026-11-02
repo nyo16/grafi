@@ -49,7 +49,7 @@ defmodule Grafi.Serialize.Pajek do
   """
   @spec to_pajek(Graph.t(), keyword()) :: String.t()
   def to_pajek(%Graph{} = g, opts \\ []) do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
     vertices = Graph.vertices(g)
     n = length(vertices)
     index = vertices |> Enum.with_index(1) |> Map.new()

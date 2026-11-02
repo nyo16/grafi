@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.APSP do
-  @dialyzer :no_opaque
-
   @moduledoc """
   All-pairs shortest path algorithms — Floyd-Warshall and Johnson's.
 

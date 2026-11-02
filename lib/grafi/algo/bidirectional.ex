@@ -42,7 +42,7 @@ defmodule Grafi.Algo.Bidirectional do
   @spec dijkstra(Graph.t(), any(), any(), keyword()) ::
           {:ok, {[any()], number()}} | {:error, :no_path | :no_such_vertex}
   def dijkstra(%Graph{} = g, source, target, opts \\ []) do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
 
     cond do
       not Graph.has_vertex?(g, source) ->

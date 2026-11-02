@@ -48,7 +48,7 @@ defmodule Grafi.Serialize.GEXF do
   """
   @spec to_gexf(Graph.t(), keyword()) :: String.t()
   def to_gexf(%Graph{} = g, opts \\ []) do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
     edgetype = if g.type == :directed, do: "directed", else: "undirected"
 
     node_lines =

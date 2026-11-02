@@ -92,7 +92,7 @@ defmodule Grafi.Serialize.JSON do
   end
 
   def from_json(_, opts) do
-    Keyword.validate!(opts, [:max_bytes])
+    _ = Keyword.validate!(opts, [:max_bytes])
     {:error, :malformed_json}
   end
 

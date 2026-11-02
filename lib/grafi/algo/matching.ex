@@ -64,7 +64,7 @@ defmodule Grafi.Algo.Matching do
           {:ok, %{matching: %{any() => any()}, size: non_neg_integer()}}
           | {:error, :not_bipartite}
   def hopcroft_karp(%Graph{} = g, left_side, opts \\ []) do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
 
     left_set =
       if is_struct(left_side, MapSet),

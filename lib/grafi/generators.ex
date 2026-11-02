@@ -1,6 +1,4 @@
 defmodule Grafi.Generators do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Synthetic graph generators — classical (complete, cycle, path, grid)
   and random (Erdős–Rényi, Barabási–Albert, Watts–Strogatz, random
@@ -19,6 +17,10 @@ defmodule Grafi.Generators do
   """
 
   alias Grafi.Graph
+
+  # Dialyzer reports MapSet's opaque type passed through these recursive
+  # helpers (`seen`, `picked`) as a mismatch; the calls are correct.
+  @dialyzer {:no_opaque, pair_off: 3, do_sample: 3}
 
   # ── Classical generators ─────────────────────────────────────────────
 

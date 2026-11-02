@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.Cliques do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Maximal clique enumeration via Bron–Kerbosch with pivoting.
 
@@ -22,6 +20,10 @@ defmodule Grafi.Algo.Cliques do
   alias Grafi.Algo.Neighborhood
   alias Grafi.Args
   alias Grafi.Graph
+
+  # Dialyzer reports MapSet's opaque type passed through the Bron–Kerbosch
+  # recursion (`r`, `p`, `x`) as a mismatch; the calls are correct.
+  @dialyzer {:no_opaque, bron_kerbosch: 6, do_bk: 6, choose_pivot: 3}
 
   @doc """
   Enumerates every maximal clique using Bron–Kerbosch with pivot selection.

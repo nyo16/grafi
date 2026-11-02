@@ -1,5 +1,4 @@
 defmodule Grafi.Algo.Traversal do
-  @dialyzer :no_opaque
   @moduledoc """
   BFS, DFS, reachability and topological sorting.
 

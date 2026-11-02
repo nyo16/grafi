@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.KShortestPath do
-  @dialyzer :no_opaque
-
   @moduledoc """
   K-shortest loopless paths via Yen's algorithm.
 
@@ -48,7 +46,7 @@ defmodule Grafi.Algo.KShortestPath do
           {:ok, [{[any()], number()}]}
           | {:error, :no_such_vertex | :no_path | :negative_weight}
   def yen(%Graph{} = g, source, target, k, opts \\ []) when is_integer(k) and k > 0 do
-    Keyword.validate!(opts, [])
+    _ = Keyword.validate!(opts, [])
 
     cond do
       not Graph.has_vertex?(g, source) ->

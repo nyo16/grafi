@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.Isomorphism do
-  @dialyzer :no_opaque
-
   @moduledoc """
   (Sub)graph isomorphism via the VF2 algorithm.
 
@@ -81,6 +79,10 @@ defmodule Grafi.Algo.Isomorphism do
   alias Grafi.Args
   alias Grafi.Graph
   alias Grafi.NIF
+
+  # Dialyzer reports MapSet's opaque type passed through the backtracking
+  # recursion (`used`) as a mismatch; the calls are correct.
+  @dialyzer {:no_opaque, backtrack_one: 4, backtrack_count: 4, feasible?: 5}
 
   @type mapping :: %{Graph.vertex_id() => Graph.vertex_id()}
   @type error :: {:error, :timeout | :nif_not_available | {:igraph, String.t()}}

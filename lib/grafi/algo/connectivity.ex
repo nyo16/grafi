@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.Connectivity do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Bridges, articulation points, and biconnected components.
 
