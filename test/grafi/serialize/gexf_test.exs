@@ -257,6 +257,60 @@ defmodule Grafi.Serialize.GEXFTest do
       xml = ~s(<graph defaultedgetype="directed"><node id="a">)
       assert GEXF.from_gexf(xml) == {:error, {:unclosed_element, "node"}}
     end
+
+    test "children of a bodied node, CDATA included, are not read" do
+      xml = """
+      <gexf>
+        <graph defaultedgetype="directed">
+          <nodes>
+            <node id="a"><attvalues><attvalue for="0" value="&lt;x&gt;"/></attvalues></node>
+            <node id="b"><![CDATA[<edge source="a" target="b"/>]]></node>
+          </nodes>
+        </graph>
+      </gexf>
+      """
+
+      g = GEXF.from_gexf(xml)
+      assert Enum.sort(Graph.vertices(g)) == ["a", "b"]
+      assert Graph.num_edges(g) == 0
+    end
+  end
+
+  describe "to_gexf/2 unrepresentable text" do
+    test "invalid UTF-8 raises instead of colliding ids" do
+      g = Graph.add_edge(Graph.new(), <<"caf", 0xE9>>, <<"caf", 0xE8>>)
+      assert_raise ArgumentError, fn -> GEXF.to_gexf(g) end
+    end
+
+    test "characters outside XML 1.0 raise, in ids and labels" do
+      for g <- [
+            Graph.add_vertex(Graph.new(), "a\u0001b"),
+            Graph.add_vertex(Graph.new(), "a", label: <<"x", 0xEF, 0xBF, 0xBF>>),
+            Graph.add_edge(Graph.new(), "a", "b", label: "x\f")
+          ] do
+        assert_raise ArgumentError, fn -> GEXF.to_gexf(g) end
+      end
+    end
+
+    test "tab, LF and CR in ids and labels are character references" do
+      ids = ["a\nb", "a b", "a\tb", "a\rb"]
+
+      g =
+        Enum.reduce(ids, Graph.new(), fn id, acc ->
+          acc |> Graph.add_vertex(id, label: id) |> Graph.add_edge(id, "z", label: id)
+        end)
+
+      xml = GEXF.to_gexf(g)
+      refute xml =~ ~r/"a[\t\n\r]b"/
+
+      g2 = GEXF.from_gexf(xml)
+      assert Enum.sort(Graph.vertices(g2)) == Enum.sort(["z" | ids])
+
+      for id <- ids do
+        assert Graph.label(g2, id) == id
+        assert [%{label: ^id}] = Graph.edges_between(g2, id, "z")
+      end
+    end
   end
 
   describe "round-trip (tokenizer)" do
@@ -316,6 +370,8 @@ defmodule Grafi.Serialize.GEXFTest do
       assert Graph.has_edge?(g, "a", "b")
     end
 
+    # Allocates 64 MiB (S8): too heavy for the default async run.
+    @tag :slow
     test "defaults to 64 MiB; :infinity lifts the limit" do
       max = 64 * 1024 * 1024
       xml = String.duplicate(" ", max + 1)

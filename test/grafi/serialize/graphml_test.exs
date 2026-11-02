@@ -185,7 +185,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       assert Graph.has_edge?(g, "a", "b")
     end
 
-    test "data keys are read positionally" do
+    test "a key= inside another attribute value is not read as the data key" do
       xml = """
       <graphml>
         <graph id="G" edgedefault="directed">
@@ -257,9 +257,112 @@ defmodule Grafi.Serialize.GraphMLTest do
       xml = ~s(<graph edgedefault="directed"><edge source="a" target="b">)
       assert GraphML.from_graphml(xml) == {:error, {:unclosed_element, "edge"}}
     end
+
+    test "CDATA in data is literal text" do
+      xml = """
+      <graph edgedefault="directed">
+        <node id="a"><data key="vlabel"> <![CDATA[</node><edge source="a" target="b"/> &amp;]]> </data></node>
+      </graph>
+      """
+
+      g = GraphML.from_graphml(xml)
+      assert Graph.vertices(g) == ["a"]
+      assert Graph.label(g, "a") == ~s(</node><edge source="a" target="b"/> &amp;)
+    end
+
+    test "elements nested in data are skipped" do
+      xml = """
+      <graph edgedefault="directed">
+        <node id="a">
+          <data key="d0"><y:ShapeNode><y:NodeLabel>junk</y:NodeLabel></y:ShapeNode></data>
+          <data key="vlabel">A</data>
+        </node>
+      </graph>
+      """
+
+      assert Graph.label(GraphML.from_graphml(xml), "a") == "A"
+    end
+
+    test "a data element without its end tag is an error" do
+      xml = ~s(<graph edgedefault="directed"><node id="a"><data key="vlabel">A</node></graph>)
+      assert GraphML.from_graphml(xml) == {:error, {:unclosed_element, "data"}}
+    end
+
+    test "a reference to an illegal character in data is an error" do
+      xml = ~s(<graph edgedefault="directed"><node id="a"><data key="vlabel">&#x1;</data></node>)
+      assert GraphML.from_graphml(xml) == {:error, {:invalid_char_ref, "&#x1;"}}
+    end
+
+    test "decoded labels do not reference the input" do
+      label = String.duplicate("L", 100)
+      padding = String.duplicate(" ", 100_000)
+
+      xml =
+        ~s(<graph edgedefault="directed"><node id="a"><data key="vlabel">#{label}</data></node>) <>
+          padding <> "</graph>"
+
+      decoded = Graph.label(GraphML.from_graphml(xml), "a")
+      assert decoded == label
+      assert :binary.referenced_byte_size(decoded) < 100_000
+    end
+  end
+
+  describe "to_graphml/2 unrepresentable text" do
+    test "invalid UTF-8 raises instead of colliding ids" do
+      g = Graph.add_edge(Graph.new(), <<"caf", 0xE9>>, <<"caf", 0xE8>>)
+      assert_raise ArgumentError, fn -> GraphML.to_graphml(g) end
+    end
+
+    test "characters outside XML 1.0 raise, in ids and labels" do
+      for g <- [
+            Graph.add_vertex(Graph.new(), "a\u0001b"),
+            Graph.add_vertex(Graph.new(), "a", label: "x\u0001"),
+            Graph.add_vertex(Graph.new(), "a", label: "\vx"),
+            Graph.add_edge(Graph.new(), "a", "b", label: "x\f")
+          ] do
+        assert_raise ArgumentError, fn -> GraphML.to_graphml(g) end
+      end
+    end
+
+    test "tab, LF and CR in ids are character references, so ids stay distinct" do
+      ids = ["a\nb", "a b", "a\tb", "a\rb"]
+      g = Enum.reduce(ids, Graph.new(), &Graph.add_edge(&2, &1, "z"))
+      xml = GraphML.to_graphml(g)
+
+      refute xml =~ ~r/(id|source)="a[\t\n\r]b"/
+      g2 = GraphML.from_graphml(xml)
+      assert Enum.sort(Graph.vertices(g2)) == Enum.sort(["z" | ids])
+      for id <- ids, do: assert(Graph.has_edge?(g2, id, "z"))
+    end
+
+    test "CR in data text is a character reference" do
+      xml = GraphML.to_graphml(Graph.add_vertex(Graph.new(), "a", label: "x\ry"))
+      refute xml =~ "\r"
+      assert Graph.label(GraphML.from_graphml(xml), "a") == "x\ry"
+    end
   end
 
   describe "round-trip (tokenizer)" do
+    test "labels with edge whitespace or a combining mark round-trip exactly" do
+      labels = [" a", "a ", " a ", "\ta\n", "a \u0301", "  padded  ", "x\t"]
+
+      g =
+        labels
+        |> Enum.with_index()
+        |> Enum.reduce(Graph.new(), fn {label, i}, acc ->
+          acc
+          |> Graph.add_vertex("v#{i}", label: label)
+          |> Graph.add_edge("v#{i}", "z", label: label)
+        end)
+
+      g2 = g |> GraphML.to_graphml() |> GraphML.from_graphml()
+
+      for {label, i} <- Enum.with_index(labels) do
+        assert Graph.label(g2, "v#{i}") == label
+        assert [%{label: ^label}] = Graph.edges_between(g2, "v#{i}", "z")
+      end
+    end
+
     test "mixed labelled and unlabelled vertices and edges" do
       g =
         Graph.new()
@@ -319,6 +422,8 @@ defmodule Grafi.Serialize.GraphMLTest do
       assert Graph.has_edge?(g, "a", "b")
     end
 
+    # Allocates 64 MiB (S8): too heavy for the default async run.
+    @tag :slow
     test "defaults to 64 MiB; :infinity lifts the limit" do
       max = 64 * 1024 * 1024
       xml = String.duplicate(" ", max + 1)
