@@ -11,6 +11,7 @@ defmodule Grafi.Algo.Bipartite do
   the undirected triangle and reported as not bipartite.
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   # ── Bipartiteness ─────────────────────────────────────────────────────
@@ -45,13 +46,13 @@ defmodule Grafi.Algo.Bipartite do
   Attempts to 2-color the graph.
 
   Returns `{:ok, colors}` where `colors` is a map `%{vertex => 0 | 1}`, or
-  `{:error, :not_bipartite, {u, v}}` where `{u, v}` is one edge whose
+  `{:error, {:not_bipartite, {u, v}}}` where `{u, v}` is one edge whose
   endpoints would receive the same color (a witness of an odd cycle).
 
   For directed graphs the algorithm uses the underlying undirected adjacency.
   """
   @spec coloring(Graph.t()) ::
-          {:ok, %{any() => 0 | 1}} | {:error, :not_bipartite, {any(), any()}}
+          {:ok, %{any() => 0 | 1}} | {:error, {:not_bipartite, {any(), any()}}}
   def coloring(%Graph{} = g) do
     vs = Graph.vertices(g)
 
@@ -61,7 +62,7 @@ defmodule Grafi.Algo.Bipartite do
       else
         case bfs_color(g, v, Map.put(colors, v, 0)) do
           {:ok, c2} -> {:cont, {:ok, c2}}
-          {:error, edge} -> {:halt, {:error, :not_bipartite, edge}}
+          {:error, edge} -> {:halt, {:error, {:not_bipartite, edge}}}
         end
       end
     end)
@@ -85,7 +86,7 @@ defmodule Grafi.Algo.Bipartite do
 
         {:ok, {a, b}}
 
-      {:error, :not_bipartite, _} ->
+      {:error, {:not_bipartite, _edge}} ->
         {:error, :not_bipartite}
     end
   end
@@ -183,8 +184,8 @@ defmodule Grafi.Algo.Bipartite do
     end
   end
 
-  defp undirected_neighbors(%Graph{type: :undirected} = g, v), do: Graph.out_neighbors(g, v)
-  defp undirected_neighbors(%Graph{} = g, v), do: Graph.neighbors(g, v)
+  # A self-loop makes `v` its own neighbour, so it is reported as an odd cycle.
+  defp undirected_neighbors(g, v), do: Neighborhood.neighbors(g, v, self_loops: :keep)
 
   # Given a sorted list of "side" neighbors of one other-side vertex w,
   # add 1 to the count for every unordered pair {u, v} drawn from the list.

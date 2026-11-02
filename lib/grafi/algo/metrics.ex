@@ -18,7 +18,9 @@ defmodule Grafi.Algo.Metrics do
   considered.
   """
 
-  alias Grafi.Algo.ShortestPath
+  alias Grafi.Algo.Distances
+  alias Grafi.Algo.Neighborhood
+  alias Grafi.Args
   alias Grafi.Graph
 
   # ── Triangle counts ──────────────────────────────────────────────────
@@ -26,8 +28,8 @@ defmodule Grafi.Algo.Metrics do
   @doc """
   Total number of triangles in the graph, treating it as undirected.
 
-  Each triangle (unordered triple) is counted exactly once. Naive
-  O(V · deg^2) implementation; intended for the small-graph case.
+  Each triangle (unordered triple) is counted exactly once. Runs in
+  O(E^1.5) (see `triangles_per_vertex/1`).
 
   ## Examples
 
@@ -48,6 +50,12 @@ defmodule Grafi.Algo.Metrics do
   Returns a map `vertex => number_of_triangles_through_vertex` for the
   whole graph.
 
+  Uses the degree-ordered forward algorithm: vertices are ranked by
+  (degree, id), each edge is oriented towards the higher rank, and every
+  triangle is found once, from its lowest-ranked corner, by intersecting
+  two forward neighbourhoods. Each forward neighbourhood has at most
+  `√(2E)` vertices, so the whole pass is O(E^1.5).
+
   ## Examples
 
       iex> g = Grafi.new(type: :undirected)
@@ -56,34 +64,42 @@ defmodule Grafi.Algo.Metrics do
       %{a: 1, b: 1, c: 1}
   """
   @spec triangles_per_vertex(Graph.t()) :: %{any() => non_neg_integer()}
-  def triangles_per_vertex(%Graph{} = g) do
-    Graph.vertices(g)
-    |> Map.new(fn v -> {v, count_triangles_through(g, v)} end)
-  end
+  def triangles_per_vertex(%Graph{} = g), do: g |> triangle_pass() |> elem(1)
 
-  defp count_triangles_through(g, v) do
-    nbrs = undirected_neighbors(g, v)
-    nbr_set = MapSet.new(nbrs)
+  # One pass shared by the triangle-based metrics. Returns the undirected
+  # neighbour sets (self-loops dropped) and the per-vertex triangle counts.
+  defp triangle_pass(g) do
+    nbrs = Neighborhood.sets(g, self_loops: :drop)
 
-    pairs =
-      Enum.reduce(nbrs, 0, fn u, acc ->
-        u_nbrs = undirected_neighbors(g, u)
+    rank =
+      nbrs
+      |> Enum.sort_by(fn {v, ns} -> {MapSet.size(ns), v} end)
+      |> Enum.with_index(fn {v, _ns}, i -> {v, i} end)
+      |> Map.new()
 
-        common =
-          Enum.count(u_nbrs, fn w ->
-            w != v and w != u and MapSet.member?(nbr_set, w)
-          end)
-
-        acc + common
+    forward =
+      Map.new(nbrs, fn {v, ns} ->
+        r = Map.fetch!(rank, v)
+        {v, MapSet.filter(ns, &(Map.fetch!(rank, &1) > r))}
       end)
 
-    div(pairs, 2)
-  end
+    counts =
+      Enum.reduce(forward, Map.new(nbrs, fn {v, _} -> {v, 0} end), fn {v, fv}, acc ->
+        Enum.reduce(fv, acc, fn u, acc ->
+          common = MapSet.intersection(fv, Map.fetch!(forward, u))
 
-  defp undirected_neighbors(%Graph{} = g, v) do
-    Graph.neighbors(g, v)
-    |> Enum.reject(&(&1 == v))
-    |> Enum.uniq()
+          case MapSet.size(common) do
+            0 ->
+              acc
+
+            n ->
+              acc = acc |> Map.update!(v, &(&1 + n)) |> Map.update!(u, &(&1 + n))
+              Enum.reduce(common, acc, fn w, acc -> Map.update!(acc, w, &(&1 + 1)) end)
+          end
+        end)
+      end)
+
+    {nbrs, counts}
   end
 
   # ── Clustering coefficient ───────────────────────────────────────────
@@ -91,7 +107,8 @@ defmodule Grafi.Algo.Metrics do
   @doc """
   Local clustering coefficient for `vertex`: the fraction of pairs of
   the vertex's neighbors that are themselves connected. Returns `0.0`
-  for vertices with fewer than two neighbors.
+  for vertices with fewer than two neighbors. Raises `ArgumentError` if
+  `vertex` is not in the graph.
 
   ## Examples
 
@@ -102,14 +119,21 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec clustering_coefficient(Graph.t(), any()) :: float()
   def clustering_coefficient(%Graph{} = g, vertex) do
-    nbrs = undirected_neighbors(g, vertex)
-    k = length(nbrs)
+    ensure_vertex!(g, vertex)
+    nbrs = MapSet.new(Neighborhood.neighbors(g, vertex, self_loops: :drop))
+    k = MapSet.size(nbrs)
 
     if k < 2 do
       0.0
     else
-      t = count_triangles_through(g, vertex)
-      2.0 * t / (k * (k - 1))
+      # Each neighbour-neighbour edge is seen from both ends.
+      links =
+        Enum.reduce(nbrs, 0, fn u, acc ->
+          acc +
+            Enum.count(Neighborhood.neighbors(g, u, self_loops: :drop), &MapSet.member?(nbrs, &1))
+        end)
+
+      links / (k * (k - 1))
     end
   end
 
@@ -127,18 +151,17 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec clustering_coefficient(Graph.t()) :: float()
   def clustering_coefficient(%Graph{} = g) do
-    contributing =
-      Graph.vertices(g)
-      |> Enum.filter(&(length(undirected_neighbors(g, &1)) >= 2))
+    {nbrs, tri} = triangle_pass(g)
 
-    case contributing do
-      [] ->
-        0.0
+    {sum, count} =
+      Enum.reduce(nbrs, {0.0, 0}, fn {v, ns}, {sum, count} ->
+        case MapSet.size(ns) do
+          k when k >= 2 -> {sum + 2.0 * Map.fetch!(tri, v) / (k * (k - 1)), count + 1}
+          _ -> {sum, count}
+        end
+      end)
 
-      vs ->
-        sum = Enum.reduce(vs, 0.0, &(&2 + clustering_coefficient(g, &1)))
-        sum / length(vs)
-    end
+    if count == 0, do: 0.0, else: sum / count
   end
 
   # ── Transitivity ─────────────────────────────────────────────────────
@@ -157,14 +180,16 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec transitivity(Graph.t()) :: float()
   def transitivity(%Graph{} = g) do
-    triples =
-      Graph.vertices(g)
-      |> Enum.reduce(0, fn v, acc ->
-        k = length(undirected_neighbors(g, v))
-        acc + div(k * (k - 1), 2)
+    {nbrs, tri} = triangle_pass(g)
+
+    {triples, corners} =
+      Enum.reduce(nbrs, {0, 0}, fn {v, ns}, {triples, corners} ->
+        k = MapSet.size(ns)
+        {triples + div(k * (k - 1), 2), corners + Map.fetch!(tri, v)}
       end)
 
-    if triples == 0, do: 0.0, else: 3.0 * triangle_count(g) / triples
+    # `corners` counts each triangle once per corner, i.e. 3 × triangles.
+    if triples == 0, do: 0.0, else: corners / triples
   end
 
   # ── Density ──────────────────────────────────────────────────────────
@@ -202,10 +227,13 @@ defmodule Grafi.Algo.Metrics do
   the maximum over finite distances. Returns `0` for an isolated
   vertex.
 
+  Raises `ArgumentError` if `vertex` is not in the graph or an option
+  is unknown or invalid.
+
   ## Options
     * `:weighted` — `true` to use Dijkstra (default `false`, BFS)
     * `:connected` — `:strict` to return `:infinity` when some other
-      vertex is unreachable (default `:ignore`)
+      vertex is unreachable, or `:ignore` (default)
 
   ## Examples
 
@@ -216,25 +244,21 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec eccentricity(Graph.t(), any(), keyword()) :: number() | :infinity
   def eccentricity(%Graph{} = g, vertex, opts \\ []) do
-    if not Graph.has_vertex?(g, vertex) do
-      0
-    else
-      dists = single_source_distances(g, vertex, opts)
-      n = Graph.num_vertices(g)
-      strict? = Keyword.get(opts, :connected) == :strict
+    opts = Keyword.validate!(opts, weighted: false, connected: :ignore)
+    {weighted?, strict?} = distance_opts!(opts)
+    ensure_vertex!(g, vertex)
+    vertex_eccentricity(g, vertex, weighted?, strict?)
+  end
 
-      cond do
-        # `dists` excludes the source itself, so a fully-connected graph
-        # of size n yields map_size == n - 1.
-        strict? and map_size(dists) < n - 1 ->
-          :infinity
+  defp vertex_eccentricity(g, vertex, weighted?, strict?) do
+    dists = Distances.single_source(g, vertex, weighted: weighted?, source: :exclude)
 
-        map_size(dists) == 0 ->
-          0
-
-        true ->
-          dists |> Map.values() |> Enum.max()
-      end
+    cond do
+      # `dists` excludes the source itself, so a fully-connected graph
+      # of size n yields map_size == n - 1.
+      strict? and map_size(dists) < Graph.num_vertices(g) - 1 -> :infinity
+      map_size(dists) == 0 -> 0
+      true -> dists |> Map.values() |> Enum.max()
     end
   end
 
@@ -253,8 +277,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec eccentricities(Graph.t(), keyword()) :: %{any() => number() | :infinity}
   def eccentricities(%Graph{} = g, opts \\ []) do
-    Graph.vertices(g)
-    |> Map.new(&{&1, eccentricity(g, &1, opts)})
+    opts = Keyword.validate!(opts, weighted: false, connected: :ignore)
+    all_eccentricities(g, opts)
   end
 
   @doc """
@@ -275,9 +299,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec diameter(Graph.t(), keyword()) :: number() | :infinity
   def diameter(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
-    aggregate_extrema(ecc, &Enum.max/1, :infinity)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    g |> all_eccentricities(opts) |> aggregate_extrema(&Enum.max/1, :infinity)
   end
 
   @doc """
@@ -295,9 +318,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec radius(Graph.t(), keyword()) :: number() | :infinity
   def radius(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
-    aggregate_extrema(ecc, &Enum.min/1, :infinity)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    g |> all_eccentricities(opts) |> aggregate_extrema(&Enum.min/1, :infinity)
   end
 
   @doc """
@@ -315,8 +337,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec center(Graph.t(), keyword()) :: [any()]
   def center(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    ecc = all_eccentricities(g, opts)
     r = aggregate_extrema(ecc, &Enum.min/1, :infinity)
     for {v, e} <- ecc, e == r, do: v
   end
@@ -336,51 +358,36 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec periphery(Graph.t(), keyword()) :: [any()]
   def periphery(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    ecc = all_eccentricities(g, opts)
     d = aggregate_extrema(ecc, &Enum.max/1, :infinity)
     for {v, e} <- ecc, e == d, do: v
   end
 
   # ── Internal helpers ─────────────────────────────────────────────────
 
-  defp single_source_distances(g, v, opts) do
-    cond do
-      not Graph.has_vertex?(g, v) ->
-        %{}
+  defp all_eccentricities(g, opts) do
+    {weighted?, strict?} = distance_opts!(opts)
+    Map.new(Graph.vertices(g), &{&1, vertex_eccentricity(g, &1, weighted?, strict?)})
+  end
 
-      Keyword.get(opts, :weighted, false) ->
-        ShortestPath.dijkstra_all(g, v) |> Map.delete(v)
+  # Typed checks for the validated distance options.
+  defp distance_opts!(opts) do
+    weighted? = Args.boolean!(opts, :weighted, false)
 
-      true ->
-        bfs_distances(g, v)
+    case Keyword.fetch!(opts, :connected) do
+      connected when connected in [:strict, :ignore] ->
+        {weighted?, connected == :strict}
+
+      other ->
+        raise ArgumentError,
+              "expected :connected to be :strict or :ignore, got: #{inspect(other)}"
     end
   end
 
-  defp bfs_distances(g, source) do
-    # Reuses the BFS stream from Traversal, but tracks depth via a parallel
-    # accumulator. Cheaper than rebuilding: just walks the BFS order keeping
-    # `dist[v] = dist[parent] + 1`.
-    do_bfs_dist(:queue.from_list([source]), %{source => 0}, g)
-    |> Map.delete(source)
-  end
-
-  defp do_bfs_dist(q, dist, g) do
-    case :queue.out(q) do
-      {:empty, _} ->
-        dist
-
-      {{:value, v}, rest} ->
-        {dist, q2} =
-          Graph.out_neighbors(g, v)
-          |> Enum.reduce({dist, rest}, fn n, {d, q_acc} ->
-            if Map.has_key?(d, n),
-              do: {d, q_acc},
-              else: {Map.put(d, n, d[v] + 1), :queue.in(n, q_acc)}
-          end)
-
-        do_bfs_dist(q2, dist, g)
-    end
+  defp ensure_vertex!(g, v) do
+    if not Graph.has_vertex?(g, v),
+      do: raise(ArgumentError, "vertex #{inspect(v)} is not in the graph")
   end
 
   defp aggregate_extrema(ecc, fun, default) do

@@ -92,12 +92,19 @@ defmodule Grafi.Algo.BipartiteTest do
         Graph.new(type: :undirected)
         |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
 
-      assert {:error, :not_bipartite, {u, v}} = Bipartite.coloring(g)
+      assert {:error, {:not_bipartite, {u, v}}} = Bipartite.coloring(g)
       assert u in [:a, :b, :c]
       assert v in [:a, :b, :c]
       assert u != v
       # The violating edge must actually exist in the underlying graph.
       assert Graph.has_edge?(g, u, v) or Graph.has_edge?(g, v, u)
+    end
+
+    test "a self-loop is an odd cycle" do
+      g = Graph.new(type: :undirected) |> Graph.add_edges([{:a, :b}, {:b, :b}])
+
+      assert {:error, {:not_bipartite, {:b, :b}}} = Bipartite.coloring(g)
+      refute Bipartite.bipartite?(g)
     end
 
     test "isolated vertex gets a color" do

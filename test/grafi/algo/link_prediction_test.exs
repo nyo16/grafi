@@ -141,5 +141,47 @@ defmodule Grafi.Algo.LinkPredictionTest do
         end
       end
     end
+
+    property "explicit candidates score exactly as the default candidate set" do
+      check all(g <- Grafi.Test.Generators.graph(id_type: :integer, max_vertices: 8, max_edges: 20)) do
+        for fun <- [
+              &LinkPrediction.jaccard/2,
+              &LinkPrediction.adamic_adar/2,
+              &LinkPrediction.resource_allocation/2,
+              &LinkPrediction.preferential_attachment/2
+            ] do
+          all = fun.(g, nil)
+          some = all |> Map.keys() |> Enum.take_every(2)
+          assert fun.(g, some) == Map.take(all, some)
+        end
+      end
+    end
+  end
+
+  describe "scaling" do
+    # Neighbour sets and degrees are built once, so scoring all leaf pairs
+    # of a star is O(pairs): 4x the leaves gives 16x the pairs and about
+    # 16x the time. The old code rebuilt the centre's neighbourhood for
+    # every pair, O(pairs · leaves) (64x). Best of 3.
+    @tag :slow
+    test "scoring every non-adjacent pair of a star is linear in the pairs" do
+      # One input alive at a time, so timed runs don't GC the other.
+      best = fn n ->
+        g = Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1))
+        scores = LinkPrediction.adamic_adar(g)
+        assert map_size(scores) == div(n * (n - 1), 2)
+        assert_in_delta scores[{1, 2}], 1 / :math.log(n), 1.0e-12
+
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+            elem(:timer.tc(LinkPrediction, :adamic_adar, [g]), 0)
+          end
+        )
+      end
+
+      {t_small, t_large} = {best.(100), best.(400)}
+      assert t_large < 32 * t_small, "16x the pairs took #{Float.round(t_large / t_small, 1)}x"
+    end
   end
 end
