@@ -16,28 +16,6 @@ defmodule Grafi.Algo.ConnectivityTest do
   defp canon({u, v}) when u <= v, do: {u, v}
   defp canon({u, v}), do: {v, u}
 
-  # Component count via BFS over the underlying undirected graph.
-  defp component_count(%Graph{} = g) do
-    {n, _} =
-      Enum.reduce(Graph.vertices(g), {0, MapSet.new()}, fn v, {n, seen} ->
-        if MapSet.member?(seen, v) do
-          {n, seen}
-        else
-          comp = Grafi.bfs(g, v) |> Enum.to_list()
-
-          seen =
-            Enum.reduce(comp, seen, fn x, s -> MapSet.put(s, x) end)
-
-          # For a directed graph, BFS only follows out-edges. To get
-          # *undirected* components we also need to follow in-edges; do
-          # a simple flood-fill instead.
-          {n + 1, seen}
-        end
-      end)
-
-    n
-  end
-
   # Undirected flood-fill that walks both in- and out-neighbors.
   defp undirected_component_count(%Graph{} = g) do
     {n, _} =
@@ -417,11 +395,5 @@ defmodule Grafi.Algo.ConnectivityTest do
       [] -> g
       _list -> drop_loop(Graph.delete_edge(g, u, v), u, v)
     end
-  end
-
-  # Sanity check that component_count helper is unused-warning-free.
-  test "component_count helper exists" do
-    g = undirected([{:a, :b}])
-    assert is_integer(component_count(g))
   end
 end
