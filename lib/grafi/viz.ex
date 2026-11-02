@@ -4,13 +4,14 @@ defmodule Grafi.Viz do
 
   This module is a thin wrapper around the `dot` (and friends) CLI. It
   serialises the graph to DOT via `Grafi.Serialize.DOT.to_dot/2`, writes
-  the DOT to a temporary file, invokes the chosen Graphviz engine, and
-  returns the resulting bytes.
+  the DOT to a private temporary file, runs the chosen Graphviz engine
+  on it, and returns the resulting bytes.
 
   ## Requirements
 
-  Graphviz must be installed and `dot` must be in `PATH`. Check at
-  runtime with `graphviz_available?/0`.
+  Graphviz must be installed and the engine executable (`dot` by
+  default) must be in `PATH`. Check at runtime with
+  `graphviz_available?/1`.
 
   ## Examples
 
@@ -30,14 +31,17 @@ defmodule Grafi.Viz do
   @valid_formats [:svg, :png, :pdf, :dot, :json, :eps]
   @valid_engines [:dot, :neato, :circo, :twopi, :fdp, :sfdp]
 
+  @default_timeout 30_000
+
   # ── Public API ────────────────────────────────────────────────────────
 
   @doc """
-  Returns `true` if the Graphviz `dot` binary is available in `PATH`.
+  Returns `true` if the executable for the Graphviz `engine` (default
+  `:dot`) is in `PATH`. Returns `false` for an unsupported engine.
   """
-  @spec graphviz_available?() :: boolean()
-  def graphviz_available? do
-    System.find_executable("dot") != nil
+  @spec graphviz_available?(engine()) :: boolean()
+  def graphviz_available?(engine \\ :dot) do
+    find_engine(engine) != nil
   end
 
   @doc """
@@ -55,19 +59,27 @@ defmodule Grafi.Viz do
     * `:engine` — Graphviz layout engine. One of `:dot` (default),
       `:neato`, `:circo`, `:twopi`, `:fdp`, `:sfdp`.
     * `:name` — graph name, passed to `Grafi.Serialize.DOT.to_dot/2`.
+    * `:timeout` — milliseconds to wait for Graphviz (default `30_000`,
+      or `:infinity`). On expiry the Graphviz OS process is killed.
 
   ## Errors
 
-    * `{:error, :graphviz_not_installed}` — `dot` is not in PATH.
+    * `{:error, :graphviz_not_installed}` — the engine executable is not
+      in PATH.
     * `{:error, {:invalid_format, fmt}}` — unsupported format atom.
     * `{:error, {:invalid_engine, eng}}` — unsupported engine atom.
-    * `{:error, {:graphviz_failed, stderr, exit_code}}` — Graphviz
-      returned a non-zero exit status.
+    * `{:error, {:graphviz_failed, output, exit_code}}` — Graphviz
+      returned a non-zero exit status; `output` is what it printed
+      (stdout and stderr combined).
+    * `{:error, :timeout}` — Graphviz did not finish within `:timeout`.
+    * `{:error, {:tempfile_error, reason}}` — a temporary file could not
+      be created, written or read.
   """
   @spec render(Graph.t(), format(), keyword()) ::
           {:ok, binary()}
           | {:error,
              :graphviz_not_installed
+             | :timeout
              | {:invalid_format, atom()}
              | {:invalid_engine, atom()}
              | {:graphviz_failed, String.t(), integer()}
@@ -85,11 +97,11 @@ defmodule Grafi.Viz do
       engine not in @valid_engines ->
         {:error, {:invalid_engine, engine}}
 
-      not graphviz_available?() ->
-        {:error, :graphviz_not_installed}
+      exe = find_engine(engine) ->
+        do_render(graph, format, exe, opts)
 
       true ->
-        do_render(graph, format, engine, opts)
+        {:error, :graphviz_not_installed}
     end
   end
 
@@ -109,7 +121,8 @@ defmodule Grafi.Viz do
 
   @doc """
   Render a graph and write it to `path`. The output format is inferred
-  from the file extension (e.g. `"foo.svg"` → `:svg`).
+  from the file extension (e.g. `"foo.svg"` → `:svg`, `"foo.gv"` →
+  `:dot`).
 
   Returns `:ok` on success, `{:error, reason}` otherwise.
 
@@ -123,6 +136,7 @@ defmodule Grafi.Viz do
           :ok
           | {:error,
              :graphviz_not_installed
+             | :timeout
              | {:invalid_format, atom() | String.t()}
              | {:invalid_engine, atom()}
              | {:graphviz_failed, String.t(), integer()}
@@ -149,6 +163,12 @@ defmodule Grafi.Viz do
 
   # ── Internals ─────────────────────────────────────────────────────────
 
+  defp find_engine(engine) when engine in @valid_engines do
+    System.find_executable(Atom.to_string(engine))
+  end
+
+  defp find_engine(_engine), do: nil
+
   defp infer_format(path) do
     ext =
       path
@@ -168,48 +188,147 @@ defmodule Grafi.Viz do
     end
   end
 
-  defp do_render(graph, format, engine, opts) do
-    dot_opts = Keyword.take(opts, [:name])
-    dot_string = Grafi.Serialize.DOT.to_dot(graph, dot_opts)
+  # Graphviz reads the DOT from one temp file and writes its output to
+  # another (`-o`). Feeding stdin through a Port is not an option: a Port
+  # cannot close only its write end, so Graphviz would never see EOF.
+  # Writing to a file rather than stdout keeps Graphviz warnings, which
+  # arrive on the merged stderr stream, out of the rendered bytes. Both
+  # files are removed in an `after`.
+  defp do_render(graph, format, exe, opts) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    dot_string = Grafi.Serialize.DOT.to_dot(graph, Keyword.take(opts, [:name]))
 
-    with {:ok, dot_path} <- write_tempfile(dot_string) do
-      try do
-        run_graphviz(engine, format, dot_path)
-      after
-        _ = File.rm(dot_path)
+    with_tempfile("dot", dot_string, fn dot_path ->
+      with_tempfile(Atom.to_string(format), "", fn out_path ->
+        run_graphviz(exe, ["-T#{format}", "-o", out_path, dot_path], out_path, timeout)
+      end)
+    end)
+  end
+
+  defp with_tempfile(ext, content, fun) do
+    case create_tempfile(ext, content) do
+      {:ok, path} ->
+        try do
+          fun.(path)
+        after
+          _ = File.rm(path)
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # `:exclusive` refuses an existing path (no symlink or pre-created file
+  # can be hijacked), and the mode is tightened before any content lands.
+  defp create_tempfile(ext, content) do
+    name =
+      "grafi-viz-#{System.system_time(:nanosecond)}-#{:erlang.unique_integer([:positive])}.#{ext}"
+
+    path = Path.join(System.tmp_dir!(), name)
+
+    write = fn io ->
+      with :ok <- File.chmod(path, 0o600), do: IO.binwrite(io, content)
+    end
+
+    case File.open(path, [:write, :exclusive, :binary], write) do
+      {:ok, :ok} ->
+        {:ok, path}
+
+      {:ok, {:error, reason}} ->
+        _ = File.rm(path)
+        {:error, {:tempfile_error, reason}}
+
+      {:error, reason} ->
+        {:error, {:tempfile_error, reason}}
+    end
+  end
+
+  defp run_graphviz(exe, argv, out_path, timeout) do
+    with {:ok, port} <- open_port(exe, argv) do
+      case await_port(port, [], deadline(timeout)) do
+        {0, _output} -> read_output(out_path)
+        {code, output} -> {:error, {:graphviz_failed, output, code}}
+        :timeout -> kill_port(port)
       end
     end
   end
 
-  defp write_tempfile(dot_string) do
-    # We use a temp-file rather than piping via Port.open/2 because
-    # System.cmd/3 has no stdin-input option across the Elixir versions
-    # we support (~> 1.15), and Port handling adds complexity around
-    # half-closed streams. The temp file is always removed in an `after`.
-    name =
-      "grafi-viz-#{System.system_time(:nanosecond)}-#{:erlang.unique_integer([:positive])}.dot"
+  defp open_port(exe, argv) do
+    {:ok,
+     Port.open({:spawn_executable, exe}, [
+       :binary,
+       :exit_status,
+       :stderr_to_stdout,
+       args: argv
+     ])}
+  rescue
+    # The executable vanished or lost its exec bit after the PATH lookup.
+    e in ErlangError -> {:error, {:graphviz_failed, Exception.message(e), -1}}
+  end
 
-    path = Path.join(System.tmp_dir!(), name)
+  defp await_port(port, acc, deadline) do
+    receive do
+      {^port, {:data, data}} ->
+        await_port(port, [acc | data], deadline)
 
-    case File.write(path, dot_string) do
-      :ok -> {:ok, path}
-      {:error, reason} -> {:error, {:tempfile_error, reason}}
+      {^port, {:exit_status, code}} ->
+        {code, IO.iodata_to_binary(acc)}
+    after
+      remaining(deadline) -> :timeout
     end
   end
 
-  defp run_graphviz(engine, format, dot_path) do
-    args = ["-T#{format}", dot_path]
+  defp deadline(:infinity), do: :infinity
+  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
 
-    case System.cmd(Atom.to_string(engine), args, stderr_to_stdout: false) do
-      {output, 0} ->
-        {:ok, output}
+  defp remaining(:infinity), do: :infinity
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
-      {stderr, exit_code} ->
-        {:error, {:graphviz_failed, stderr, exit_code}}
+  # Closing a Port does not stop the OS process, so kill it explicitly
+  # (the shell builtin `kill` needs nothing from PATH), then drop any
+  # messages the port delivered before it was closed.
+  defp kill_port(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} ->
+        _ = :os.cmd(kill_command(os_pid))
+        :ok
+
+      nil ->
+        :ok
     end
-  rescue
-    e in ErlangError ->
-      # System.cmd raises if the executable can't be found mid-flight.
-      {:error, {:graphviz_failed, Exception.message(e), -1}}
+
+    close_port(port)
+    flush_port(port)
+    {:error, :timeout}
+  end
+
+  defp kill_command(os_pid) do
+    case :os.type() do
+      {:win32, _} -> ~c"taskkill /F /T /PID #{os_pid}"
+      _ -> ~c"kill -9 #{os_pid}"
+    end
+  end
+
+  defp close_port(port) do
+    Port.close(port)
+  catch
+    # The killed process may already have closed the port by itself.
+    :error, :badarg -> true
+  end
+
+  defp flush_port(port) do
+    receive do
+      {^port, _} -> flush_port(port)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp read_output(out_path) do
+    case File.read(out_path) do
+      {:ok, bin} -> {:ok, bin}
+      {:error, reason} -> {:error, {:tempfile_error, reason}}
+    end
   end
 end
