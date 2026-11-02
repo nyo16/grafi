@@ -180,12 +180,12 @@ defmodule Grafi.Algo.APSPTest do
       assert APSP.reconstruct_path(p, :a, :c) == {:error, :no_path}
     end
 
-    test "matches Grafi.shortest_path/3 on positive-weight graph" do
+    test "matches Grafi.dijkstra/3 on positive-weight graph" do
       g = square_with_diag()
       {:ok, d, p} = APSP.floyd_warshall_with_paths(g)
 
       for u <- Grafi.vertices(g), v <- Grafi.vertices(g), u != v do
-        case Grafi.shortest_path(g, u, v) do
+        case Grafi.dijkstra(g, u, v) do
           {:ok, {_path, dist}} ->
             assert {:ok, fw_path} = APSP.reconstruct_path(p, u, v)
             assert_in_delta dist, d[u][v], 1.0e-9

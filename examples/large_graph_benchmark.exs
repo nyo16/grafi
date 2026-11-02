@@ -34,17 +34,17 @@ source = 0
 target = n_vertices - 1
 
 {sp_us, sp_result} =
-  :timer.tc(fn -> Grafi.shortest_path(graph, source, target) end)
+  :timer.tc(fn -> Grafi.dijkstra(graph, source, target) end)
 
 case sp_result do
   {:ok, {path, dist}} ->
-    IO.puts("shortest_path #{source} → #{target}:")
+    IO.puts("dijkstra #{source} → #{target}:")
     IO.puts("  time:   #{sp_us} µs (#{Float.round(sp_us / 1_000, 1)} ms)")
     IO.puts("  hops:   #{length(path) - 1}")
     IO.puts("  dist:   #{Float.round(dist, 3)}")
 
   {:error, :no_path} ->
-    IO.puts("shortest_path #{source} → #{target}: no path (#{sp_us} µs)")
+    IO.puts("dijkstra #{source} → #{target}: no path (#{sp_us} µs)")
 end
 
 IO.puts("")

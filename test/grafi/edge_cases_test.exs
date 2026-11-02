@@ -60,7 +60,7 @@ defmodule Grafi.EdgeCasesTest do
         Grafi.new(type: :undirected)
         |> Grafi.add_edges([{:a, :b}, {:c, :d}])
 
-      comps = Grafi.components(g)
+      comps = Grafi.connected_components(g)
       assert length(comps) == 2
 
       comp_sets = Enum.map(comps, &MapSet.new/1)
@@ -73,7 +73,7 @@ defmodule Grafi.EdgeCasesTest do
         Grafi.new()
         |> Grafi.add_edges([{:a, :b}, {:c, :d}])
 
-      assert Grafi.shortest_path(g, :a, :d) == {:error, :no_path}
+      assert Grafi.dijkstra(g, :a, :d) == {:error, :no_path}
     end
   end
 
@@ -98,7 +98,7 @@ defmodule Grafi.EdgeCasesTest do
   describe "Dijkstra source == target" do
     test "returns path of one vertex with zero distance" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b, weight: 1.0)
-      assert {:ok, {[:a], dist}} = Grafi.shortest_path(g, :a, :a)
+      assert {:ok, {[:a], dist}} = Grafi.dijkstra(g, :a, :a)
       assert dist == 0.0
     end
   end
@@ -106,12 +106,12 @@ defmodule Grafi.EdgeCasesTest do
   describe "Dijkstra with missing vertices" do
     test "missing source returns {:error, :no_such_vertex}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      assert Grafi.shortest_path(g, :missing, :b) == {:error, :no_such_vertex}
+      assert Grafi.dijkstra(g, :missing, :b) == {:error, :no_such_vertex}
     end
 
     test "missing target returns {:error, :no_such_vertex}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      assert Grafi.shortest_path(g, :a, :missing) == {:error, :no_such_vertex}
+      assert Grafi.dijkstra(g, :a, :missing) == {:error, :no_such_vertex}
     end
 
     test "A* missing endpoints returns {:error, :no_such_vertex}" do

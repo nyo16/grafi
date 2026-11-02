@@ -61,7 +61,7 @@ defmodule Grafi.Algo.CyclesTest do
     test "directed graphs use weak connectivity" do
       g = Graph.new() |> Graph.add_edges([{:b, :a}, {:c, :a}])
       assert Cycles.connected_components(g) == [[:a, :b, :c]]
-      assert Grafi.components(g) == [[:a, :b, :c]]
+      assert Grafi.connected_components(g) == [[:a, :b, :c]]
     end
 
     test "output is canonical" do

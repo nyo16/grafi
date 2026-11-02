@@ -19,7 +19,7 @@ defmodule Grafi.Algo.Bidirectional do
 
   @doc """
   Bidirectional Dijkstra shortest path. Returns the same shapes as
-  `Grafi.shortest_path/3`:
+  `Grafi.Algo.ShortestPath.dijkstra/4`:
 
     * `{:ok, {path, weight}}` on success
     * `{:error, :no_path}` if no path exists

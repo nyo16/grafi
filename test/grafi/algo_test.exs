@@ -27,14 +27,14 @@ defmodule Grafi.AlgoTest do
   end
 
   test "Dijkstra shortest path", %{g: g} do
-    assert {:ok, {path, dist}} = Grafi.shortest_path(g, :a, :d)
+    assert {:ok, {path, dist}} = Grafi.dijkstra(g, :a, :d)
     assert path == [:a, :b, :c, :d]
     assert dist == 4.0
   end
 
   test "Dijkstra no path" do
     g = Grafi.new() |> Grafi.add_vertices([:a, :b])
-    assert Grafi.shortest_path(g, :a, :b) == {:error, :no_path}
+    assert Grafi.dijkstra(g, :a, :b) == {:error, :no_path}
   end
 
   test "PageRank" do
@@ -70,7 +70,7 @@ defmodule Grafi.AlgoTest do
       Grafi.new()
       |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:d, :c}])
 
-    sccs = Grafi.scc(g)
+    sccs = Grafi.strongly_connected_components(g)
     big_scc = Enum.find(sccs, &(length(&1) == 3))
     assert big_scc != nil
     assert MapSet.new(big_scc) == MapSet.new([:a, :b, :c])
@@ -139,7 +139,7 @@ defmodule Grafi.AlgoTest do
     # a->b->c->d = 1+2+1 = 4 beats a->c->d = 5+1 = 6.
     assert {:ok, {[:a, :b, :c, :d], 4.0}} = Grafi.a_star(g, :a, :d, fn _ -> 0 end)
     # Must agree with Dijkstra on the same graph.
-    assert Grafi.a_star(g, :a, :d, fn _ -> 0 end) == Grafi.shortest_path(g, :a, :d)
+    assert Grafi.a_star(g, :a, :d, fn _ -> 0 end) == Grafi.dijkstra(g, :a, :d)
   end
 
   test "A* with an admissible heuristic still finds the optimal path", %{g: g} do

@@ -160,7 +160,7 @@ g = Grafi.new()
   ])
 
 # Shortest path
-Grafi.shortest_path(g, :athens, :olympia)
+Grafi.dijkstra(g, :athens, :olympia)
 #=> {:ok, {[:athens, :corinth, :olympia], 230.0}}
 
 # PageRank — exact values depend on damping factor and iteration count
