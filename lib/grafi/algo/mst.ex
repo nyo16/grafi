@@ -17,8 +17,8 @@ defmodule Grafi.Algo.MST do
   components, and Prim returns a spanning tree of the component
   containing the start vertex.
 
-  Use the `kruskal!/1` variant if you want a hard error on
-  disconnected input.
+  Use `kruskal_tree/1` (or its raising form `kruskal!/1`) when only a
+  spanning tree will do.
   """
 
   alias Grafi.Algo.MinHeap
@@ -75,29 +75,61 @@ defmodule Grafi.Algo.MST do
   end
 
   @doc """
-  Like `kruskal/1` but raises `Grafi.DisconnectedError` when the input
-  graph is disconnected (i.e. the result is a forest, not a tree).
+  Computes a minimum spanning *tree* using Kruskal's algorithm.
 
-  Returns `{tree_edges, total_weight}` on success.
+  Returns `{:ok, {tree_edges, total_weight}}` (the shape of `kruskal/1`)
+  when the graph is connected, or `{:error, :disconnected}` when only a
+  spanning forest exists. The empty graph has the empty tree.
+
+  ## Examples
+
+      iex> g = Grafi.new(type: :undirected) |> Grafi.add_edges([
+      ...>   {:a, :b, weight: 1.0}, {:b, :c, weight: 2.0}
+      ...> ])
+      iex> {:ok, {_edges, total}} = Grafi.Algo.MST.kruskal_tree(g)
+      iex> total
+      3.0
+      iex> Grafi.Algo.MST.kruskal_tree(Grafi.add_vertex(g, :d))
+      {:error, :disconnected}
+  """
+  @spec kruskal_tree(Graph.t()) :: {:ok, {[Edge.t()], number()}} | {:error, :disconnected}
+  def kruskal_tree(%Graph{} = g) do
+    case spanning_tree(g) do
+      {:ok, _tree} = ok -> ok
+      {:disconnected, _forest} -> {:error, :disconnected}
+    end
+  end
+
+  @doc """
+  Like `kruskal_tree/1` but returns `{tree_edges, total_weight}` directly
+  and raises `Grafi.DisconnectedError` when the input graph is
+  disconnected (i.e. the result is a forest, not a tree).
   """
   @spec kruskal!(Graph.t()) :: {[Edge.t()], number()}
   def kruskal!(%Graph{} = g) do
-    {forest, total} = kruskal(g)
-    v = Graph.num_vertices(g)
+    case spanning_tree(g) do
+      {:ok, tree} ->
+        tree
 
-    cond do
-      v == 0 ->
-        {forest, total}
+      {:disconnected, {forest, _total}} ->
+        v = Graph.num_vertices(g)
 
-      length(forest) == v - 1 ->
-        {forest, total}
-
-      true ->
         raise DisconnectedError,
           message:
             "graph is disconnected: spanning forest has #{length(forest)} edges " <>
               "(expected #{v - 1} for a spanning tree over #{v} vertices)"
     end
+  end
+
+  # A spanning forest is a tree iff it has V - 1 edges (vacuously so for
+  # the empty graph).
+  defp spanning_tree(g) do
+    {forest, _total} = result = kruskal(g)
+    v = Graph.num_vertices(g)
+
+    if v == 0 or length(forest) == v - 1,
+      do: {:ok, result},
+      else: {:disconnected, result}
   end
 
   @doc """

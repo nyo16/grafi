@@ -34,7 +34,7 @@ defmodule Grafi.AlgoTest do
 
   test "Dijkstra no path" do
     g = Grafi.new() |> Grafi.add_vertices([:a, :b])
-    assert Grafi.shortest_path(g, :a, :b) == :no_path
+    assert Grafi.shortest_path(g, :a, :b) == {:error, :no_path}
   end
 
   test "PageRank" do
@@ -149,9 +149,9 @@ defmodule Grafi.AlgoTest do
     assert {:ok, {[:a, :b, :c, :d], 4.0}} = Grafi.a_star(g, :a, :d, heur)
   end
 
-  test "A* returns :no_path when target is unreachable" do
+  test "A* returns {:error, :no_path} when target is unreachable" do
     g = Grafi.new() |> Grafi.add_vertices([:a, :b]) |> Grafi.add_edge(:a, :a)
-    assert Grafi.a_star(g, :a, :b, fn _ -> 0 end) == :no_path
+    assert Grafi.a_star(g, :a, :b, fn _ -> 0 end) == {:error, :no_path}
   end
 
   test "A* trivial path from a vertex to itself", %{g: g} do

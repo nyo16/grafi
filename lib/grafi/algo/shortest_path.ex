@@ -13,8 +13,8 @@ defmodule Grafi.Algo.ShortestPath do
   Computes the shortest weighted path from `source` to `target` using Dijkstra's
   algorithm.
 
-  Returns `{:ok, {path, distance}}` on success, `:no_path` if no path exists,
-  `{:error, :no_such_vertex}` if either endpoint is not in the graph, or
+  Returns `{:ok, {path, distance}}` on success, `{:error, :no_path}` if no path
+  exists, `{:error, :no_such_vertex}` if either endpoint is not in the graph, or
   `{:error, :negative_weight}` if any edge weight is negative (Dijkstra is
   undefined there; use `bellman_ford/2`).
 
@@ -26,13 +26,19 @@ defmodule Grafi.Algo.ShortestPath do
       graphs above the configured `:nif_threshold` (default `500` vertices) run
       in igraph on a dirty scheduler. `engine: :nif` without the NIF returns
       `{:error, :nif_not_available}`.
+
+  Unknown options raise `ArgumentError`.
   """
   @spec dijkstra(Graph.t(), any(), any(), keyword()) ::
           {:ok, {[any()], number()}}
-          | :no_path
           | {:error,
-             :no_such_vertex | :negative_weight | :nif_not_available | {:igraph, String.t()}}
+             :no_path
+             | :no_such_vertex
+             | :negative_weight
+             | :nif_not_available
+             | {:igraph, String.t()}}
   def dijkstra(%Graph{} = g, source, target, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
 
     cond do
@@ -56,6 +62,7 @@ defmodule Grafi.Algo.ShortestPath do
 
     case NIF.call(NIF.nif_dijkstra(csr, Map.fetch!(idx, source), Map.fetch!(idx, target))) do
       {:ok, path_indices, dist} -> {:ok, {Enum.map(path_indices, &elem(csr.vertices, &1)), dist}}
+      :no_path -> {:error, :no_path}
       other -> other
     end
   end
@@ -158,12 +165,12 @@ defmodule Grafi.Algo.ShortestPath do
   A* search for the shortest path from `source` to `target` guided by the
   admissible heuristic `h`, a function `vertex -> estimated_cost_to_target`.
 
-  Returns `{:ok, {path, cost}}` on success, `:no_path` if `target` is
+  Returns `{:ok, {path, cost}}` on success, `{:error, :no_path}` if `target` is
   unreachable, or `{:error, :no_such_vertex}` if either endpoint is missing.
   With `h.(_) == 0`, A* degenerates to Dijkstra.
   """
   @spec a_star(Graph.t(), any(), any(), (any() -> number())) ::
-          {:ok, {[any()], number()}} | :no_path | {:error, :no_such_vertex}
+          {:ok, {[any()], number()}} | {:error, :no_path | :no_such_vertex}
   def a_star(%Graph{} = g, source, target, h) do
     cond do
       not Graph.has_vertex?(g, source) ->
@@ -185,7 +192,7 @@ defmodule Grafi.Algo.ShortestPath do
 
     case Map.fetch(dists, target) do
       {:ok, d} -> {:ok, {rebuild(parents, source, target, [target]), d}}
-      :error -> :no_path
+      :error -> {:error, :no_path}
     end
   end
 
@@ -260,7 +267,7 @@ defmodule Grafi.Algo.ShortestPath do
   defp do_astar(g, target, h, heap, g_score, came_from, closed) do
     case MinHeap.pop(heap) do
       :empty ->
-        :no_path
+        {:error, :no_path}
 
       {:ok, {_, gc, cur}, rest_heap} ->
         cond do

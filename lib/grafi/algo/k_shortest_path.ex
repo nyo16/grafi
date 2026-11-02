@@ -32,6 +32,8 @@ defmodule Grafi.Algo.KShortestPath do
   Undirected graphs are supported: an undirected edge is forbidden in both
   directions while a spur path is searched.
 
+  It takes no options yet; unknown options raise `ArgumentError`.
+
   ## Examples
 
       iex> g = Grafi.new() |> Grafi.add_edges([
@@ -45,7 +47,9 @@ defmodule Grafi.Algo.KShortestPath do
   @spec yen(Graph.t(), any(), any(), pos_integer(), keyword()) ::
           {:ok, [{[any()], number()}]}
           | {:error, :no_such_vertex | :no_path | :negative_weight}
-  def yen(%Graph{} = g, source, target, k, _opts \\ []) when is_integer(k) and k > 0 do
+  def yen(%Graph{} = g, source, target, k, opts \\ []) when is_integer(k) and k > 0 do
+    Keyword.validate!(opts, [])
+
     cond do
       not Graph.has_vertex?(g, source) ->
         {:error, :no_such_vertex}
@@ -60,9 +64,6 @@ defmodule Grafi.Algo.KShortestPath do
         case ShortestPath.dijkstra(g, source, target, engine: :elixir) do
           {:ok, {path, _weight} = first} ->
             {:ok, yen_loop(g, target, k, [first], 1, MinHeap.new(), MapSet.new([path]))}
-
-          :no_path ->
-            {:error, :no_path}
 
           {:error, _} = err ->
             err

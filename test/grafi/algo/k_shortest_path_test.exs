@@ -129,6 +129,14 @@ defmodule Grafi.Algo.KShortestPathTest do
       assert KShortestPath.yen(g, :a, :b, 2) == {:error, :negative_weight}
     end
 
+    test "unknown options raise ArgumentError" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:engine\]/, fn ->
+        KShortestPath.yen(g, :a, :b, 2, engine: :elixir)
+      end
+    end
+
     test "5-vertex graph, top 3 paths in ascending weight order" do
       # source :s -> :a -> :t (cheap), :s -> :b -> :t, :s -> :c -> :t (expensive)
       g =

@@ -10,6 +10,24 @@ defmodule Grafi.Algo.ShortestPathTest do
 
   # ── Helpers ───────────────────────────────────────────────────────────
 
+  # Rebuilds `g` with small positive integer weights, so that sums are exact
+  # and equal-length paths are common.
+  defp with_positive_weights(g) do
+    base = Graph.new(type: g.type) |> Graph.add_vertices(Graph.vertices(g))
+
+    Enum.reduce(Graph.edges(g), base, fn e, acc ->
+      w = 1.0 + :erlang.phash2({e.from, e.to, e.label}, 9)
+      Graph.add_edge(acc, e.from, e.to, weight: w, label: e.label)
+    end)
+  end
+
+  defp path_weight(_g, [_only]), do: 0.0
+
+  defp path_weight(g, [u, v | rest]) do
+    w = g |> Graph.edges_between(u, v) |> Enum.map(& &1.weight) |> Enum.min()
+    w + path_weight(g, [v | rest])
+  end
+
   # A directed path 0 → 1 → … → n-1.
   defp path_graph(n) do
     Enum.reduce(1..(n - 1)//1, Graph.new() |> Graph.add_vertex(0), fn i, g ->
@@ -25,6 +43,32 @@ defmodule Grafi.Algo.ShortestPathTest do
   # ── dijkstra/4 ────────────────────────────────────────────────────────
 
   describe "dijkstra/4" do
+    test "unreachable target: {:error, :no_path} (Elixir engine)" do
+      g = Graph.new() |> Graph.add_edge(:a, :b) |> Graph.add_vertex(:c)
+      assert ShortestPath.dijkstra(g, :a, :c, engine: :elixir) == {:error, :no_path}
+      assert ShortestPath.dijkstra(g, :b, :a, engine: :elixir) == {:error, :no_path}
+    end
+
+    @tag :nif
+    test "unreachable target: {:error, :no_path} (NIF engine)" do
+      g = Graph.new() |> Graph.add_edge(:a, :b) |> Graph.add_vertex(:c)
+      assert ShortestPath.dijkstra(g, :a, :c, engine: :nif) == {:error, :no_path}
+    end
+
+    test "missing endpoints: {:error, :no_such_vertex}" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+      assert ShortestPath.dijkstra(g, :ghost, :b) == {:error, :no_such_vertex}
+      assert ShortestPath.dijkstra(g, :a, :ghost) == {:error, :no_such_vertex}
+    end
+
+    test "unknown options raise ArgumentError" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:engin\]/, fn ->
+        ShortestPath.dijkstra(g, :a, :b, engin: :elixir)
+      end
+    end
+
     test "undirected edges are relaxed in both directions" do
       g =
         Graph.new(type: :undirected)
@@ -32,6 +76,29 @@ defmodule Grafi.Algo.ShortestPathTest do
 
       assert ShortestPath.dijkstra(g, :c, :a, engine: :elixir) == {:ok, {[:c, :b, :a], 2.0}}
       assert ShortestPath.dijkstra(g, :a, :c, engine: :elixir) == {:ok, {[:a, :b, :c], 2.0}}
+    end
+
+    property "Elixir engine agrees with dijkstra_all/2 and Bellman-Ford on every pair" do
+      check all(g <- Generators.graph(weights: false, max_vertices: 8), max_runs: 50) do
+        g = with_positive_weights(g)
+
+        for s <- Graph.vertices(g) do
+          dists = ShortestPath.dijkstra_all(g, s)
+          assert ShortestPath.bellman_ford(g, s) == {:ok, dists}
+
+          for t <- Graph.vertices(g) do
+            case ShortestPath.dijkstra(g, s, t, engine: :elixir) do
+              {:ok, {path, d}} ->
+                assert d == Map.fetch!(dists, t)
+                assert hd(path) == s and List.last(path) == t
+                assert path_weight(g, path) == d
+
+              {:error, :no_path} ->
+                refute Map.has_key?(dists, t)
+            end
+          end
+        end
+      end
     end
 
     # A near target costs only what is closer than it; the base engine

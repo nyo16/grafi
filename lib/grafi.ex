@@ -123,7 +123,8 @@ defmodule Grafi do
 
   @doc """
   Shortest weighted path via Dijkstra. Returns `{:ok, {path, distance}}`,
-  `:no_path`, or `{:error, :no_such_vertex}`.
+  `{:error, :no_path}`, or `{:error, :no_such_vertex}`. See
+  `Grafi.Algo.ShortestPath.dijkstra/4` for the options and other errors.
 
   ## Examples
 
@@ -137,12 +138,19 @@ defmodule Grafi do
 
       iex> g = Grafi.new() |> Grafi.add_vertices([:a, :b])
       iex> Grafi.shortest_path(g, :a, :b)
-      :no_path
+      {:error, :no_path}
   """
+  @spec shortest_path(Graph.t(), any(), any(), keyword()) ::
+          {:ok, {[any()], number()}} | {:error, term()}
   def shortest_path(g, from, to, opts \\ []),
     do: Grafi.Algo.ShortestPath.dijkstra(g, from, to, opts)
 
-  @doc "A* shortest path with heuristic function."
+  @doc """
+  A* shortest path with heuristic function. Returns `{:ok, {path, cost}}`,
+  `{:error, :no_path}`, or `{:error, :no_such_vertex}`.
+  """
+  @spec a_star(Graph.t(), any(), any(), (any() -> number())) ::
+          {:ok, {[any()], number()}} | {:error, :no_path | :no_such_vertex}
   def a_star(g, from, to, heuristic),
     do: Grafi.Algo.ShortestPath.a_star(g, from, to, heuristic)
 
