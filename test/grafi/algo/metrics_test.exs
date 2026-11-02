@@ -22,7 +22,7 @@ defmodule Grafi.Algo.MetricsTest do
     end
 
     test "K4 contains four triangles" do
-      g = Generators.complete(4)
+      g = Generators.complete(4, type: :undirected)
       assert Metrics.triangle_count(g) == 4
     end
 
@@ -100,7 +100,7 @@ defmodule Grafi.Algo.MetricsTest do
 
     property "density is in [0, 1] for any graph" do
       check all(n <- integer(0..6), seed <- integer(0..1_000)) do
-        g = Generators.erdos_renyi(n, 0.5, seed: seed)
+        g = Generators.erdos_renyi(n, 0.5, seed: seed, type: :undirected)
         d = Metrics.density(g)
         assert d >= 0.0
         assert d <= 1.0 + 1.0e-9
@@ -120,7 +120,7 @@ defmodule Grafi.Algo.MetricsTest do
     end
 
     test "C5 cycle: diameter 2, radius 2, all vertices in center" do
-      g = Generators.cycle(5)
+      g = Generators.cycle(5, type: :undirected)
       assert Metrics.diameter(g) == 2
       assert Metrics.radius(g) == 2
       assert Enum.sort(Metrics.center(g)) == [0, 1, 2, 3, 4]
@@ -148,7 +148,7 @@ defmodule Grafi.Algo.MetricsTest do
     end
 
     test "eccentricities map covers every vertex" do
-      g = Generators.cycle(4)
+      g = Generators.cycle(4, type: :undirected)
       ecc = Metrics.eccentricities(g)
       assert map_size(ecc) == 4
       assert Enum.all?(Map.values(ecc), &(&1 == 2))
@@ -158,7 +158,7 @@ defmodule Grafi.Algo.MetricsTest do
   describe "properties" do
     property "triangle_count >= 0 for random graphs" do
       check all(n <- integer(3..7), p <- float(min: 0.0, max: 1.0), seed <- integer(0..999)) do
-        g = Generators.erdos_renyi(n, p, seed: seed)
+        g = Generators.erdos_renyi(n, p, seed: seed, type: :undirected)
         assert Metrics.triangle_count(g) >= 0
       end
     end

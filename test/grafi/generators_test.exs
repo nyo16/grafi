@@ -7,16 +7,39 @@ defmodule Grafi.GeneratorsTest do
 
   doctest Grafi.Generators
 
+  describe "options" do
+    test "generators are directed by default, like Graph.new/1" do
+      assert Generators.complete(3).type == :directed
+      assert Generators.erdos_renyi(5, 0.5, seed: 1).type == :directed
+      assert Generators.grid(2, 2).type == :directed
+      assert Generators.complete(3, type: :undirected).type == :undirected
+    end
+
+    test "unknown options and bad types raise ArgumentError" do
+      assert_raise ArgumentError, ~r/unknown keys \[:directed\]/, fn ->
+        Generators.complete(3, directed: true)
+      end
+
+      assert_raise ArgumentError, ~r/:type to be :directed or :undirected/, fn ->
+        Generators.cycle(3, type: :both)
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:seed\]/, fn ->
+        Generators.path(3, seed: 1)
+      end
+    end
+  end
+
   describe "complete/2" do
     test "K5 has 10 undirected edges and uniform degree 4" do
-      g = Generators.complete(5)
+      g = Generators.complete(5, type: :undirected)
       assert Graph.num_vertices(g) == 5
       assert Graph.num_edges(g) == 10
       assert Enum.all?(Graph.vertices(g), &(Graph.degree(g, &1) == 4))
     end
 
     test "directed K3 has 6 edges" do
-      g = Generators.complete(3, directed: true)
+      g = Generators.complete(3)
       assert g.type == :directed
       assert Graph.num_edges(g) == 6
     end
@@ -29,7 +52,7 @@ defmodule Grafi.GeneratorsTest do
 
   describe "cycle/2" do
     test "C5 has 5 edges and degree 2 everywhere" do
-      g = Generators.cycle(5)
+      g = Generators.cycle(5, type: :undirected)
       assert Graph.num_vertices(g) == 5
       assert Graph.num_edges(g) == 5
       assert Enum.all?(Graph.vertices(g), &(Graph.degree(g, &1) == 2))
@@ -38,7 +61,7 @@ defmodule Grafi.GeneratorsTest do
 
   describe "path/2" do
     test "P4 has 3 edges; endpoints have degree 1, middle has 2" do
-      g = Generators.path(4)
+      g = Generators.path(4, type: :undirected)
       assert Graph.num_vertices(g) == 4
       assert Graph.num_edges(g) == 3
       assert Graph.degree(g, 0) == 1
@@ -74,7 +97,7 @@ defmodule Grafi.GeneratorsTest do
     end
 
     test "p = 1.0: complete graph" do
-      g = Generators.erdos_renyi(50, 1.0, seed: 1)
+      g = Generators.erdos_renyi(50, 1.0, seed: 1, type: :undirected)
       assert Graph.num_edges(g) == div(50 * 49, 2)
     end
 
@@ -85,7 +108,7 @@ defmodule Grafi.GeneratorsTest do
     end
 
     test "directed variant: count near n*(n-1)*p" do
-      g = Generators.erdos_renyi(20, 0.5, seed: 5, directed: true)
+      g = Generators.erdos_renyi(20, 0.5, seed: 5)
       # Roughly 20*19*0.5 = 190; just check it's in a sane band.
       assert Graph.num_edges(g) >= 50
       assert Graph.num_edges(g) <= 380
@@ -94,7 +117,7 @@ defmodule Grafi.GeneratorsTest do
 
   describe "barabasi_albert/3" do
     test "BA(20, 2) has 20 vertices and 37 edges" do
-      g = Generators.barabasi_albert(20, 2, seed: 11)
+      g = Generators.barabasi_albert(20, 2, seed: 11, type: :undirected)
       assert Graph.num_vertices(g) == 20
       # Initial K3 has 3 edges; each of 17 added vertices contributes 2 edges.
       assert Graph.num_edges(g) == 3 + 17 * 2
@@ -126,7 +149,7 @@ defmodule Grafi.GeneratorsTest do
 
   describe "random_regular/3" do
     test "3-regular on 10 vertices has degree 3 everywhere" do
-      g = Generators.random_regular(10, 3, seed: 42)
+      g = Generators.random_regular(10, 3, seed: 42, type: :undirected)
       assert Graph.num_vertices(g) == 10
 
       Enum.each(Graph.vertices(g), fn v ->

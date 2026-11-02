@@ -216,7 +216,10 @@ defmodule Grafi.EngineErrorsTest do
   describe "VF2 timeout" do
     # A dense host and a K14 pattern take seconds to refute exhaustively.
     setup do
-      %{host: Generators.erdos_renyi(40, 0.5, seed: 42), pattern: Generators.complete(14)}
+      %{
+        host: Generators.erdos_renyi(40, 0.5, seed: 42, type: :undirected),
+        pattern: Generators.complete(14, type: :undirected)
+      }
     end
 
     for engine <- @engines do
@@ -243,8 +246,8 @@ defmodule Grafi.EngineErrorsTest do
       if engine == :nif, do: @tag(:nif)
 
       test "isomorphic?/3 and isomorphism/3 time out (#{engine})" do
-        a = Generators.random_regular(200, 3, seed: 1)
-        b = Generators.random_regular(200, 3, seed: 2)
+        a = Generators.random_regular(200, 3, seed: 1, type: :undirected)
+        b = Generators.random_regular(200, 3, seed: 2, type: :undirected)
         opts = [timeout: 20, engine: @engine]
 
         assert_raise Grafi.TimeoutError, ~r/20 ms/, fn -> Isomorphism.isomorphic?(a, b, opts) end
@@ -260,7 +263,7 @@ defmodule Grafi.EngineErrorsTest do
     # "the check actually runs" (no wall-clock assertion).
     @tag :nif
     test "raw VF2 NIF honours the largest deadline and treats anything above it as none" do
-      g = Generators.erdos_renyi(1500, 4 / 1500, seed: 1)
+      g = Generators.erdos_renyi(1500, 4 / 1500, seed: 1, type: :undirected)
       assert Graph.num_vertices(g) > 1024
       {_, csr} = Graph.to_csr(g)
 

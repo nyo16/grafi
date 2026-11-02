@@ -12,7 +12,8 @@ defmodule Grafi.NIFParityTest do
 
   @n 600
 
-  defp er(n, p, seed, opts \\ []), do: Generators.erdos_renyi(n, p, [seed: seed] ++ opts)
+  defp er(n, p, seed, opts \\ []),
+    do: Generators.erdos_renyi(n, p, Keyword.merge([seed: seed, type: :undirected], opts))
 
   # Copies `g` with small integer weights derived from the endpoints. Integer
   # weights produce many equal-length paths, which exercises tie handling.
@@ -50,7 +51,7 @@ defmodule Grafi.NIFParityTest do
     end
 
     test "directed graph with dangling vertices: engines agree and ranks sum to 1" do
-      g = er(@n, 0.003, 2, directed: true)
+      g = er(@n, 0.003, 2, type: :directed)
       assert Enum.any?(Graph.vertices(g), &(Graph.out_degree(g, &1) == 0))
 
       {nif, elixir} =
@@ -77,7 +78,7 @@ defmodule Grafi.NIFParityTest do
     end
 
     test "directed, unweighted, normalized" do
-      g = er(@n, 0.005, 4, directed: true)
+      g = er(@n, 0.005, 4, type: :directed)
       {nif, elixir} = both(&Centrality.betweenness(g, engine: &1))
       assert_close(nif, elixir, 1.0e-9)
     end
@@ -96,7 +97,7 @@ defmodule Grafi.NIFParityTest do
     end
 
     test "weighted directed graph: engines agree" do
-      g = er(@n, 0.005, 5, directed: true) |> with_weights()
+      g = er(@n, 0.005, 5, type: :directed) |> with_weights()
       {nif, elixir} = both(&Centrality.closeness(g, engine: &1))
       assert_close(nif, elixir, 1.0e-12)
     end
@@ -127,7 +128,7 @@ defmodule Grafi.NIFParityTest do
 
   describe "strongly connected components" do
     test "canonical output is identical" do
-      g = er(@n, 0.003, 7, directed: true)
+      g = er(@n, 0.003, 7, type: :directed)
       {nif, elixir} = both(&Cycles.strongly_connected_components(g, engine: &1))
       assert nif == elixir
       assert Enum.sort(List.flatten(nif)) == Enum.sort(Graph.vertices(g))
@@ -145,7 +146,7 @@ defmodule Grafi.NIFParityTest do
 
   describe "topological sort" do
     test "the deterministic Kahn order is identical" do
-      g = er(@n, 0.01, 8, directed: true)
+      g = er(@n, 0.01, 8, type: :directed)
       base = Graph.new(type: :directed) |> Graph.add_vertices(Graph.vertices(g))
 
       dag =

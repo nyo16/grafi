@@ -290,7 +290,3 @@ defmodule Grafi.DAG do
       do: "#Grafi.DAG<V: #{g.num_vertices}, E: #{g.num_edges}>"
   end
 end
-
-defmodule Grafi.CycleError do
-  defexception [:message]
-end
