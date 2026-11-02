@@ -268,6 +268,55 @@ defmodule Grafi.Algo.MatchingTest do
         assert c == best
       end
     end
+
+    # c[i][j] = i·j makes every row displace the previous ones, so each row
+    # needs many scans. 8x the size takes about 350x as long (O(n³) bounds
+    # it at 512x); the old element-wise `put_elem/3` updates took about
+    # 2000x (O(n⁴)). Best of 3, after a GC.
+    @tag :slow
+    test "solve time grows as O(n³)" do
+      best = fn n ->
+        m = for i <- 1..n, do: for(j <- 1..n, do: i * j)
+
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+            {t, {:ok, _}} = :timer.tc(fn -> Matching.hungarian(m) end)
+            max(t, 1_000)
+          end
+        )
+      end
+
+      {t_small, t_large} = {best.(60), best.(480)}
+
+      assert t_large < 1_000 * t_small,
+             "8x the size took #{Float.round(t_large / t_small, 1)}x as long"
+    end
+
+    property "reported cost is the optimum of rectangular matrices up to 7×7" do
+      check all(
+              n_rows <- integer(1..7),
+              n_cols <- integer(1..7),
+              rows <- list_of(list_of(integer(-20..50), length: n_cols), length: n_rows),
+              maximize <- boolean()
+            ) do
+        {:ok, %{assignment: a, cost: c, unmatched: u}} =
+          Matching.hungarian(rows, maximize: maximize)
+
+        matched = for {j, i} <- Enum.with_index(a), j != nil, do: {i, j}
+        assert length(matched) == min(n_rows, n_cols)
+        assert matched |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == length(matched)
+        assert u == for({nil, i} <- Enum.with_index(a), do: i)
+        assert c == Enum.sum(for {i, j} <- matched, do: rows |> Enum.at(i) |> Enum.at(j))
+
+        expected =
+          if maximize,
+            do: -best_assignment(Enum.map(rows, fn row -> Enum.map(row, &(-&1)) end)),
+            else: best_assignment(rows)
+
+        assert c == expected
+      end
+    end
   end
 
   # ── Weighted bipartite matching ──────────────────────────────────────
@@ -363,6 +412,24 @@ defmodule Grafi.Algo.MatchingTest do
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────
+
+  # Minimum-cost assignment of min(rows, cols) pairs, by dynamic programming
+  # over the sets of used columns (transposing so rows <= cols).
+  defp best_assignment(rows) do
+    rows = if length(rows) > length(hd(rows)), do: Enum.zip_with(rows, & &1), else: rows
+
+    rows
+    |> Enum.reduce(%{0 => 0}, fn row, dp ->
+      for {mask, cost} <- dp,
+          {c, j} <- Enum.with_index(row),
+          Bitwise.band(mask, Bitwise.bsl(1, j)) == 0,
+          reduce: %{} do
+        acc -> Map.update(acc, Bitwise.bor(mask, Bitwise.bsl(1, j)), cost + c, &min(&1, cost + c))
+      end
+    end)
+    |> Map.values()
+    |> Enum.min()
+  end
 
   defp permutations([]), do: [[]]
 

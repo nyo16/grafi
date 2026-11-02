@@ -325,7 +325,7 @@ defmodule Grafi.Algo.Matching do
 
   # ── Jonker–Volgenant inner solver ────────────────────────────────────
   #
-  # All arrays are 1-indexed tuples of size `n + 1` (index 0 is a
+  # `u`, `v` and `p` are 1-indexed tuples of size `n + 1` (index 0 is a
   # sentinel "row 0 / col 0" slot used by the algorithm). Cost matrix
   # `c` is 0-indexed (size n×n).
   #
@@ -336,15 +336,27 @@ defmodule Grafi.Algo.Matching do
   #   v[j] - column potential (col 1..n)
   #   p[j] - row currently assigned to column j (0 means unassigned)
   #   way[j] - in the alternating tree, the column we came from to reach j
+  #
+  # `put_elem/3` copies the whole tuple, so the reference's in-place
+  # updates of `minv`, `way`, `u` and `v` would cost O(n) each, O(n²) per
+  # scan and O(n⁴) overall. Instead, while one row is being inserted:
+  #
+  #   * the columns not yet in the alternating tree are a list of
+  #     `{j, minv[j] + d, way[j]}`, rebuilt by each scan in one pass, where
+  #     `d` is the sum of the deltas so far. Storing `minv + d` makes the
+  #     reference's "minv[j] -= delta for every free column" a no-op;
+  #   * the columns in the tree are a list of `{j, way[j], d_when_added}`;
+  #   * `u` and `v` change only once, when the row is done: a tree column
+  #     added when the delta sum was `d_j` has v[j] -= d - d_j and
+  #     u[p[j]] += d - d_j. A scan only reads u[p[j0]] for the column j0
+  #     just added and v[j] for free columns, which are not updated yet.
+  #
+  # A scan is O(n) and a row needs at most n scans, so the solver is O(n³).
 
   defp jv_solve(n, c) do
-    # Pre-fill all tuples to size n+1 with zeros / sentinels.
-    init = List.duplicate(0, n + 1) |> List.to_tuple()
-    u = init
-    v = init
-    p = init
+    init = :erlang.make_tuple(n + 1, 0)
 
-    Enum.reduce(1..n, %{u: u, v: v, p: p}, fn i, %{u: u, v: v, p: p} ->
+    Enum.reduce(1..n, %{u: init, v: init, p: init}, fn i, %{u: u, v: v, p: p} ->
       jv_assign_row(i, n, c, u, v, p)
     end)
   end
@@ -354,117 +366,68 @@ defmodule Grafi.Algo.Matching do
     # p[0] = i: column 0 is the "phantom" matched to row i so the search
     # can start from j0 = 0.
     p = put_elem(p, 0, i)
+    free = for j <- 1..n, do: {j, @inf, 0}
 
-    # minv[j] = min reduced cost reachable to column j so far.
-    # way[j] = previous column on the alternating tree path to column j.
-    # used[j] = whether column j has been pulled into the tree.
-    minv = List.duplicate(@inf, n + 1) |> List.to_tuple()
-    way = List.duplicate(0, n + 1) |> List.to_tuple()
-    used = List.duplicate(false, n + 1) |> List.to_tuple()
+    {tree, j_end, way_end, d} = jv_grow(0, 0, free, [], 0, c, u, v, p)
 
-    {u, v, p, way, j_end} = jv_loop(0, n, c, u, v, p, way, minv, used)
+    shifts = for {j, _way, d_j} <- tree, do: {j, d - d_j}
+    v = jv_add(v, :erlang.make_tuple(n + 1, 0, for({j, s} <- shifts, do: {j + 1, -s})))
+    u = jv_add(u, :erlang.make_tuple(n + 1, 0, for({j, s} <- shifts, do: {elem(p, j) + 1, s})))
 
     # Augment along `way` from j_end back to 0.
-    p = jv_augment(j_end, p, way)
+    way = Map.new(tree, fn {j, w, _d_j} -> {j, w} end)
+    p = jv_augment(j_end, way_end, p, way)
     %{u: u, v: v, p: p}
   end
 
-  # Outer loop: each iteration picks the column j0 currently being
-  # processed (initially 0 = phantom), expands all not-yet-used columns,
-  # updates potentials by delta, and either terminates (if j1 points to
-  # an unassigned column) or continues with j0 := j1.
-  defp jv_loop(j0, n, c, u, v, p, way, minv, used) do
-    used = put_elem(used, j0, true)
+  # One iteration: add column j0 (reached from `way_j0`) to the tree, scan
+  # row p[j0] against the free columns, and either stop at the closest
+  # free column j1 if it is unassigned, or continue from it.
+  defp jv_grow(j0, way_j0, free, tree, d, c, u, v, p) do
+    tree = [{j0, way_j0, d} | tree]
     i0 = elem(p, j0)
 
-    {minv, way, delta, j1} =
-      jv_scan(1, n, i0, j0, c, u, v, used, minv, way, @inf, 0)
-
-    {u, v} = jv_update_potentials(0, n, used, p, u, v, delta)
-    minv = jv_decrement_minv(0, n, used, minv, delta)
+    {free, d, j1, way_j1} =
+      jv_scan(free, j0, elem(c, i0 - 1), elem(u, i0), v, d, [], :none, 0, 0)
 
     if elem(p, j1) == 0 do
-      {u, v, p, way, j1}
+      {tree, j1, way_j1, d}
     else
-      jv_loop(j1, n, c, u, v, p, way, minv, used)
+      jv_grow(j1, way_j1, free, tree, d, c, u, v, p)
     end
   end
 
-  # For each unused column j, compute reduced cost from row i0 and
-  # update minv[j] / way[j]; track the smallest minv and its column.
-  defp jv_scan(j, n, _i0, _j0, _c, _u, _v, _used, minv, way, delta, j1) when j > n,
-    do: {minv, way, delta, j1}
+  # Drops j0 from the free list, lowers each free column's minv to its
+  # reduced cost from row i0 (recording way[j] = j0), and finds the free
+  # column j1 with the smallest minv (the first one on ties, as in the
+  # reference). Returns the new list and `d + delta`, which is j1's stored
+  # value. `:none` compares greater than every number.
+  defp jv_scan([], _j0, _row, _ui0, _v, _d, acc, best, j1, way_j1),
+    do: {:lists.reverse(acc), best, j1, way_j1}
 
-  defp jv_scan(j, n, i0, j0, c, u, v, used, minv, way, delta, j1) do
-    if elem(used, j) do
-      jv_scan(j + 1, n, i0, j0, c, u, v, used, minv, way, delta, j1)
-    else
-      cij = c |> elem(i0 - 1) |> elem(j - 1)
-      cur = cij - elem(u, i0) - elem(v, j)
+  defp jv_scan([{j0, _, _} | rest], j0, row, ui0, v, d, acc, best, j1, way_j1),
+    do: jv_scan(rest, j0, row, ui0, v, d, acc, best, j1, way_j1)
 
-      {minv, way} =
-        if cur < elem(minv, j) do
-          {put_elem(minv, j, cur), put_elem(way, j, j0)}
-        else
-          {minv, way}
-        end
+  defp jv_scan([{j, stored, way_j} | rest], j0, row, ui0, v, d, acc, best, j1, way_j1) do
+    cur = elem(row, j - 1) - ui0 - elem(v, j) + d
+    {stored, way_j} = if cur < stored, do: {cur, j0}, else: {stored, way_j}
+    acc = [{j, stored, way_j} | acc]
 
-      mj2 = elem(minv, j)
-
-      {delta, j1} =
-        if mj2 < delta do
-          {mj2, j}
-        else
-          {delta, j1}
-        end
-
-      jv_scan(j + 1, n, i0, j0, c, u, v, used, minv, way, delta, j1)
-    end
+    if stored < best,
+      do: jv_scan(rest, j0, row, ui0, v, d, acc, stored, j, way_j),
+      else: jv_scan(rest, j0, row, ui0, v, d, acc, best, j1, way_j1)
   end
 
-  # Potential update: for every column j (0..n):
-  #   if used[j]:   u[p[j]] += delta;   v[j] -= delta
-  #   else:         (handled by jv_decrement_minv on minv)
-  defp jv_update_potentials(j, n, _used, _p, u, v, _delta) when j > n, do: {u, v}
-
-  defp jv_update_potentials(j, n, used, p, u, v, delta) do
-    {u, v} =
-      if elem(used, j) do
-        i = elem(p, j)
-        u = put_elem(u, i, elem(u, i) + delta)
-        v = put_elem(v, j, elem(v, j) - delta)
-        {u, v}
-      else
-        {u, v}
-      end
-
-    jv_update_potentials(j + 1, n, used, p, u, v, delta)
+  # Element-wise sum of two equal-size tuples.
+  defp jv_add(a, b) do
+    for(i <- 0..(tuple_size(a) - 1), do: elem(a, i) + elem(b, i)) |> List.to_tuple()
   end
 
-  # For unused columns, decrement minv by delta (so future reduced-cost
-  # comparisons remain valid).
-  defp jv_decrement_minv(j, n, _used, minv, _delta) when j > n, do: minv
+  defp jv_augment(0, _way_j, p, _way), do: p
 
-  defp jv_decrement_minv(j, n, used, minv, delta) do
-    minv =
-      if elem(used, j) do
-        minv
-      else
-        put_elem(minv, j, elem(minv, j) - delta)
-      end
-
-    jv_decrement_minv(j + 1, n, used, minv, delta)
-  end
-
-  defp jv_augment(j1, p, way) do
-    if j1 == 0 do
-      p
-    else
-      j_prev = elem(way, j1)
-      i_prev = elem(p, j_prev)
-      p = put_elem(p, j1, i_prev)
-      jv_augment(j_prev, p, way)
-    end
+  defp jv_augment(j1, j_prev, p, way) do
+    p = put_elem(p, j1, elem(p, j_prev))
+    jv_augment(j_prev, Map.fetch!(way, j_prev), p, way)
   end
 
   # ── Weighted bipartite matching on a graph ───────────────────────────
