@@ -18,19 +18,32 @@ defmodule Grafi do
   - **Graceful fallback** — if igraph is not installed, every algorithm
     has a pure Elixir implementation (except community detection).
 
-  ## Return-value conventions
+  ## Conventions
 
-  Two families of functions behave differently when the NIF is absent, by
-  design:
+  Every public function follows these rules:
 
-    * **Algorithms with a pure-Elixir fallback** (shortest path, centrality,
-      cycles, traversal, …) return their result directly and silently fall
-      back to Elixir — you never see a NIF-availability error.
-    * **NIF-only algorithms** (`Grafi.Algo.Community.louvain/1`, `leiden/2`,
-      `label_propagation/1`) return `{:ok, result}` or
-      `{:error, :nif_not_available}`. Use `Grafi.nif_available?/0` to check
-      up front, or `Grafi.Algo.Community.label_propagation_simple/2` for a
-      pure-Elixir alternative.
+  | Area | Convention |
+  |---|---|
+  | Fallible operations | `{:ok, value}` or `{:error, reason}`; error tuples always have two elements, e.g. `{:error, {:not_bipartite, {u, v}}}` |
+  | Raising variants | a `!` function raises instead of returning `{:error, _}` where one is provided (`from_json!/2` and the other deserializers, `MST.kruskal!/1`, `DAG.from_graph!/1`) |
+  | Deserializers | `from_x/2` returns `{:ok, graph}` or `{:error, reason}`; `from_x!/2` raises |
+  | No path | `{:error, :no_path}` |
+  | No cycle | `{:error, :no_cycle}` (`find_cycle/1`) |
+  | Missing endpoint | functions returning `{:ok, _}` / `{:error, _}` return `{:error, :no_such_vertex}`; functions returning a plain value (`bfs/2`, `dfs/2`, `reachable?/3`, `eccentricity/3`, `prim/2`) raise `ArgumentError` |
+  | Invalid options | `ArgumentError`, including unknown option keys (`Keyword.validate!/2`) |
+  | Iteration knobs | `:max_iter` and `:tol` |
+  | Directedness | `type: :directed \| :undirected`, default `:directed` (`Grafi.Graph.new/1`, `Grafi.Generators`, the edge-list and adjacency-list readers) |
+  | Engine | NIF-capable functions take `engine: :auto \| :nif \| :elixir` |
+
+  NIF-only algorithms (`Grafi.Algo.Community.louvain/2`, `leiden/2`,
+  `label_propagation/2`) return `{:error, :nif_not_available}` without the
+  NIF; every other algorithm falls back to pure Elixir. Use
+  `Grafi.nif_available?/0` to check up front, or
+  `Grafi.Algo.Community.label_propagation_simple/2` for a pure-Elixir
+  alternative.
+
+  The facade functions below mirror the module function names; the few
+  aliases are listed in the "Facade names" table.
 
   ## Quick start
 
