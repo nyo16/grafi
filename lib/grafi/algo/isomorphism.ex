@@ -193,7 +193,7 @@ defmodule Grafi.Algo.Isomorphism do
 
   @doc """
   Returns `{:ok, mapping}` with one witness isomorphism between `g1` and
-  `g2`, or `:no_isomorphism`.
+  `g2`, or `{:error, :no_isomorphism}`.
 
   The returned mapping has keys from `g1`'s vertex set and values from
   `g2`'s vertex set. Accepts the same options as `isomorphic?/3`.
@@ -203,17 +203,17 @@ defmodule Grafi.Algo.Isomorphism do
   `{:error, {:igraph, message}}` if igraph fails.
   """
   @spec isomorphism(Graph.t(), Graph.t(), keyword()) ::
-          {:ok, mapping()} | :no_isomorphism | error()
+          {:ok, mapping()} | {:error, :no_isomorphism} | error()
   def isomorphism(%Graph{} = g1, %Graph{} = g2, opts \\ []) do
     opts = Keyword.validate!(opts, @options)
     timeout = validate!(g1, g2, opts)
 
     cond do
       Graph.num_vertices(g1) != Graph.num_vertices(g2) ->
-        :no_isomorphism
+        {:error, :no_isomorphism}
 
       Graph.num_edges(g1) != Graph.num_edges(g2) ->
-        :no_isomorphism
+        {:error, :no_isomorphism}
 
       Graph.num_vertices(g1) == 0 ->
         {:ok, %{}}
@@ -231,13 +231,14 @@ defmodule Grafi.Algo.Isomorphism do
 
   @doc """
   Returns `{:ok, mapping}` with one witness sub-isomorphism (keys are
-  `pattern` vertices, values are `graph` vertices), or `:no_isomorphism`.
+  `pattern` vertices, values are `graph` vertices), or
+  `{:error, :no_isomorphism}`.
 
   Accepts the same options as `isomorphic?/3` and returns the same
   `{:error, _}` tuples as `isomorphism/3`.
   """
   @spec subgraph_isomorphism(Graph.t(), Graph.t(), keyword()) ::
-          {:ok, mapping()} | :no_isomorphism | error()
+          {:ok, mapping()} | {:error, :no_isomorphism} | error()
   def subgraph_isomorphism(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
     opts = Keyword.validate!(opts, @options)
     timeout = validate!(graph, pattern, opts)
@@ -247,7 +248,7 @@ defmodule Grafi.Algo.Isomorphism do
         {:ok, %{}}
 
       Graph.num_vertices(pattern) > Graph.num_vertices(graph) ->
-        :no_isomorphism
+        {:error, :no_isomorphism}
 
       true ->
         dispatch(
@@ -257,7 +258,7 @@ defmodule Grafi.Algo.Isomorphism do
           fn t -> nif_subgraph_isomorphism(graph, pattern, t) end,
           fn deadline ->
             case find_one_subiso(graph, pattern, deadline) do
-              nil -> :no_isomorphism
+              nil -> {:error, :no_isomorphism}
               mapping -> {:ok, mapping}
             end
           end
@@ -266,8 +267,8 @@ defmodule Grafi.Algo.Isomorphism do
   end
 
   @doc """
-  Returns the number of distinct sub-isomorphisms from `pattern` into
-  `graph`.
+  Returns `{:ok, count}`: the number of distinct sub-isomorphisms from
+  `pattern` into `graph`.
 
   Note that automorphisms of `pattern` produce distinct mappings even when
   they hit the same vertex set in `graph` — for example a triangle pattern
@@ -278,25 +279,25 @@ defmodule Grafi.Algo.Isomorphism do
   `{:error, _}` tuples as `isomorphism/3`.
   """
   @spec count_subgraph_isomorphisms(Graph.t(), Graph.t(), keyword()) ::
-          non_neg_integer() | error()
+          {:ok, non_neg_integer()} | error()
   def count_subgraph_isomorphisms(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
     opts = Keyword.validate!(opts, @options)
     timeout = validate!(graph, pattern, opts)
 
     cond do
       Graph.num_vertices(pattern) == 0 ->
-        1
+        {:ok, 1}
 
       Graph.num_vertices(pattern) > Graph.num_vertices(graph) ->
-        0
+        {:ok, 0}
 
       true ->
         dispatch(
           graph,
           opts,
           timeout,
-          fn t -> unwrap_ok(nif2(&NIF.nif_count_subisomorphisms_vf2/3, graph, pattern, t)) end,
-          fn deadline -> elixir_count_subgraph_isomorphisms(graph, pattern, deadline) end
+          fn t -> nif2(&NIF.nif_count_subisomorphisms_vf2/3, graph, pattern, t) end,
+          fn deadline -> {:ok, elixir_count_subgraph_isomorphisms(graph, pattern, deadline)} end
         )
     end
   end
@@ -389,9 +390,6 @@ defmodule Grafi.Algo.Isomorphism do
 
         {:ok, mapping}
 
-      {:error, :no_isomorphism} ->
-        :no_isomorphism
-
       {:error, _} = error ->
         error
     end
@@ -412,9 +410,6 @@ defmodule Grafi.Algo.Isomorphism do
           end
 
         {:ok, mapping}
-
-      {:error, :no_isomorphism} ->
-        :no_isomorphism
 
       {:error, _} = error ->
         error
@@ -454,7 +449,7 @@ defmodule Grafi.Algo.Isomorphism do
          mapping when mapping != nil <- find_one(g1, g2, true, deadline) do
       {:ok, mapping}
     else
-      _ -> :no_isomorphism
+      _ -> {:error, :no_isomorphism}
     end
   end
 

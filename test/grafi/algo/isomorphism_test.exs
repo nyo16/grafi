@@ -139,9 +139,9 @@ defmodule Grafi.Algo.IsomorphismTest do
         assert valid_iso?(g, g, mapping)
       end
 
-      test "returns :no_isomorphism on non-isomorphic graphs" do
+      test "returns {:error, :no_isomorphism} on non-isomorphic graphs" do
         assert Isomorphism.isomorphism(triangle(), path([:a, :b, :c]), @opts) ==
-                 :no_isomorphism
+                 {:error, :no_isomorphism}
       end
 
       test "empty graphs map to empty mapping" do
@@ -222,8 +222,9 @@ defmodule Grafi.Algo.IsomorphismTest do
         assert valid_subiso?(host, pattern, mapping)
       end
 
-      test "returns :no_isomorphism when pattern is larger" do
-        assert Isomorphism.subgraph_isomorphism(triangle(), k(4), @opts) == :no_isomorphism
+      test "returns {:error, :no_isomorphism} when pattern is larger" do
+        assert Isomorphism.subgraph_isomorphism(triangle(), k(4), @opts) ==
+                 {:error, :no_isomorphism}
       end
     end
 
@@ -231,27 +232,28 @@ defmodule Grafi.Algo.IsomorphismTest do
       if engine == :nif, do: @describetag(:nif)
 
       test "triangle into K_4 yields 24 (4 triangles × 3! orderings)" do
-        assert Isomorphism.count_subgraph_isomorphisms(k(4), triangle(), @opts) == 24
+        assert Isomorphism.count_subgraph_isomorphisms(k(4), triangle(), @opts) == {:ok, 24}
       end
 
       test "triangle into K_3 yields 6 (3! orderings)" do
-        assert Isomorphism.count_subgraph_isomorphisms(triangle(), triangle(), @opts) == 6
+        assert Isomorphism.count_subgraph_isomorphisms(triangle(), triangle(), @opts) == {:ok, 6}
       end
 
       test "P_3 into K_3 yields 6" do
         # Every ordered choice (a, b, c) of three distinct K_3 vertices is a
         # P_3, since any two are adjacent: 3·2·1 = 6.
-        assert Isomorphism.count_subgraph_isomorphisms(triangle(), path([1, 2, 3]), @opts) == 6
+        assert Isomorphism.count_subgraph_isomorphisms(triangle(), path([1, 2, 3]), @opts) ==
+                 {:ok, 6}
       end
 
       test "directed P_3 into a directed 3-cycle yields 3 (one per start vertex)" do
         cycle = triangle(type: :directed)
         pattern = path([1, 2, 3], type: :directed)
-        assert Isomorphism.count_subgraph_isomorphisms(cycle, pattern, @opts) == 3
+        assert Isomorphism.count_subgraph_isomorphisms(cycle, pattern, @opts) == {:ok, 3}
       end
 
       test "pattern larger than host yields 0" do
-        assert Isomorphism.count_subgraph_isomorphisms(triangle(), k(4), @opts) == 0
+        assert Isomorphism.count_subgraph_isomorphisms(triangle(), k(4), @opts) == {:ok, 0}
       end
 
       test "empty pattern yields 1" do
@@ -259,7 +261,7 @@ defmodule Grafi.Algo.IsomorphismTest do
                  triangle(),
                  Graph.new(type: :undirected),
                  @opts
-               ) == 1
+               ) == {:ok, 1}
       end
     end
   end
@@ -294,7 +296,7 @@ defmodule Grafi.Algo.IsomorphismTest do
 
         case Isomorphism.isomorphism(g1, g2, engine: :elixir) do
           {:ok, mapping} -> assert expected and valid_iso?(g1, g2, mapping)
-          :no_isomorphism -> refute expected
+          {:error, :no_isomorphism} -> refute expected
         end
       end
     end
@@ -302,12 +304,15 @@ defmodule Grafi.Algo.IsomorphismTest do
     property "count_subgraph_isomorphisms/3 counts every edge-preserving injection" do
       check all({pattern, host} <- small_graph_pair(4, 6)) do
         expected = brute_subiso_count(host, pattern)
-        assert Isomorphism.count_subgraph_isomorphisms(host, pattern, engine: :elixir) == expected
+
+        assert Isomorphism.count_subgraph_isomorphisms(host, pattern, engine: :elixir) ==
+                 {:ok, expected}
+
         assert Isomorphism.subgraph_isomorphic?(host, pattern, engine: :elixir) == expected > 0
 
         case Isomorphism.subgraph_isomorphism(host, pattern, engine: :elixir) do
           {:ok, mapping} -> assert valid_subiso?(host, pattern, mapping)
-          :no_isomorphism -> assert expected == 0
+          {:error, :no_isomorphism} -> assert expected == 0
         end
       end
     end
@@ -330,11 +335,13 @@ defmodule Grafi.Algo.IsomorphismTest do
       host = path([1, 2, 3])
       pattern = Graph.new(type: :undirected) |> Graph.add_edges([{:x, :x}, {:x, :y}])
 
-      assert Isomorphism.count_subgraph_isomorphisms(host, pattern, engine: :elixir) == 0
+      assert Isomorphism.count_subgraph_isomorphisms(host, pattern, engine: :elixir) == {:ok, 0}
       refute Isomorphism.subgraph_isomorphic?(host, pattern, engine: :elixir)
 
       looped = Graph.add_edge(host, 2, 2)
-      assert Isomorphism.count_subgraph_isomorphisms(looped, pattern, engine: :elixir) == 2
+
+      assert Isomorphism.count_subgraph_isomorphisms(looped, pattern, engine: :elixir) ==
+               {:ok, 2}
     end
 
     property "a graph is isomorphic to a shuffled relabelling of itself" do
