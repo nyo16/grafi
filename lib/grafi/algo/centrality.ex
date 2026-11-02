@@ -397,35 +397,23 @@ defmodule Grafi.Algo.Centrality do
       %{hubs: %{}, authorities: %{}}
     else
       init = Map.new(vs, &{&1, 1.0 / n})
-      {h, a} = do_hits(g, vs, init, init, max_iter, tol, 0)
+      ctx = %{vs: vs, in: coefficients(g.in_edges, false), out: coefficients(g.out_edges, false)}
+      {h, a} = do_hits(ctx, init, init, max_iter, tol, 0)
       %{hubs: h, authorities: a}
     end
   end
 
-  defp do_hits(_g, _vs, h, a, max, _tol, i) when i >= max, do: {h, a}
+  defp do_hits(_ctx, h, a, max, _tol, i) when i >= max, do: {h, a}
 
-  defp do_hits(g, vs, h, a, max, tol, i) do
+  defp do_hits(%{vs: vs} = ctx, h, a, max, tol, i) do
     # authorities[v] = sum over u in in_neighbors(v) of hubs[u]
-    a_new =
-      Map.new(vs, fn v ->
-        s = Enum.reduce(Graph.in_neighbors(g, v), 0.0, fn u, acc -> acc + Map.get(h, u, 0.0) end)
-        {v, s}
-      end)
-      |> l2_normalize(vs)
-
+    a_new = vs |> Map.new(&{&1, weighted_sum(ctx.in, &1, h)}) |> l2_normalize(vs)
     # hubs[v] = sum over w in out_neighbors(v) of authorities[w]
-    h_new =
-      Map.new(vs, fn v ->
-        s =
-          Enum.reduce(Graph.out_neighbors(g, v), 0.0, fn w, acc -> acc + Map.get(a_new, w, 0.0) end)
-
-        {v, s}
-      end)
-      |> l2_normalize(vs)
+    h_new = vs |> Map.new(&{&1, weighted_sum(ctx.out, &1, a_new)}) |> l2_normalize(vs)
 
     if l1_delta(h, h_new, vs) < tol and l1_delta(a, a_new, vs) < tol,
       do: {h_new, a_new},
-      else: do_hits(g, vs, h_new, a_new, max, tol, i + 1)
+      else: do_hits(ctx, h_new, a_new, max, tol, i + 1)
   end
 
   # ── Katz ──────────────────────────────────────────────────────────────
@@ -455,22 +443,18 @@ defmodule Grafi.Algo.Centrality do
       %{}
     else
       x0 = Map.new(vs, &{&1, 0.0})
-      do_katz(g, vs, x0, alpha, beta, max_iter, tol, 0)
+      do_katz(coefficients(g.in_edges, false), vs, x0, alpha, beta, max_iter, tol, 0)
     end
   end
 
-  defp do_katz(_g, _vs, x, _a, _b, max, _tol, i) when i >= max, do: x
+  defp do_katz(_in, _vs, x, _a, _b, max, _tol, i) when i >= max, do: x
 
-  defp do_katz(g, vs, x, alpha, beta, max, tol, i) do
-    x_new =
-      Map.new(vs, fn v ->
-        s = Enum.reduce(Graph.in_neighbors(g, v), 0.0, fn u, acc -> acc + Map.get(x, u, 0.0) end)
-        {v, alpha * s + beta}
-      end)
+  defp do_katz(in_coeffs, vs, x, alpha, beta, max, tol, i) do
+    x_new = Map.new(vs, &{&1, alpha * weighted_sum(in_coeffs, &1, x) + beta})
 
     if l1_delta(x, x_new, vs) < tol,
       do: x_new,
-      else: do_katz(g, vs, x_new, alpha, beta, max, tol, i + 1)
+      else: do_katz(in_coeffs, vs, x_new, alpha, beta, max, tol, i + 1)
   end
 
   # ── Eigenvector ───────────────────────────────────────────────────────
@@ -503,37 +487,18 @@ defmodule Grafi.Algo.Centrality do
       %{}
     else
       init = Map.new(vs, &{&1, 1.0 / :math.sqrt(n)})
-      do_eigen(g, vs, init, weighted, max_iter, tol, 0)
+      do_eigen(coefficients(g.in_edges, weighted), vs, init, max_iter, tol, 0)
     end
   end
 
-  defp do_eigen(_g, _vs, x, _w, max, _tol, i) when i >= max, do: x
+  defp do_eigen(_in, _vs, x, max, _tol, i) when i >= max, do: x
 
-  defp do_eigen(g, vs, x, weighted, max, tol, i) do
-    x_new =
-      Map.new(vs, fn v ->
-        s =
-          if weighted do
-            Enum.reduce(Graph.in_neighbors(g, v), 0.0, fn u, acc ->
-              w =
-                Graph.edges_between(g, u, v)
-                |> Enum.reduce(0.0, fn e, a -> a + e.weight end)
-
-              acc + Map.get(x, u, 0.0) * w
-            end)
-          else
-            Enum.reduce(Graph.in_neighbors(g, v), 0.0, fn u, acc ->
-              acc + Map.get(x, u, 0.0)
-            end)
-          end
-
-        {v, s}
-      end)
-      |> l2_normalize(vs)
+  defp do_eigen(in_coeffs, vs, x, max, tol, i) do
+    x_new = vs |> Map.new(&{&1, weighted_sum(in_coeffs, &1, x)}) |> l2_normalize(vs)
 
     if l1_delta(x, x_new, vs) < tol,
       do: x_new,
-      else: do_eigen(g, vs, x_new, weighted, max, tol, i + 1)
+      else: do_eigen(in_coeffs, vs, x_new, max, tol, i + 1)
   end
 
   # ── Harmonic ──────────────────────────────────────────────────────────
@@ -564,6 +529,22 @@ defmodule Grafi.Algo.Centrality do
   end
 
   # ── Power-iteration helpers ──────────────────────────────────────────
+
+  # `%{v => [{u, coeff}]}` from an `in_edges` or `out_edges` map, built once
+  # per call: one entry per distinct neighbour, with `coeff` the summed
+  # weight of the parallel edges (`weighted?`) or `1.0`.
+  defp coefficients(adjacency, weighted?) do
+    Map.new(adjacency, fn {v, nbrs} ->
+      {v, for({u, edges} <- nbrs, edges != [], do: {u, coefficient(edges, weighted?)})}
+    end)
+  end
+
+  defp coefficient(edges, true), do: Enum.reduce(edges, 0.0, &(&2 + &1.weight))
+  defp coefficient(_edges, false), do: 1.0
+
+  defp weighted_sum(coeffs, v, x) do
+    coeffs |> Map.get(v, []) |> Enum.reduce(0.0, fn {u, c}, acc -> acc + c * Map.fetch!(x, u) end)
+  end
 
   defp l1_delta(old, new, vs) do
     Enum.reduce(vs, 0.0, fn v, acc ->
