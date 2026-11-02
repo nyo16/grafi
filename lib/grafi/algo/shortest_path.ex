@@ -94,42 +94,52 @@ defmodule Grafi.Algo.ShortestPath do
   which supports negative edge weights.
 
   Returns `{:ok, dists}` where `dists` is a map of `vertex => distance` (with
-  unreachable vertices omitted), or `{:error, :negative_cycle}` if any negative
-  cycle is reachable from `source`. O(|V|·|E|).
+  unreachable vertices omitted), `{:error, :negative_cycle}` if any negative
+  cycle is reachable from `source`, or `{:error, :no_such_vertex}` if `source`
+  is not in the graph. O(|V|·|E|) in the worst case; it stops after the first
+  round of relaxations that changes nothing, so graphs whose shortest paths
+  have few edges finish in a few rounds.
 
   On undirected graphs every edge is relaxed in both directions, so a
   negative-weight undirected edge reachable from `source` is itself a
   negative cycle (`u → v → u`) and yields `{:error, :negative_cycle}`, as in
   NetworkX.
   """
-  @spec bellman_ford(Graph.t(), any()) :: {:ok, %{any() => number()}} | {:error, :negative_cycle}
+  @spec bellman_ford(Graph.t(), any()) ::
+          {:ok, %{any() => number()}} | {:error, :negative_cycle | :no_such_vertex}
   def bellman_ford(%Graph{} = g, source) do
-    # TODO(perf): the inner Enum.reduce rebuilds a map of size |V| at every
-    # edge relaxation, giving O(|V|·|E|·log|V|) instead of O(|V|·|E|).
-    # For >1k vertices switch to an :array of distances indexed by the
-    # vertex-id integer map, or wire up the NIF Bellman-Ford wrapper.
-    vs = Graph.vertices(g)
-    n = length(vs)
-    dist = Map.new(vs, &{&1, if(&1 == source, do: 0.0, else: :infinity)})
-    arcs = relaxation_arcs(g)
+    if Graph.has_vertex?(g, source) do
+      relax_rounds(relaxation_arcs(g), %{source => 0.0}, Graph.num_vertices(g))
+    else
+      {:error, :no_such_vertex}
+    end
+  end
 
-    dist =
-      Enum.reduce(1..(n - 1)//1, dist, fn _, d ->
-        Enum.reduce(arcs, d, fn {from, to, w}, d2 ->
-          if d2[from] != :infinity and d2[from] + w < Map.get(d2, to, :infinity),
-            do: Map.put(d2, to, d2[from] + w),
-            else: d2
-        end)
-      end)
+  # Without a reachable negative cycle a shortest path has at most |V| - 1
+  # edges, so the distances stop changing within |V| - 1 rounds and the
+  # next round changes nothing. A round that still changes something after
+  # that means a negative cycle. Any unchanged round ends the search early.
+  defp relax_rounds(_arcs, _dist, 0), do: {:error, :negative_cycle}
 
-    neg =
-      Enum.any?(arcs, fn {from, to, w} ->
-        dist[from] != :infinity and dist[from] + w < dist[to]
-      end)
+  defp relax_rounds(arcs, dist, rounds_left) do
+    case relax_round(arcs, dist) do
+      {dist, false} -> {:ok, dist}
+      {dist, true} -> relax_rounds(arcs, dist, rounds_left - 1)
+    end
+  end
 
-    if neg,
-      do: {:error, :negative_cycle},
-      else: {:ok, Map.reject(dist, fn {_, v} -> v == :infinity end)}
+  # Unreached vertices are absent from `dist` (distance infinity).
+  defp relax_round(arcs, dist) do
+    Enum.reduce(arcs, {dist, false}, fn {from, to, w}, {d, _changed?} = acc ->
+      case d do
+        %{^from => df} ->
+          alt = df + w
+          if alt < Map.get(d, to, :infinity), do: {Map.put(d, to, alt), true}, else: acc
+
+        _ ->
+          acc
+      end
+    end)
   end
 
   # `{from, to, weight}` arcs to relax. An undirected edge can be traversed
