@@ -64,6 +64,30 @@ defmodule Grafi.Serialize.AdjacencyListTest do
       g = AdjacencyList.from_adjacency_list("# comment\na b\n\n")
       assert Graph.num_edges(g) == 1
     end
+
+    test "splits on any run of whitespace by default" do
+      g = AdjacencyList.from_adjacency_list("a \t b   c\r\nb")
+      assert Enum.sort(Graph.out_neighbors(g, "a")) == ["b", "c"]
+    end
+
+    test ":separator splits on the string and trims tokens, allowing spaces in names" do
+      g = AdjacencyList.from_adjacency_list("New York , Boston,Albany\nBoston", separator: ",")
+
+      assert Enum.sort(Graph.out_neighbors(g, "New York")) == ["Albany", "Boston"]
+      assert Graph.num_vertices(g) == 3
+    end
+
+    test ":separator makes an empty token malformed" do
+      assert AdjacencyList.from_adjacency_list("a,b,", separator: ",") ==
+               {:error, {:malformed_line, "a,b,"}}
+    end
+
+    test ":max_bytes rejects larger input" do
+      assert AdjacencyList.from_adjacency_list("a b", max_bytes: 2) ==
+               {:error, {:too_large, 3, 2}}
+
+      assert %Graph{} = AdjacencyList.from_adjacency_list("a b", max_bytes: 3)
+    end
   end
 
   describe "round-trip" do
@@ -80,6 +104,17 @@ defmodule Grafi.Serialize.AdjacencyListTest do
       assert Graph.has_edge?(g2, "a", "b")
       assert Graph.has_edge?(g2, "a", "c")
       assert Graph.has_edge?(g2, "b", "c")
+    end
+
+    test "separator: \",\" round-trips vertex names with spaces" do
+      g = Graph.new() |> Graph.add_edges([{"New York", "Boston"}, {"New York", "a b"}])
+
+      text = AdjacencyList.to_adjacency_list(g, separator: ",")
+      g2 = AdjacencyList.from_adjacency_list(text, separator: ",")
+
+      assert Enum.sort(Graph.vertices(g2)) == ["Boston", "New York", "a b"]
+      assert Enum.sort(Graph.out_neighbors(g2, "New York")) == ["Boston", "a b"]
+      assert Graph.num_edges(g2) == 2
     end
 
     test "undirected round-trip" do
