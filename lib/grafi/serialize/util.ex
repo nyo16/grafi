@@ -5,6 +5,9 @@ defmodule Grafi.Serialize.Util do
   # input limits every decoder applies.
 
   @default_max_bytes 64 * 1024 * 1024
+  @max_number_bytes 256
+  @max_int_bytes 19
+  @max_excerpt_bytes 200
 
   @doc """
   Formats an edge weight for output. Weights are numbers (see
@@ -27,10 +30,13 @@ defmodule Grafi.Serialize.Util do
 
   @doc """
   Parses a whole string as a finite number, returned as a float. Never
-  raises: `"1e400"`, a 400-digit integer or trailing garbage give
-  `{:error, :bad_number}`.
+  raises: `"1e400"`, a 400-digit integer, trailing garbage or text longer
+  than #{@max_number_bytes} bytes give `{:error, :bad_number}`.
   """
   @spec parse_number(String.t()) :: {:ok, float()} | {:error, :bad_number}
+  def parse_number(s) when is_binary(s) and byte_size(s) > @max_number_bytes,
+    do: {:error, :bad_number}
+
   def parse_number(s) when is_binary(s) do
     # Float.parse/1 also accepts integer text, so no Integer.parse fallback
     # (whose `* 1.0` would raise on overflow).
@@ -43,6 +49,21 @@ defmodule Grafi.Serialize.Util do
     # overflow a float, e.g. a 400-digit integer.
     ArgumentError -> {:error, :bad_number}
   end
+
+  @doc """
+  Parses a whole string as an integer of at most #{@max_int_bytes}
+  characters (sign included), so a hostile digit run is rejected before any
+  bignum work.
+  """
+  @spec parse_int(String.t()) :: {:ok, integer()} | :error
+  def parse_int(s) when is_binary(s) and byte_size(s) <= @max_int_bytes do
+    case Integer.parse(s) do
+      {n, ""} -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  def parse_int(s) when is_binary(s), do: :error
 
   @doc "Like `parse_number/1`, tagged for decoders: `{:error, {:invalid_weight, s}}`."
   @spec parse_weight(String.t()) :: {:ok, float()} | {:error, {:invalid_weight, String.t()}}
@@ -59,12 +80,79 @@ defmodule Grafi.Serialize.Util do
   atom table is not garbage-collected).
   """
   @spec cast_vertex(String.t(), boolean()) :: atom() | String.t()
-  def cast_vertex(s, false), do: s
+  def cast_vertex(s, false), do: own(s)
 
   def cast_vertex(s, true) do
     String.to_existing_atom(s)
   rescue
-    ArgumentError -> s
+    # SystemLimitError: longer than any atom can be.
+    _ in [ArgumentError, SystemLimitError] -> own(s)
+  end
+
+  @doc """
+  A decoded token as its own binary. Tokens are sub-binaries of the input;
+  keeping one (as a vertex id or label) would otherwise keep the whole
+  input alive.
+  """
+  @spec own(binary()) :: binary()
+  def own(s) when is_binary(s) do
+    if :binary.referenced_byte_size(s) > byte_size(s), do: :binary.copy(s), else: s
+  end
+
+  @doc """
+  Input text for an error payload: an owned copy of at most
+  #{@max_excerpt_bytes} bytes, so errors neither pin the input nor carry
+  megabytes into logs.
+  """
+  @spec excerpt(binary()) :: binary()
+  def excerpt(s) when is_binary(s) and byte_size(s) > @max_excerpt_bytes,
+    do: :binary.copy(binary_part(s, 0, @max_excerpt_bytes)) <> "..."
+
+  def excerpt(s) when is_binary(s), do: own(s)
+
+  @doc """
+  Reduces over the lines of `text` (split on `\\n`, trimmed, so `\\r\\n`
+  works too) without materialising them: memory stays bounded by one line,
+  whatever the input. Blank lines are skipped, and so are lines starting
+  with `comment` unless it is `nil`. `fun` returns `{:cont, acc}` or
+  `{:halt, result}`; the result is the final `acc` or the halted value.
+  """
+  @spec reduce_lines(binary(), acc, String.t() | nil, (String.t(), acc ->
+                                                         {:cont, acc} | {:halt, term()})) ::
+          term()
+        when acc: term()
+  def reduce_lines(text, acc, comment, fun) when is_binary(text),
+    do: reduce_lines(text, 0, byte_size(text), acc, comment, fun)
+
+  defp reduce_lines(_text, pos, size, acc, _comment, _fun) when pos >= size, do: acc
+
+  # Fast path: leading ASCII whitespace and empty lines (trimmed anyway).
+  defp reduce_lines(text, pos, size, acc, comment, fun)
+       when :erlang.binary_part(text, pos, 1) in ["\n", "\r", " ", "\t"],
+       do: reduce_lines(text, pos + 1, size, acc, comment, fun)
+
+  defp reduce_lines(text, pos, size, acc, comment, fun) do
+    stop =
+      case :binary.match(text, "\n", scope: {pos, size - pos}) do
+        {i, 1} -> i
+        :nomatch -> size
+      end
+
+    result =
+      case String.trim(binary_part(text, pos, stop - pos)) do
+        "" ->
+          {:cont, acc}
+
+        line ->
+          if comment && String.starts_with?(line, comment),
+            do: {:cont, acc},
+            else: fun.(line, acc)
+      end
+
+    case result do
+      {:cont, acc} -> reduce_lines(text, stop + 1, size, acc, comment, fun)
+      {:halt, value} -> value
+    end
   end
 
   @doc """
