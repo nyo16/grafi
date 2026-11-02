@@ -65,6 +65,29 @@ defmodule Grafi.Algo.CommunityTest do
       xyz_labels = Enum.map([:x, :y, :z], &result.membership[&1]) |> MapSet.new()
       assert MapSet.disjoint?(abc_labels, xyz_labels)
     end
+
+    # A sweep that changes nothing ends propagation; the old loop always ran
+    # every sweep, so a huge cap took hours instead of milliseconds.
+    @tag timeout: 10_000
+    test "stops at the first sweep with no change, however large :iterations is" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:c, :d}, {:x, :y}, {:y, :z}, {:z, :x}])
+        |> Graph.add_vertex(:lonely)
+
+      result = Community.label_propagation_simple(g, iterations: 100_000_000)
+
+      # The result is a fixpoint: every vertex with neighbours holds a label
+      # that is most common among them, which forces each triangle to agree.
+      for v <- Graph.vertices(g), ns = Graph.neighbors(g, v), ns != [] do
+        freqs = Enum.frequencies_by(ns, &result.membership[&1])
+        assert freqs[result.membership[v]] == Enum.max(Map.values(freqs))
+      end
+
+      assert result.n_communities == 3
+      assert result.membership[:a] == result.membership[:b]
+      assert result.membership[:x] == result.membership[:z]
+    end
   end
 
   describe "NIF-backed functions without the NIF engine" do

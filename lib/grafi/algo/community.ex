@@ -103,29 +103,26 @@ defmodule Grafi.Algo.Community do
   @doc """
   Simple label propagation in pure Elixir. Less accurate than the
   igraph version but works without the NIF.
+
+  Every vertex starts in its own community. Each sweep visits the
+  vertices in random order and moves each one to the label most common
+  among its neighbours, keeping its current label when that is tied for
+  most common. Propagation stops after the first sweep that changes no
+  label, or after `:iterations` sweeps.
+
+  ## Options
+    - `:iterations` — maximum number of sweeps, default `100`
   """
   @spec label_propagation_simple(Graph.t(), keyword()) :: community_result()
   def label_propagation_simple(%Graph{} = g, opts \\ []) do
     max_iter = Keyword.get(opts, :iterations, 100)
     vs = Graph.vertices(g)
-    labels = vs |> Enum.with_index() |> Map.new()
 
-    labels =
-      Enum.reduce(1..max_iter, labels, fn _, lab ->
-        vs
-        |> Enum.shuffle()
-        |> Enum.reduce(lab, fn v, l ->
-          neighbors = Neighborhood.neighbors(g, v, self_loops: :keep)
+    # Isolated vertices never change label, so they are left out of sweeps.
+    adjacency =
+      for v <- vs, ns = Neighborhood.neighbors(g, v, self_loops: :keep), ns != [], do: {v, ns}
 
-          if neighbors == [] do
-            l
-          else
-            freqs = Enum.frequencies_by(neighbors, &l[&1])
-            {best_label, _} = Enum.max_by(freqs, &elem(&1, 1))
-            Map.put(l, v, best_label)
-          end
-        end)
-      end)
+    labels = propagate(adjacency, vs |> Enum.with_index() |> Map.new(), max_iter)
 
     communities = Enum.group_by(vs, &labels[&1])
     n = map_size(communities)
@@ -136,6 +133,24 @@ defmodule Grafi.Algo.Community do
       n_communities: n,
       communities: communities
     }
+  end
+
+  defp propagate(_adjacency, labels, 0), do: labels
+
+  defp propagate(adjacency, labels, sweeps_left) do
+    {labels, changed?} =
+      adjacency
+      |> Enum.shuffle()
+      |> Enum.reduce({labels, false}, fn {v, ns}, {labels, changed?} ->
+        freqs = Enum.frequencies_by(ns, &Map.fetch!(labels, &1))
+        {best, count} = Enum.max_by(freqs, &elem(&1, 1))
+
+        if Map.get(freqs, Map.fetch!(labels, v)) == count,
+          do: {labels, changed?},
+          else: {Map.put(labels, v, best), true}
+      end)
+
+    if changed?, do: propagate(adjacency, labels, sweeps_left - 1), else: labels
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
