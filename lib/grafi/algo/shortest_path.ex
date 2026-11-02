@@ -5,6 +5,7 @@ defmodule Grafi.Algo.ShortestPath do
 
   alias Grafi.Algo.MinHeap
   alias Grafi.Args
+  alias Grafi.Edge
   alias Grafi.Graph
   alias Grafi.NIF
 
@@ -16,6 +17,9 @@ defmodule Grafi.Algo.ShortestPath do
   `{:error, :no_such_vertex}` if either endpoint is not in the graph, or
   `{:error, :negative_weight}` if any edge weight is negative (Dijkstra is
   undefined there; use `bellman_ford/2`).
+
+  The Elixir engine stops as soon as `target` is settled, so a nearby target
+  costs only the part of the graph closer to `source` than it.
 
   ## Options
     - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`. With `:auto`,
@@ -60,12 +64,28 @@ defmodule Grafi.Algo.ShortestPath do
   Computes shortest-path distances from `source` to every reachable vertex via
   Dijkstra's algorithm.
 
+  `weight_fn` maps each `%Grafi.Edge{}` to its cost, which must be
+  non-negative; it defaults to the edge's `:weight`. Between parallel edges
+  the cheapest wins. Johnson's algorithm (`Grafi.Algo.APSP.johnson/1`) passes
+  its reweighting here instead of building a reweighted graph.
+
   Returns a map of `vertex => distance`. Unreachable vertices are omitted. Runs
   entirely in pure Elixir; intended for the small-graph case.
+
+  ## Examples
+
+      iex> g = Grafi.new() |> Grafi.add_edges([
+      ...>   {:a, :b, weight: 1.0}, {:b, :c, weight: 2.0}, {:a, :c, weight: 5.0}
+      ...> ])
+      iex> Grafi.Algo.ShortestPath.dijkstra_all(g, :a)
+      %{a: 0.0, b: 1.0, c: 3.0}
+      iex> Grafi.Algo.ShortestPath.dijkstra_all(g, :a, fn _edge -> 1 end)
+      %{a: 0.0, b: 1.0, c: 1.0}
   """
-  @spec dijkstra_all(Graph.t(), any()) :: %{any() => number()}
-  def dijkstra_all(%Graph{} = g, source) do
-    {dists, _} = do_dijkstra(g, source)
+  @spec dijkstra_all(Graph.t(), any(), (Edge.t() -> number())) :: %{any() => number()}
+  def dijkstra_all(%Graph{} = g, source, weight_fn \\ & &1.weight)
+      when is_function(weight_fn, 1) do
+    {dists, _} = run_dijkstra(g, source, :all, weight_fn, nil)
     dists
   end
 
@@ -151,45 +171,69 @@ defmodule Grafi.Algo.ShortestPath do
   # ── Internal ──────────────────────────────────────────────────────────
 
   defp dijkstra_elixir(g, source, target) do
-    {dists, parents} = do_dijkstra(g, source)
+    {dists, parents} = run_dijkstra(g, source, {:until, target}, & &1.weight, %{})
 
-    case Map.get(dists, target) do
-      nil -> :no_path
-      d -> {:ok, {rebuild(parents, source, target, [target]), d}}
+    case Map.fetch(dists, target) do
+      {:ok, d} -> {:ok, {rebuild(parents, source, target, [target]), d}}
+      :error -> :no_path
     end
   end
 
-  defp do_dijkstra(g, source) do
-    heap = MinHeap.new() |> MinHeap.insert({0.0, source})
-    loop(g, heap, %{source => 0.0}, %{}, MapSet.new())
+  # Lazy-deletion Dijkstra over the raw adjacency map. An undirected graph
+  # stores each edge under both endpoints in `out_edges`, so a walk over
+  # `out_edges[u]` relaxes it both ways. `stop` is `:all` or
+  # `{:until, target}`; in the latter case the search returns as soon as
+  # `target` is settled, when its distance (and parent chain) is final.
+  # `parents` is `nil` when the caller only needs distances.
+  defp run_dijkstra(g, source, stop, weight_fn, parents) do
+    heap = MinHeap.insert(MinHeap.new(), {0.0, source})
+    settle(g.out_edges, heap, %{source => 0.0}, parents, stop, weight_fn)
   end
 
-  defp loop(g, heap, dists, parents, vis) do
+  defp settle(out, heap, dists, parents, stop, weight_fn) do
     case MinHeap.pop(heap) do
       :empty ->
         {dists, parents}
 
-      {:ok, {d, u}, rest_heap} ->
-        if MapSet.member?(vis, u) do
-          loop(g, rest_heap, dists, parents, vis)
-        else
-          vis = MapSet.put(vis, u)
+      {:ok, {d, u}, rest} ->
+        cond do
+          # Stale entry: `u` was re-queued with a shorter distance.
+          d > Map.fetch!(dists, u) ->
+            settle(out, rest, dists, parents, stop, weight_fn)
 
-          {heap2, dists, parents} =
-            Graph.out_neighbors(g, u)
-            |> Enum.reduce({rest_heap, dists, parents}, fn v, {h, ds, ps} ->
-              w = Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.min()
-              alt = d + w
+          stop == {:until, u} ->
+            {dists, parents}
 
-              if alt < Map.get(ds, v, :infinity),
-                do: {MinHeap.insert(h, {alt, v}), Map.put(ds, v, alt), Map.put(ps, v, u)},
-                else: {h, ds, ps}
-            end)
+          true ->
+            {heap, dists, parents} =
+              out
+              |> Map.get(u, %{})
+              |> Enum.reduce({rest, dists, parents}, &relax(&1, &2, u, d, weight_fn))
 
-          loop(g, heap2, dists, parents, vis)
+            settle(out, heap, dists, parents, stop, weight_fn)
         end
     end
   end
+
+  defp relax({_v, []}, acc, _u, _d, _weight_fn), do: acc
+
+  defp relax({v, [e | es]}, {heap, dists, parents} = acc, u, d, weight_fn) do
+    alt = d + min_weight(es, weight_fn.(e), weight_fn)
+
+    if alt < Map.get(dists, v, :infinity),
+      do: {MinHeap.insert(heap, {alt, v}), Map.put(dists, v, alt), put_parent(parents, v, u)},
+      else: acc
+  end
+
+  defp min_weight([], min, _weight_fn), do: min
+
+  defp min_weight([e | es], min, weight_fn) do
+    w = weight_fn.(e)
+    min_weight(es, if(w < min, do: w, else: min), weight_fn)
+  end
+
+  defp put_parent(nil, _v, _u), do: nil
+  defp put_parent(parents, v, u), do: Map.put(parents, v, u)
 
   defp rebuild(_, s, s, path), do: path
 

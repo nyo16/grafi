@@ -155,7 +155,7 @@ defmodule Grafi.Algo.APSP do
 
         dists =
           Map.new(vs, fn u ->
-            d_reweighted = dijkstra_all_with_weights(g, u, &reweight(&1, h))
+            d_reweighted = ShortestPath.dijkstra_all(g, u, &reweight(&1, h))
 
             # Convert back: d(u,v) = d'(u,v) - h[u] + h[v]
             hu = Map.fetch!(h, u)
@@ -282,47 +282,8 @@ defmodule Grafi.Algo.APSP do
     end
   end
 
-  # ── Internal: Dijkstra with a weight function (for Johnson) ───────────
-
-  # Mirrors Grafi.Algo.ShortestPath.dijkstra_all/2 but uses an external
-  # weight function `w_fn.(edge) -> number` so we can apply Johnson's
-  # reweighting without building a temporary graph.
-  defp dijkstra_all_with_weights(%Graph{} = g, source, w_fn) do
-    heap = Grafi.Algo.MinHeap.new() |> Grafi.Algo.MinHeap.insert({0.0, source})
-    loop_dijkstra(g, heap, %{source => 0.0}, MapSet.new(), w_fn)
-  end
-
-  defp loop_dijkstra(g, heap, dists, vis, w_fn) do
-    case Grafi.Algo.MinHeap.pop(heap) do
-      :empty ->
-        dists
-
-      {:ok, {d, u}, rest} ->
-        if MapSet.member?(vis, u) do
-          loop_dijkstra(g, rest, dists, vis, w_fn)
-        else
-          vis = MapSet.put(vis, u)
-
-          {heap2, dists} =
-            Graph.out_neighbors(g, u)
-            |> Enum.reduce({rest, dists}, fn v, {h, ds} ->
-              w =
-                Graph.edges_between(g, u, v)
-                |> Enum.map(w_fn)
-                |> Enum.min()
-
-              alt = d + w
-
-              if alt < Map.get(ds, v, :infinity),
-                do: {Grafi.Algo.MinHeap.insert(h, {alt, v}), Map.put(ds, v, alt)},
-                else: {h, ds}
-            end)
-
-          loop_dijkstra(g, heap2, dists, vis, w_fn)
-        end
-    end
-  end
-
+  # Johnson reweighting: w'(u, v) = w(u, v) + h[u] - h[v], non-negative
+  # once `h` holds the Bellman-Ford potentials.
   defp reweight(edge, h) do
     edge.weight + Map.fetch!(h, edge.from) - Map.fetch!(h, edge.to)
   end
