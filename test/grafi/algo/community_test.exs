@@ -69,13 +69,13 @@ defmodule Grafi.Algo.CommunityTest do
     # A sweep that changes nothing ends propagation; the old loop always ran
     # every sweep, so a huge cap took hours instead of milliseconds.
     @tag timeout: 10_000
-    test "stops at the first sweep with no change, however large :iterations is" do
+    test "stops at the first sweep with no change, however large :max_iter is" do
       g =
         Graph.new(type: :undirected)
         |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:c, :d}, {:x, :y}, {:y, :z}, {:z, :x}])
         |> Graph.add_vertex(:lonely)
 
-      result = Community.label_propagation_simple(g, iterations: 100_000_000)
+      result = Community.label_propagation_simple(g, max_iter: 100_000_000)
 
       # The result is a fixpoint: every vertex with neighbours holds a label
       # that is most common among them, which forces each triangle to agree.
@@ -87,6 +87,33 @@ defmodule Grafi.Algo.CommunityTest do
       assert result.n_communities == 3
       assert result.membership[:a] == result.membership[:b]
       assert result.membership[:x] == result.membership[:z]
+    end
+
+    test ":max_iter replaces :iterations and must be a positive integer" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:iterations\]/, fn ->
+        Community.label_propagation_simple(g, iterations: 5)
+      end
+
+      assert_raise ArgumentError, ~r/:max_iter/, fn ->
+        Community.label_propagation_simple(g, max_iter: 0)
+      end
+    end
+  end
+
+  describe "options" do
+    test "every function with options rejects an unknown key" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      for fun <- [
+            &Community.louvain/2,
+            &Community.leiden/2,
+            &Community.label_propagation/2,
+            &Community.label_propagation_simple/2
+          ] do
+        assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn -> fun.(g, bogus: 1) end
+      end
     end
   end
 

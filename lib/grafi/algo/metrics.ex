@@ -20,6 +20,7 @@ defmodule Grafi.Algo.Metrics do
 
   alias Grafi.Algo.Distances
   alias Grafi.Algo.Neighborhood
+  alias Grafi.Args
   alias Grafi.Graph
 
   # ── Triangle counts ──────────────────────────────────────────────────
@@ -226,10 +227,13 @@ defmodule Grafi.Algo.Metrics do
   the maximum over finite distances. Returns `0` for an isolated
   vertex.
 
+  Raises `ArgumentError` if `vertex` is not in the graph or an option
+  is unknown or invalid.
+
   ## Options
     * `:weighted` — `true` to use Dijkstra (default `false`, BFS)
     * `:connected` — `:strict` to return `:infinity` when some other
-      vertex is unreachable (default `:ignore`)
+      vertex is unreachable, or `:ignore` (default)
 
   ## Examples
 
@@ -240,25 +244,21 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec eccentricity(Graph.t(), any(), keyword()) :: number() | :infinity
   def eccentricity(%Graph{} = g, vertex, opts \\ []) do
-    if not Graph.has_vertex?(g, vertex) do
-      0
-    else
-      dists = single_source_distances(g, vertex, opts)
-      n = Graph.num_vertices(g)
-      strict? = Keyword.get(opts, :connected) == :strict
+    opts = Keyword.validate!(opts, weighted: false, connected: :ignore)
+    {weighted?, strict?} = distance_opts!(opts)
+    ensure_vertex!(g, vertex)
+    vertex_eccentricity(g, vertex, weighted?, strict?)
+  end
 
-      cond do
-        # `dists` excludes the source itself, so a fully-connected graph
-        # of size n yields map_size == n - 1.
-        strict? and map_size(dists) < n - 1 ->
-          :infinity
+  defp vertex_eccentricity(g, vertex, weighted?, strict?) do
+    dists = Distances.single_source(g, vertex, weighted: weighted?, source: :exclude)
 
-        map_size(dists) == 0 ->
-          0
-
-        true ->
-          dists |> Map.values() |> Enum.max()
-      end
+    cond do
+      # `dists` excludes the source itself, so a fully-connected graph
+      # of size n yields map_size == n - 1.
+      strict? and map_size(dists) < Graph.num_vertices(g) - 1 -> :infinity
+      map_size(dists) == 0 -> 0
+      true -> dists |> Map.values() |> Enum.max()
     end
   end
 
@@ -277,8 +277,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec eccentricities(Graph.t(), keyword()) :: %{any() => number() | :infinity}
   def eccentricities(%Graph{} = g, opts \\ []) do
-    Graph.vertices(g)
-    |> Map.new(&{&1, eccentricity(g, &1, opts)})
+    opts = Keyword.validate!(opts, weighted: false, connected: :ignore)
+    all_eccentricities(g, opts)
   end
 
   @doc """
@@ -299,9 +299,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec diameter(Graph.t(), keyword()) :: number() | :infinity
   def diameter(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
-    aggregate_extrema(ecc, &Enum.max/1, :infinity)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    g |> all_eccentricities(opts) |> aggregate_extrema(&Enum.max/1, :infinity)
   end
 
   @doc """
@@ -319,9 +318,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec radius(Graph.t(), keyword()) :: number() | :infinity
   def radius(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
-    aggregate_extrema(ecc, &Enum.min/1, :infinity)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    g |> all_eccentricities(opts) |> aggregate_extrema(&Enum.min/1, :infinity)
   end
 
   @doc """
@@ -339,8 +337,8 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec center(Graph.t(), keyword()) :: [any()]
   def center(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    ecc = all_eccentricities(g, opts)
     r = aggregate_extrema(ecc, &Enum.min/1, :infinity)
     for {v, e} <- ecc, e == r, do: v
   end
@@ -360,19 +358,31 @@ defmodule Grafi.Algo.Metrics do
   """
   @spec periphery(Graph.t(), keyword()) :: [any()]
   def periphery(%Graph{} = g, opts \\ []) do
-    opts = Keyword.put_new(opts, :connected, :strict)
-    ecc = eccentricities(g, opts)
+    opts = Keyword.validate!(opts, weighted: false, connected: :strict)
+    ecc = all_eccentricities(g, opts)
     d = aggregate_extrema(ecc, &Enum.max/1, :infinity)
     for {v, e} <- ecc, e == d, do: v
   end
 
   # ── Internal helpers ─────────────────────────────────────────────────
 
-  defp single_source_distances(g, v, opts) do
-    Distances.single_source(g, v,
-      weighted: Keyword.get(opts, :weighted, false),
-      source: :exclude
-    )
+  defp all_eccentricities(g, opts) do
+    {weighted?, strict?} = distance_opts!(opts)
+    Map.new(Graph.vertices(g), &{&1, vertex_eccentricity(g, &1, weighted?, strict?)})
+  end
+
+  # Typed checks for the validated distance options.
+  defp distance_opts!(opts) do
+    weighted? = Args.boolean!(opts, :weighted, false)
+
+    case Keyword.fetch!(opts, :connected) do
+      connected when connected in [:strict, :ignore] ->
+        {weighted?, connected == :strict}
+
+      other ->
+        raise ArgumentError,
+              "expected :connected to be :strict or :ignore, got: #{inspect(other)}"
+    end
   end
 
   defp ensure_vertex!(g, v) do

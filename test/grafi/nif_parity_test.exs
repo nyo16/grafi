@@ -43,7 +43,7 @@ defmodule Grafi.NIFParityTest do
       g = er(@n, 0.01, 1) |> with_weights()
 
       {nif, elixir} =
-        both(&Centrality.pagerank(g, engine: &1, tolerance: 1.0e-12, iterations: 1_000))
+        both(&Centrality.pagerank(g, engine: &1, tol: 1.0e-12, max_iter: 1_000))
 
       assert_close(nif, elixir, 1.0e-6)
       assert abs(Enum.sum(Map.values(nif)) - 1.0) < 1.0e-9
@@ -55,7 +55,7 @@ defmodule Grafi.NIFParityTest do
       assert Enum.any?(Graph.vertices(g), &(Graph.out_degree(g, &1) == 0))
 
       {nif, elixir} =
-        both(&Centrality.pagerank(g, engine: &1, tolerance: 1.0e-12, iterations: 1_000))
+        both(&Centrality.pagerank(g, engine: &1, tol: 1.0e-12, max_iter: 1_000))
 
       assert_close(nif, elixir, 1.0e-6)
       assert abs(Enum.sum(Map.values(nif)) - 1.0) < 1.0e-9
@@ -236,7 +236,7 @@ defmodule Grafi.NIFParityTest do
 
     test "pagerank agrees", %{g: g} do
       {nif, elixir} =
-        both(&Centrality.pagerank(g, engine: &1, tolerance: 1.0e-12, iterations: 1_000))
+        both(&Centrality.pagerank(g, engine: &1, tol: 1.0e-12, max_iter: 1_000))
 
       assert_close(nif, elixir, 1.0e-9)
     end
@@ -280,7 +280,7 @@ defmodule Grafi.NIFParityTest do
       # weight gives a = 38/63, b = c = 25/126. The Elixir half lives in
       # `Grafi.Algo.CentralityTest`.
       expected = %{a: 38 / 63, b: 25 / 126, c: 25 / 126}
-      nif = Centrality.pagerank(g, engine: :nif, tolerance: 1.0e-12, iterations: 1_000)
+      nif = Centrality.pagerank(g, engine: :nif, tol: 1.0e-12, max_iter: 1_000)
 
       assert_close(nif, expected, 1.0e-9)
     end

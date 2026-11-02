@@ -172,6 +172,29 @@ defmodule Grafi.Algo.MetricsTest do
       assert map_size(ecc) == 4
       assert Enum.all?(Map.values(ecc), &(&1 == 2))
     end
+
+    test "eccentricity of a vertex not in the graph raises ArgumentError" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/not in the graph/, fn -> Metrics.eccentricity(g, :missing) end
+    end
+
+    test "distance metrics reject unknown and invalid options" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      for fun <- [
+            &Metrics.eccentricities/2,
+            &Metrics.diameter/2,
+            &Metrics.radius/2,
+            &Metrics.center/2,
+            &Metrics.periphery/2,
+            &Metrics.eccentricity(&1, :a, &2)
+          ] do
+        assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn -> fun.(g, bogus: 1) end
+        assert_raise ArgumentError, ~r/:connected/, fn -> fun.(g, connected: :maybe) end
+        assert_raise ArgumentError, ~r/:weighted/, fn -> fun.(g, weighted: :yes) end
+      end
+    end
   end
 
   describe "properties" do

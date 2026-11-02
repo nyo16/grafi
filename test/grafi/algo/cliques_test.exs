@@ -202,6 +202,20 @@ defmodule Grafi.Algo.CliquesTest do
       assert Enum.all?(capped, &is_struct(&1, MapSet))
     end
 
+    test "rejects unknown keys and a non-positive cap" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn ->
+        Cliques.maximal_cliques(g, bogus: 1)
+      end
+
+      for bad <- [0, -1, :all] do
+        assert_raise ArgumentError, ~r/:max_results/, fn ->
+          Cliques.maximal_cliques(g, max_results: bad)
+        end
+      end
+    end
+
     # The cap is checked against a running count. The old check called
     # length/1 on the result list after every clique, O(k²) for k cliques:
     # 4x the cliques took 16x as long. n isolated vertices are n singleton

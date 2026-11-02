@@ -30,9 +30,9 @@ defmodule Grafi.EngineErrorsTest do
         end
       end
 
-      test "pagerank iterations: 0 (#{engine})" do
-        assert_raise ArgumentError, ~r/:iterations/, fn ->
-          Centrality.pagerank(two_k4s(), iterations: 0, engine: @engine)
+      test "pagerank max_iter: 0 (#{engine})" do
+        assert_raise ArgumentError, ~r/:max_iter/, fn ->
+          Centrality.pagerank(two_k4s(), max_iter: 0, engine: @engine)
         end
       end
 

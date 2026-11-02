@@ -5,8 +5,21 @@ defmodule Grafi.Algo.Centrality do
   PageRank, betweenness and closeness accept `engine: :auto | :nif | :elixir`
   (see `Grafi.NIF`). With `:auto`, graphs above the configured
   `:nif_threshold` vertices dispatch to igraph; smaller graphs run in pure
-  Elixir. They raise `ArgumentError` on invalid options and
-  `Grafi.NIFError` if the NIF fails or `engine: :nif` is unavailable.
+  Elixir. They raise `Grafi.NIFError` if the NIF fails or `engine: :nif` is
+  unavailable.
+
+  Every function raises `ArgumentError` on an unknown or invalid option.
+
+  ## Edge weights
+
+  | Function | How weights are used | `:weighted` option |
+  |---|---|---|
+  | `pagerank/2` | always: transition probability ∝ weight | none |
+  | `closeness/2` | always: weight is path length | none |
+  | `betweenness/2` | weight is path length | default `false` |
+  | `harmonic/2` | weight is path length | default `false` |
+  | `eigenvector/2` | adjacency entry is the summed weight | default `true` if any edge weight is not `1.0`, else `false` |
+  | `hits/2`, `katz/2`, `degree_centrality/1` | ignored | none |
   """
 
   alias Grafi.Algo.Distances
@@ -29,22 +42,23 @@ defmodule Grafi.Algo.Centrality do
 
   ## Options
     - `:damping` — damping factor in `[0, 1)`, default `0.85`
-    - `:iterations` — max iterations (positive integer), default `100`
-    - `:tolerance` — convergence threshold (positive), default `1.0e-6`;
-      iteration stops once the L1 change is below `n * tolerance`
+    - `:max_iter` — max iterations (positive integer), default `100`
+    - `:tol` — convergence threshold (positive), default `1.0e-6`;
+      iteration stops once the L1 change is below `n * tol`
     - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`
 
-  `:iterations` and `:tolerance` apply to the Elixir engine only; igraph's
+  `:max_iter` and `:tol` apply to the Elixir engine only; igraph's
   PRPACK solver runs to its own convergence.
 
   Raises `ArgumentError` if an edge weight is negative.
   """
   @spec pagerank(Graph.t(), keyword()) :: %{any() => float()}
   def pagerank(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, damping: 0.85, max_iter: 100, tol: 1.0e-6, engine: :auto)
     Args.engine!(opts)
     damping = Args.float!(opts, :damping, 0.85, &(&1 >= 0 and &1 < 1), "a number in [0, 1)")
-    max_iter = Args.pos_integer!(opts, :iterations, 100)
-    tol = Args.float!(opts, :tolerance, 1.0e-6, &(&1 > 0), "a positive number")
+    max_iter = Args.pos_integer!(opts, :max_iter, 100)
+    tol = Args.float!(opts, :tol, 1.0e-6, &(&1 > 0), "a positive number")
     Args.non_negative_weights!(g)
 
     dispatch(
@@ -82,6 +96,7 @@ defmodule Grafi.Algo.Centrality do
   """
   @spec betweenness(Graph.t(), keyword()) :: %{any() => float()}
   def betweenness(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, weighted: false, normalized: true, engine: :auto)
     Args.engine!(opts)
     weighted? = Args.boolean!(opts, :weighted, false)
     normalized? = Args.boolean!(opts, :normalized, true)
@@ -113,6 +128,7 @@ defmodule Grafi.Algo.Centrality do
   """
   @spec closeness(Graph.t(), keyword()) :: %{any() => float()}
   def closeness(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
     Args.positive_weights!(g)
 
@@ -388,8 +404,8 @@ defmodule Grafi.Algo.Centrality do
           authorities: %{any() => float()}
         }
   def hits(%Graph{} = g, opts \\ []) do
-    max_iter = Keyword.get(opts, :max_iter, 100)
-    tol = Keyword.get(opts, :tol, 1.0e-6)
+    opts = Keyword.validate!(opts, max_iter: 100, tol: 1.0e-6)
+    {max_iter, tol} = iteration_opts!(opts)
     vs = Graph.vertices(g)
     n = length(vs)
 
@@ -433,10 +449,10 @@ defmodule Grafi.Algo.Centrality do
   """
   @spec katz(Graph.t(), keyword()) :: %{any() => float()}
   def katz(%Graph{} = g, opts \\ []) do
-    alpha = Keyword.get(opts, :alpha, 0.1)
-    beta = Keyword.get(opts, :beta, 1.0)
-    max_iter = Keyword.get(opts, :max_iter, 100)
-    tol = Keyword.get(opts, :tol, 1.0e-6)
+    opts = Keyword.validate!(opts, alpha: 0.1, beta: 1.0, max_iter: 100, tol: 1.0e-6)
+    alpha = Args.float!(opts, :alpha, 0.1, fn _ -> true end, "a number")
+    beta = Args.float!(opts, :beta, 1.0, fn _ -> true end, "a number")
+    {max_iter, tol} = iteration_opts!(opts)
     vs = Graph.vertices(g)
 
     if vs == [] do
@@ -477,9 +493,14 @@ defmodule Grafi.Algo.Centrality do
   """
   @spec eigenvector(Graph.t(), keyword()) :: %{any() => float()}
   def eigenvector(%Graph{} = g, opts \\ []) do
-    max_iter = Keyword.get(opts, :max_iter, 100)
-    tol = Keyword.get(opts, :tol, 1.0e-6)
-    weighted = Keyword.get(opts, :weighted, any_non_unit_weight?(g))
+    opts = Keyword.validate!(opts, [:weighted, max_iter: 100, tol: 1.0e-6])
+    {max_iter, tol} = iteration_opts!(opts)
+
+    weighted =
+      if Keyword.has_key?(opts, :weighted),
+        do: Args.boolean!(opts, :weighted, false),
+        else: Args.any_weight?(g, &(&1 != 1.0))
+
     vs = Graph.vertices(g)
     n = length(vs)
 
@@ -509,12 +530,16 @@ defmodule Grafi.Algo.Centrality do
 
   Returns `%{vertex => score}`. The result is *not* normalized by
   `(n - 1)`; matches NetworkX's default and stays comparable to
-  `closeness/1`. Distances are unweighted (BFS) by default; pass
-  `weighted: true` to use Dijkstra. Isolated vertices score `0.0`.
+  `closeness/2`. Isolated vertices score `0.0`.
+
+  ## Options
+    - `:weighted` — `true` to use edge weights as path lengths (Dijkstra);
+      default `false` (BFS, every edge has length 1)
   """
   @spec harmonic(Graph.t(), keyword()) :: %{any() => float()}
   def harmonic(%Graph{} = g, opts \\ []) do
-    weighted = Keyword.get(opts, :weighted, false)
+    opts = Keyword.validate!(opts, weighted: false)
+    weighted = Args.boolean!(opts, :weighted, false)
     vs = Graph.vertices(g)
 
     Map.new(vs, fn v ->
@@ -529,6 +554,11 @@ defmodule Grafi.Algo.Centrality do
   end
 
   # ── Power-iteration helpers ──────────────────────────────────────────
+
+  defp iteration_opts!(opts) do
+    {Args.pos_integer!(opts, :max_iter, 100),
+     Args.float!(opts, :tol, 1.0e-6, &(&1 >= 0), "a non-negative number")}
+  end
 
   # `%{v => [{u, coeff}]}` from an `in_edges` or `out_edges` map, built once
   # per call: one entry per distinct neighbour, with `coeff` the summed
@@ -563,9 +593,5 @@ defmodule Grafi.Algo.Centrality do
     if norm == 0.0,
       do: map,
       else: Map.new(map, fn {k, val} -> {k, val / norm} end)
-  end
-
-  defp any_non_unit_weight?(%Graph{} = g) do
-    Graph.edges(g) |> Enum.any?(&(&1.weight != 1.0))
   end
 end

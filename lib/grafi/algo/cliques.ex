@@ -20,6 +20,7 @@ defmodule Grafi.Algo.Cliques do
   """
 
   alias Grafi.Algo.Neighborhood
+  alias Grafi.Args
   alias Grafi.Graph
 
   @doc """
@@ -45,7 +46,14 @@ defmodule Grafi.Algo.Cliques do
   """
   @spec maximal_cliques(Graph.t(), keyword()) :: [MapSet.t()]
   def maximal_cliques(%Graph{} = g, opts \\ []) do
-    max = Keyword.get(opts, :max_results, :infinity)
+    opts = Keyword.validate!(opts, max_results: :infinity)
+
+    max =
+      case Keyword.fetch!(opts, :max_results) do
+        :infinity -> :infinity
+        _ -> Args.pos_integer!(opts, :max_results, 1)
+      end
+
     vs = Graph.vertices(g)
 
     if vs == [] do

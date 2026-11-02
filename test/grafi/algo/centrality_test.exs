@@ -100,24 +100,32 @@ defmodule Grafi.Algo.CentralityTest do
   end
 
   describe "pagerank/2 Elixir-engine options" do
-    test "iterations: 1 returns a single power-iteration step" do
+    test "max_iter: 1 returns a single power-iteration step" do
       g = Graph.new(type: :directed) |> Graph.add_edge(:a, :b)
 
       # From [0.5, 0.5]: base = 0.15/2 + 0.85 · 0.5 (dangling b) / 2 = 0.2875;
       # b additionally receives 0.85 · 0.5 from a.
-      ranks = Centrality.pagerank(g, iterations: 1, engine: :elixir)
+      ranks = Centrality.pagerank(g, max_iter: 1, engine: :elixir)
       assert_in_delta ranks[:a], 0.2875, 1.0e-12
       assert_in_delta ranks[:b], 0.7125, 1.0e-12
     end
 
-    test "a looser tolerance stops earlier" do
+    test "a looser tol stops earlier" do
       g = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:a, :c}])
 
-      loose = Centrality.pagerank(g, tolerance: 0.1, engine: :elixir)
-      tight = Centrality.pagerank(g, tolerance: 1.0e-12, iterations: 1_000, engine: :elixir)
+      loose = Centrality.pagerank(g, tol: 0.1, engine: :elixir)
+      tight = Centrality.pagerank(g, tol: 1.0e-12, max_iter: 1_000, engine: :elixir)
 
       assert loose != tight
       for v <- [:a, :b, :c], do: assert_in_delta(loose[v], tight[v], 0.1)
+    end
+
+    test ":iterations and :tolerance are no longer accepted" do
+      g = Graph.new(type: :directed) |> Graph.add_edge(:a, :b)
+
+      for opt <- [iterations: 10, tolerance: 0.1] do
+        assert_raise ArgumentError, ~r/unknown keys/, fn -> Centrality.pagerank(g, [opt]) end
+      end
     end
   end
 
@@ -127,10 +135,82 @@ defmodule Grafi.Algo.CentralityTest do
 
       # Hand power iteration with the loop adding 2 × 3 to a's outgoing
       # weight gives a = 38/63, b = c = 25/126.
-      ranks = Centrality.pagerank(g, engine: :elixir, tolerance: 1.0e-12, iterations: 1_000)
+      ranks = Centrality.pagerank(g, engine: :elixir, tol: 1.0e-12, max_iter: 1_000)
 
       for {v, expected} <- [a: 38 / 63, b: 25 / 126, c: 25 / 126],
           do: assert_in_delta(ranks[v], expected, 1.0e-9)
+    end
+  end
+
+  describe "options" do
+    test "every function with options rejects an unknown key" do
+      g = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}, {:b, :c}])
+
+      for fun <- [
+            &Centrality.pagerank/2,
+            &Centrality.betweenness/2,
+            &Centrality.closeness/2,
+            &Centrality.hits/2,
+            &Centrality.katz/2,
+            &Centrality.eigenvector/2,
+            &Centrality.harmonic/2
+          ] do
+        assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn -> fun.(g, bogus: 1) end
+      end
+    end
+
+    test "iteration knobs are type-checked" do
+      g = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}, {:b, :c}])
+
+      for fun <- [&Centrality.hits/2, &Centrality.katz/2, &Centrality.eigenvector/2] do
+        assert_raise ArgumentError, ~r/:max_iter/, fn -> fun.(g, max_iter: 0) end
+        assert_raise ArgumentError, ~r/:tol/, fn -> fun.(g, tol: -1.0) end
+      end
+
+      assert_raise ArgumentError, ~r/:weighted/, fn -> Centrality.harmonic(g, weighted: :yes) end
+      assert_raise ArgumentError, ~r/:alpha/, fn -> Centrality.katz(g, alpha: "0.1") end
+    end
+  end
+
+  describe "weighting defaults (moduledoc table)" do
+    # Path a -> b -> c with a heavy shortcut a -> c (weight 5): by hops c is
+    # one step from a, by weight it is two.
+    setup do
+      g = Graph.new() |> Graph.add_edges([{:a, :b}, {:b, :c}, {:a, :c, weight: 5.0}])
+      %{g: g}
+    end
+
+    test "harmonic ignores weights unless weighted: true", %{g: g} do
+      assert Centrality.harmonic(g)[:a] == 2.0
+      assert Centrality.harmonic(g, weighted: true)[:a] == 1.5
+    end
+
+    test "betweenness ignores weights unless weighted: true", %{g: g} do
+      assert Centrality.betweenness(g, normalized: false, engine: :elixir)[:b] == 0.0
+
+      assert Centrality.betweenness(g, weighted: true, normalized: false, engine: :elixir)[:b] ==
+               1.0
+    end
+
+    test "closeness always uses weights", %{g: g} do
+      # From a: b at 1, c at 2 (via b) => 2 / 3.
+      assert_in_delta Centrality.closeness(g, engine: :elixir)[:a], 2 / 3, 1.0e-12
+    end
+
+    # Power iteration on a DAG decays to zero, so this one is undirected.
+    test "eigenvector uses weights when any weight is not 1.0" do
+      g = undirected([{:a, :b}, {:b, :c}, {:a, :c, weight: 5.0}])
+      assert Centrality.eigenvector(g) == Centrality.eigenvector(g, weighted: true)
+      refute Centrality.eigenvector(g) == Centrality.eigenvector(g, weighted: false)
+
+      unit = undirected([{:a, :b}, {:b, :c}, {:a, :c}, {:c, :d}])
+      assert Centrality.eigenvector(unit) == Centrality.eigenvector(unit, weighted: false)
+    end
+
+    test "hits and katz ignore weights", %{g: g} do
+      unit = Graph.new() |> Graph.add_edges([{:a, :b}, {:b, :c}, {:a, :c}])
+      assert Centrality.hits(g) == Centrality.hits(unit)
+      assert Centrality.katz(g) == Centrality.katz(unit)
     end
   end
 

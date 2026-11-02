@@ -45,6 +45,7 @@ defmodule Grafi.Algo.Community do
   """
   @spec louvain(Graph.t(), keyword()) :: {:ok, community_result()} | error()
   def louvain(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
     run(g, opts, &NIF.nif_louvain/1)
   end
@@ -64,16 +65,17 @@ defmodule Grafi.Algo.Community do
   The returned `:modularity` is the partition's modularity at resolution 1,
   whatever the objective, so it is comparable to `louvain/2`'s.
 
-  Raises `ArgumentError` for a non-positive `:resolution` or an unknown
-  `:objective`.
+  Raises `ArgumentError` for a non-positive `:resolution`, an unknown
+  `:objective` or an unknown option.
   """
   @spec leiden(Graph.t(), keyword()) :: {:ok, community_result()} | error()
   def leiden(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, objective: :modularity, resolution: 1.0, engine: :auto)
     Args.engine!(opts)
     resolution = Args.float!(opts, :resolution, 1.0, &(&1 > 0), "a positive number")
 
     objective =
-      case Keyword.get(opts, :objective, :modularity) do
+      case Keyword.fetch!(opts, :objective) do
         obj when obj in [:modularity, :cpm] ->
           obj
 
@@ -94,6 +96,7 @@ defmodule Grafi.Algo.Community do
   """
   @spec label_propagation(Graph.t(), keyword()) :: {:ok, community_result()} | error()
   def label_propagation(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
     run(g, opts, &NIF.nif_label_propagation/1)
   end
@@ -108,14 +111,15 @@ defmodule Grafi.Algo.Community do
   vertices in random order and moves each one to the label most common
   among its neighbours, keeping its current label when that is tied for
   most common. Propagation stops after the first sweep that changes no
-  label, or after `:iterations` sweeps.
+  label, or after `:max_iter` sweeps.
 
   ## Options
-    - `:iterations` — maximum number of sweeps, default `100`
+    - `:max_iter` — maximum number of sweeps (positive integer), default `100`
   """
   @spec label_propagation_simple(Graph.t(), keyword()) :: community_result()
   def label_propagation_simple(%Graph{} = g, opts \\ []) do
-    max_iter = Keyword.get(opts, :iterations, 100)
+    opts = Keyword.validate!(opts, max_iter: 100)
+    max_iter = Args.pos_integer!(opts, :max_iter, 100)
     vs = Graph.vertices(g)
 
     # Isolated vertices never change label, so they are left out of sweeps.

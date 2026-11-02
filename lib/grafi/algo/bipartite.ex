@@ -46,13 +46,13 @@ defmodule Grafi.Algo.Bipartite do
   Attempts to 2-color the graph.
 
   Returns `{:ok, colors}` where `colors` is a map `%{vertex => 0 | 1}`, or
-  `{:error, :not_bipartite, {u, v}}` where `{u, v}` is one edge whose
+  `{:error, {:not_bipartite, {u, v}}}` where `{u, v}` is one edge whose
   endpoints would receive the same color (a witness of an odd cycle).
 
   For directed graphs the algorithm uses the underlying undirected adjacency.
   """
   @spec coloring(Graph.t()) ::
-          {:ok, %{any() => 0 | 1}} | {:error, :not_bipartite, {any(), any()}}
+          {:ok, %{any() => 0 | 1}} | {:error, {:not_bipartite, {any(), any()}}}
   def coloring(%Graph{} = g) do
     vs = Graph.vertices(g)
 
@@ -62,7 +62,7 @@ defmodule Grafi.Algo.Bipartite do
       else
         case bfs_color(g, v, Map.put(colors, v, 0)) do
           {:ok, c2} -> {:cont, {:ok, c2}}
-          {:error, edge} -> {:halt, {:error, :not_bipartite, edge}}
+          {:error, edge} -> {:halt, {:error, {:not_bipartite, edge}}}
         end
       end
     end)
@@ -86,7 +86,7 @@ defmodule Grafi.Algo.Bipartite do
 
         {:ok, {a, b}}
 
-      {:error, :not_bipartite, _} ->
+      {:error, {:not_bipartite, _edge}} ->
         {:error, :not_bipartite}
     end
   end
