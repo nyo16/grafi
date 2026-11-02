@@ -15,7 +15,7 @@ defmodule Grafi.VizTest do
     end
 
     test "is false for an unsupported engine" do
-      eng = String.to_atom("bogus_eng_" <> Integer.to_string(:rand.uniform(1_000_000)))
+      eng = Enum.random([:bogus_engine])
       refute Viz.graphviz_available?(eng)
     end
   end
@@ -23,13 +23,13 @@ defmodule Grafi.VizTest do
   describe "render/3 — input validation (no graphviz required)" do
     test "invalid format atom returns {:invalid_format, _}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      fmt = String.to_atom("bogus_" <> Integer.to_string(:rand.uniform(1_000_000)))
+      fmt = Enum.random([:bogus_format])
       assert {:error, {:invalid_format, ^fmt}} = Viz.render(g, fmt)
     end
 
     test "invalid engine returns {:invalid_engine, _}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      eng = String.to_atom("bogus_eng_" <> Integer.to_string(:rand.uniform(1_000_000)))
+      eng = Enum.random([:bogus_engine])
       assert {:error, {:invalid_engine, ^eng}} = Viz.render(g, :svg, engine: eng)
     end
   end
@@ -87,9 +87,9 @@ defmodule Grafi.VizTest do
   describe "render!/3 — failure" do
     test "raises on error (invalid format)" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      # Build the bogus atom at runtime to bypass Elixir's static
+      # Pick the bogus atom at runtime to bypass Elixir's static
       # type-check on the format argument.
-      fmt = String.to_atom("bogus_fmt_" <> Integer.to_string(:rand.uniform(1_000_000)))
+      fmt = Enum.random([:bogus_format])
 
       assert_raise RuntimeError, ~r/Grafi.Viz.render!/, fn ->
         Viz.render!(g, fmt)

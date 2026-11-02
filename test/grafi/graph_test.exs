@@ -294,4 +294,14 @@ defmodule Grafi.GraphTest do
       assert Enum.member?(g, :x)
     end
   end
+
+  describe "add_edge/4 :weight validation" do
+    for w <- ["2", nil, :x] do
+      test "raises ArgumentError for weight: #{inspect(w)}" do
+        assert_raise ArgumentError, ~r/:weight/, fn ->
+          Graph.add_edge(Graph.new(), :a, :b, weight: unquote(w))
+        end
+      end
+    end
+  end
 end

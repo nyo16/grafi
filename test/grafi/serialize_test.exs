@@ -147,4 +147,35 @@ defmodule Grafi.SerializeTest do
       end
     end
   end
+
+  describe "facade forwards decoder options" do
+    @sample Grafi.new() |> Grafi.add_edge(:a, :b) |> Grafi.add_edge(:b, :c)
+
+    for {fun, to} <- [
+          from_json: :to_json,
+          from_graphml: :to_graphml,
+          from_gexf: :to_gexf,
+          from_pajek: :to_pajek,
+          from_edge_list: :to_edge_list,
+          from_adjacency_list: :to_adjacency_list,
+          from_matrix_market: :to_matrix_market
+        ] do
+      test "Grafi.#{fun}/2 honours :max_bytes" do
+        text = apply(Grafi, unquote(to), [@sample])
+        assert %Grafi.Graph{} = apply(Grafi, unquote(fun), [text])
+
+        assert {:error, {:too_large, size, 1}} =
+                 apply(Grafi, unquote(fun), [text, [max_bytes: 1]])
+
+        assert size == byte_size(text)
+      end
+    end
+
+    test "Grafi.from_matrix_market/2 honours :max_vertices" do
+      text = Grafi.to_matrix_market(@sample)
+
+      assert {:error, {:too_many_vertices, _}} =
+               Grafi.from_matrix_market(text, max_vertices: 1)
+    end
+  end
 end
