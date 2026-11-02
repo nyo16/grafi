@@ -120,7 +120,7 @@ defmodule Grafi.Test.Generators do
   defp edges([], _max_e, _weight_gen, _label_gen), do: constant([])
 
   defp edges(ids, max_e, weight_gen, label_gen) do
-    list_of({member_of(ids), member_of(ids), weight_gen, label_gen}, max_length: max_e)
+    list_of(tuple({member_of(ids), member_of(ids), weight_gen, label_gen}), max_length: max_e)
   end
 
   defp fixed_or(nil, choices), do: member_of(choices)
