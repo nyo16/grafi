@@ -96,15 +96,19 @@ is required for community detection (Louvain, Leiden, label propagation).
    in [RELEASING.md](https://github.com/nyo16/grafi/blob/master/RELEASING.md) is signed off): downloaded and
    checksum-verified for x86_64/aarch64 Linux (glibc >= 2.28: RHEL 8+,
    Debian 11+, Ubuntu 20.04+) and macOS (11+ on Apple Silicon, 10.15+ on
-   Intel) on OTP 26-29. It has igraph built in; nothing else to install.
+   Intel) on OTP 26-29. It has igraph built in; on Linux it needs only the
+   system C++ runtime (`libstdc++.so.6`, present on standard distros; slim
+   or distroless images may need it installed, e.g. `libstdc++6`).
    **It is GPL-3.0-or-later** — see [Third-party licenses](#third-party-licenses).
 2. **Built from source** on other targets, for `git:`/`path:` deps, or when
    you force it with `config :elixir_make, :force_build, grafi: true`. This
    needs igraph >= 1.0 (built with thread safety, the default), `make` and a
    C++17 compiler.
-3. **Pure Elixir** when neither is possible. The build prints
+3. **Pure Elixir** when no igraph is found. The build prints
    `grafi: igraph >= 1.0 not found; building without NIF (pure Elixir)` and
-   succeeds.
+   succeeds. This still runs `make`, so `make` must be installed even then;
+   a cross build (Nerves, a `MIX_TARGET` other than `host`) only uses an
+   igraph given with `IGRAPH_DIR` and otherwise falls back to pure Elixir.
 
 To ship **no GPL code** (no precompiled artefact, no igraph), force the
 source build in your app's `config/config.exs` and don't install igraph:
@@ -113,8 +117,9 @@ source build in your app's `config/config.exs` and don't install igraph:
 config :elixir_make, :force_build, grafi: true
 ```
 
-Windows is not supported for the NIF: there is no precompiled artefact, and
-the source build needs `make`.
+Windows is not supported: there is no precompiled artefact, and elixir_make
+runs `nmake /F Makefile.win`, which Grafi doesn't ship, so `mix compile`
+fails rather than falling back to pure Elixir.
 
 Installing igraph >= 1.0 for source builds:
 

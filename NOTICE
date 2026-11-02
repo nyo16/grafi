@@ -24,8 +24,10 @@ in the Grafi source package.
   code (Grafi's NIF, the fine headers) with GPL code (igraph). Because the
   Apache License 2.0 is compatible with GPL version 3 but not version 2, each
   artefact is distributed under the GNU General Public License, version 3 or
-  later (GPL-3.0-or-later); see LICENSES/GPL-3.0-or-later.txt, which every
-  artefact also contains. [Pending legal review; see RELEASING.md.]
+  later (GPL-3.0-or-later); see LICENSES/GPL-3.0-or-later.txt. Every
+  artefact also contains the GPL-3.0 and Apache-2.0 texts and igraph's
+  licence files (grafi_nif.licenses/igraph). [Pending legal review; see
+  RELEASING.md.]
 
   If you distribute software that includes a precompiled artefact (for
   example a `mix release`), the GPL-3.0-or-later applies to that artefact.
@@ -36,7 +38,8 @@ in the Grafi source package.
   and Infomap, which Grafi does not use. It includes igraph's other vendored
   components (BLAS, LAPACK, ARPACK, mini-GMP, plfit, CXSparse, qhull and
   others), whose licences ship in the igraph source distribution (COPYING and
-  vendor/).
+  vendor/); igraph's COPYING, AUTHORS, licence overview and the vendored
+  licence files (CXSparse, f2c, PCG, qhull) are also in every artefact.
 
   Corresponding source for a precompiled artefact (also attached to each
   GitHub release):

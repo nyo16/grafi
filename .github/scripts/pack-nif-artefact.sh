@@ -5,9 +5,10 @@
 #
 # Name: grafi-nif-<NIF version of the running OTP>-<TARGET>-<mix version>.tar.gz
 # Format: erl_tar, compressed, files at the root (what elixir_make's
-# precompile task produces). The archive also carries NOTICE and the
-# GPL-3.0 text, since the artefact statically includes igraph. Writes
-# DEST_DIR/<name> and DEST_DIR/<name>.sha256 ("<sha256>  <name>").
+# precompile task produces). Since the artefact statically includes igraph,
+# the archive also carries NOTICE, the GPL-3.0 and Apache-2.0 texts, and
+# igraph's licence files (grafi_nif.licenses/igraph, from build-igraph.sh).
+# Writes DEST_DIR/<name> and DEST_DIR/<name>.sha256 ("<sha256>  <name>").
 set -euo pipefail
 
 target=${1:?usage: pack-nif-artefact.sh TARGET OUT_DIR DEST_DIR}
@@ -28,12 +29,16 @@ trap 'rm -rf "$stage"' EXIT
 cp "$out/priv/grafi_nif.so" "$stage/grafi_nif.so"
 cp "$root/NOTICE" "$stage/grafi_nif.NOTICE"
 cp "$root/LICENSES/GPL-3.0-or-later.txt" "$stage/grafi_nif.GPL-3.0-or-later.txt"
+cp "$root/LICENSE" "$stage/grafi_nif.Apache-2.0.txt"
+mkdir -p "$stage/grafi_nif.licenses"
+cp -R "$out/igraph/share/licenses/igraph" "$stage/grafi_nif.licenses/igraph"
 
 mkdir -p "$dest"
 dest=$(cd "$dest" && pwd)
 (cd "$stage" && erl -noshell -eval "
   ok = erl_tar:create(\"$dest/$name\",
-         [\"grafi_nif.so\", \"grafi_nif.NOTICE\", \"grafi_nif.GPL-3.0-or-later.txt\"],
+         [\"grafi_nif.so\", \"grafi_nif.NOTICE\", \"grafi_nif.GPL-3.0-or-later.txt\",
+          \"grafi_nif.Apache-2.0.txt\", \"grafi_nif.licenses\"],
          [compressed]),
   halt().")
 

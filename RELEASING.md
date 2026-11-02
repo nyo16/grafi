@@ -34,26 +34,38 @@ published artefact.
    default branch. The Release workflow's PR dry run builds, checks and
    smoke-tests all four targets.
 2. **Tag.** `git tag vX.Y.Z && git push origin vX.Y.Z`. The Release workflow:
-   - fails if the tag doesn't equal `v` + `@version`;
+   - fails if `@version` still ends in `-dev` or the tag doesn't equal
+     `v` + `@version`;
    - builds a static igraph and the NIF per target: Linux in manylinux_2_28
      (glibc 2.28) on x86_64/aarch64, macOS natively with
      `MACOSX_DEPLOYMENT_TARGET` 11.0 (arm64) / 10.15 (x86_64), all on OTP 28,
      so the artefacts are tagged NIF 2.17 and load on OTP 26-29;
-   - checks that `nif_init` is the only export and that the platform floor
-     (GLIBC <= 2.28, minimum macOS) holds;
+   - checks that `nif_init` is the only export, that the platform floor
+     (GLIBC <= 2.28, minimum macOS) holds, and that the archive carries
+     NOTICE, the GPL-3.0 and Apache-2.0 texts and igraph's licence files;
    - smoke-tests each artefact in a consumer app without igraph;
-   - after approval in the `release` environment: verifies the artefacts,
-     writes `checksum.exs` from them (exactly 4 entries), records build
-     provenance attestations, and publishes the artefacts, their `.sha256`
-     files, `checksum.exs`, `NOTICE` and the igraph source tarball with
-     release notes carrying the licence and corresponding-source pointers;
+   - after approval in the `release` environment: verifies the artefacts
+     (exactly the 4 expected names), writes `checksum.exs` from them, records
+     build provenance attestations, and creates the release with everything
+     attached in one step (draft, upload, publish): the artefacts, their
+     `.sha256` files, `checksum.exs`, `NOTICE` and the igraph source tarball,
+     with release notes carrying the licence and corresponding-source
+     pointers. An existing release is never reused;
    - finally downloads the published artefact from the release URL as a Hex
-     consumer would, on OTP 26 and 29 (Linux) and OTP 28 (macOS).
+     consumer would, on all four targets (and on OTP 26 and 29 on Linux).
+
+   **If any job fails, do not publish to Hex.** With immutable releases a
+   published `vX.Y.Z` can't be repaired: fix the problem and release
+   `X.Y.(Z+1)` instead. (If the release was never created, deleting and
+   re-pushing the tag is fine.)
 3. **Checksums.** Fetch the workflow's `checksum.exs` and verify it:
 
    ```bash
    gh release download vX.Y.Z --pattern 'grafi-nif-*.tar.gz' --pattern checksum.exs --dir /tmp/rel
-   for f in /tmp/rel/grafi-nif-*.tar.gz; do gh attestation verify "$f" --repo nyo16/grafi; done
+   for f in /tmp/rel/grafi-nif-*.tar.gz; do
+     gh attestation verify "$f" --repo nyo16/grafi \
+       --signer-workflow nyo16/grafi/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
+   done
    mix elixir_make.checksum --all --print   # must match /tmp/rel/checksum.exs (4 entries)
    cp /tmp/rel/checksum.exs checksum.exs
    ```

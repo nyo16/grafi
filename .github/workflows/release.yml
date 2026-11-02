@@ -71,6 +71,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           version=$(sed -n 's/^  @version "\(.*\)"$/\1/p' mix.exs)
+          case "$version" in
+            *-dev*) echo "mix.exs @version $version is a development version; bump it before tagging" >&2; exit 1 ;;
+          esac
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "tag $GITHUB_REF_NAME does not match mix.exs @version $version" >&2
             exit 1
@@ -129,6 +132,8 @@ jobs:
           mix compile
           mix run -e '
             unless Grafi.NIF.available?(), do: Mix.raise("the precompiled NIF did not load")
+            unless File.regular?(Application.app_dir(:grafi, "priv/grafi_nif.licenses/igraph/COPYING")),
+              do: Mix.raise("the artefact licence files did not reach priv/")
             g = Grafi.Generators.erdos_renyi(600, 0.01, seed: 1)
             sum = g |> Grafi.Algo.Centrality.pagerank(engine: :nif) |> Map.values() |> Enum.sum()
             if abs(sum - 1.0) > 1.0e-9, do: Mix.raise("pagerank sums to #{sum}")
@@ -173,11 +178,18 @@ jobs:
       # checksum.exs comes from the bytes the build jobs produced, not from
       # whatever later sits on the release page.
       - name: Verify the artefacts and write checksum.exs
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           cd artefacts
           shopt -s nullglob
           archives=(*.tar.gz)
           [ "${#archives[@]}" -eq 4 ] || { echo "expected 4 artefacts, got ${#archives[@]}" >&2; exit 1; }
+          # Exactly the names consumers request (NIF 2.17, mix.exs targets).
+          for target in x86_64-linux-gnu aarch64-linux-gnu aarch64-apple-darwin x86_64-apple-darwin; do
+            f="grafi-nif-2.17-${target}-${TAG#v}.tar.gz"
+            [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }
+          done
           sha256sum -c ./*.tar.gz.sha256
           {
             echo "%{"
@@ -213,8 +225,10 @@ jobs:
 
           \`grafi-nif-*.tar.gz\` statically link igraph ${IGRAPH_VERSION} and are distributed under the
           **GPL-3.0-or-later** (the Grafi source package itself is Apache-2.0). Each archive contains the
-          NIF, \`grafi_nif.NOTICE\` and the GPL-3.0 text. \`checksum.exs\` lists their SHA-256; build
-          provenance: \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`.
+          NIF, \`grafi_nif.NOTICE\`, the GPL-3.0 and Apache-2.0 texts, and igraph's licence files
+          (\`grafi_nif.licenses/igraph/\`, including those of the vendored code compiled in).
+          \`checksum.exs\` lists their SHA-256; build provenance:
+          \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY} --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml\`.
 
           Corresponding source:
           - Grafi: https://github.com/${GITHUB_REPOSITORY}/tree/${TAG} (build: \`.github/scripts/\`, \`.github/workflows/release.yml\`)
@@ -223,21 +237,27 @@ jobs:
           EOF
           cat notes.md
 
-      - name: Create the release and upload (never replaces assets)
+      # One `gh release create` with the assets attached: gh creates a draft,
+      # uploads, then publishes. With immutable releases nothing can be added
+      # after publishing, so an existing release is never reused.
+      - name: Create the release with its assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
           source .github/igraph.env
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes-file notes.md
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; publish a new version instead" >&2
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes-file notes.md \
             artefacts/*.tar.gz artefacts/*.tar.gz.sha256 artefacts/checksum.exs \
             NOTICE "igraph-${IGRAPH_VERSION}.tar.gz"
 
   # End to end, as a Hex consumer: download from the release URL, verify
-  # against the published checksum.exs, load on OTP 26 (NIF 2.17) and OTP 29
-  # (NIF 2.18 falling back to the 2.17 artefact). No igraph installed.
+  # against the published checksum.exs, and load it on every target, on
+  # OTP 26 (NIF 2.17) and OTP 29 (NIF 2.18 falling back to the 2.17
+  # artefact). No igraph installed.
   verify-published:
     name: Verify published artefact (OTP ${{ matrix.otp }}, ${{ matrix.runner }})
     needs: upload
@@ -252,7 +272,13 @@ jobs:
           - runner: ubuntu-24.04
             otp: "29"
             elixir: "1.20"
+          - runner: ubuntu-24.04-arm
+            otp: "28"
+            elixir: "1.19"
           - runner: macos-15
+            otp: "28"
+            elixir: "1.19"
+          - runner: macos-15-intel
             otp: "28"
             elixir: "1.19"
     steps:

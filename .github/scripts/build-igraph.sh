@@ -46,3 +46,14 @@ cmake -S "$work/igraph-${IGRAPH_VERSION}" -B "$work/build" \
   -DIGRAPH_USE_INTERNAL_PLFIT=ON
 cmake --build "$work/build" --parallel
 cmake --install "$work/build"
+
+# Licence texts for release artefacts: igraph's own, plus those of the
+# vendored code compiled in (GLPK and Infomap are disabled above).
+src="$work/igraph-${IGRAPH_VERSION}"
+licenses="$prefix/share/licenses/igraph"
+mkdir -p "$licenses"
+cp "$src/COPYING" "$src/AUTHORS" "$src/doc/html/igraph-Licenses.html" "$licenses/"
+for f in vendor/cs/License.txt vendor/f2c/Notice vendor/pcg/LICENSE.txt vendor/qhull/COPYING.txt; do
+  mkdir -p "$licenses/$(dirname "$f")"
+  cp "$src/$f" "$licenses/$f"
+done

@@ -7,7 +7,8 @@
 # - Linux: needs at most GLIBC_2.28 and GLIBCXX_3.4.25 (manylinux_2_28, so
 #   RHEL 8 and newer can load it);
 # - macOS: the minimum macOS version equals MACOSX_DEPLOYMENT_TARGET;
-# - no libigraph dependency (igraph is linked statically).
+# - no libigraph dependency (igraph is linked statically);
+# - the NOTICE, GPL-3.0, Apache-2.0 and igraph licence files are included.
 set -euo pipefail
 
 archive=${1:?usage: check-nif-artefact.sh ARCHIVE}
@@ -19,8 +20,14 @@ ls -la "$dir"
 
 fail() { echo "check failed: $*" >&2; exit 1; }
 
-# Highest version among "PREFIX_x.y[.z]" tokens on stdin (empty if none).
-max_version() { grep -oE "$1_[0-9.]+" | sed "s/^$1_//" | sort -V | tail -1; }
+# Highest version among "PREFIX_x.y[.z]" tokens on stdin (empty if none;
+# grep finding nothing must not trip pipefail).
+max_version() { { grep -oE "$1_[0-9.]+" || true; } | sed "s/^$1_//" | sort -V | tail -1; }
+
+for f in grafi_nif.NOTICE grafi_nif.GPL-3.0-or-later.txt grafi_nif.Apache-2.0.txt \
+  grafi_nif.licenses/igraph/COPYING; do
+  [ -s "$dir/$f" ] || fail "missing $f"
+done
 
 # true if $1 <= $2 in version order.
 version_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
