@@ -16,3 +16,9 @@ erl_crash.dump
 /bench/results/
 /priv/plts/
 /.expert/
+/.elixir_ls/
+# `mix hex.build` output
+/grafi-*.tar
+/grafi-*/
+# Release scripts' local output (elixir_make cache when run in-tree)
+/elixir_make_cache/

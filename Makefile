@@ -1,14 +1,16 @@
 # Makefile for the Grafi NIF: C++ (via fine) wrapping igraph >= 1.0.
 #
-# igraph is optional. When it is missing (or older than 1.0) the build prints
-# a notice, writes $(PRIV_DIR)/.grafi_nif_skipped and exits 0; Grafi then runs
-# in pure Elixir and Louvain/Leiden return {:error, :nif_not_available}.
+# igraph is optional. When it is missing, older than 1.0, or built without
+# thread safety, the build prints a notice, writes
+# $(PRIV_DIR)/.grafi_nif_skipped and exits 0; Grafi then runs in pure Elixir
+# and Louvain/Leiden return {:error, :nif_not_available}.
 #
 # Environment:
 #   IGRAPH_DIR=/prefix   use only this igraph install (include/, lib/, and
 #                        lib/pkgconfig for the version when present)
-#   IGRAPH_STATIC=1      link libigraph.a and its dependencies (release builds)
-#   GRAFI_REQUIRE_NIF=1  fail instead of skipping when igraph >= 1.0 is missing
+#   IGRAPH_STATIC=1      link libigraph.a and its dependencies (release builds;
+#                        needs igraph.pc)
+#   GRAFI_REQUIRE_NIF=1  fail instead of skipping when igraph is unusable
 #   FINE_INCLUDE_DIR     fine's C++ headers; set by mix.exs (make_env)
 #   ERTS_INCLUDE_DIR     erl_nif.h; set by elixir_make
 #
@@ -20,14 +22,27 @@ NIF_SO   = $(PRIV_DIR)/grafi_nif.so
 SKIPPED  = $(PRIV_DIR)/.grafi_nif_skipped
 STAMP    = $(PRIV_DIR)/.igraph_version
 comma   := ,
+# A literal '#' for $(shell ...) commands; `\#` inside $(shell) differs
+# between make 3.81 (macOS) and make >= 4.3.
+HASH    := \#
 
 ERTS_INCLUDE_DIR ?= $(shell erl -noshell -eval 'io:format("~s/erts-~s/include", [code:root_dir(), erlang:system_info(version)])' -s erlang halt)
 
-UNAME_S := $(shell uname -s)
+# The OS being built for: cc_precompiler names the target when it
+# (cross-)compiles for one; otherwise the host.
+ifneq ($(findstring darwin,$(CC_PRECOMPILER_CURRENT_TARGET)),)
+  TARGET_OS := Darwin
+else ifneq ($(CC_PRECOMPILER_CURRENT_TARGET),)
+  TARGET_OS := Linux
+else
+  TARGET_OS := $(shell uname -s)
+endif
 
 # ── igraph detection ──────────────────────────────────────────────────
-# With IGRAPH_DIR, pkg-config may only look inside that prefix.
+# With IGRAPH_DIR, pkg-config may only look inside that prefix. A relative
+# IGRAPH_DIR would end up as a CWD-relative rpath, so make it absolute.
 ifdef IGRAPH_DIR
+  override IGRAPH_DIR := $(abspath $(IGRAPH_DIR))
   PC := PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(IGRAPH_DIR)/lib/pkgconfig pkg-config
 else
   PC := pkg-config
@@ -39,70 +54,93 @@ ifeq ($(IGRAPH_PC),1)
   IGRAPH_VERSION := $(shell $(PC) --modversion igraph)
   IGRAPH_CFLAGS  := $(shell $(PC) --cflags igraph)
   IGRAPH_LIBDIR  := $(shell $(PC) --variable=libdir igraph)
-  IGRAPH_LIBS    := $(shell $(PC) $(if $(IGRAPH_STATIC),--static) --libs igraph)
+  ifdef IGRAPH_STATIC
+    # The archive itself, never the shared library, plus its private deps.
+    IGRAPH_LIBFILE := $(wildcard $(IGRAPH_LIBDIR)/libigraph.a)
+    IGRAPH_LIBS    := $(IGRAPH_LIBDIR)/libigraph.a $(filter-out -ligraph -L%,$(shell $(PC) --static --libs igraph))
+  else
+    IGRAPH_LIBFILE := $(firstword $(wildcard $(IGRAPH_LIBDIR)/libigraph.so* $(IGRAPH_LIBDIR)/libigraph.dylib $(IGRAPH_LIBDIR)/libigraph.a))
+    IGRAPH_LIBS    := $(shell $(PC) --libs igraph)
+  endif
 else
-  # No igraph.pc: look for the headers directly and read the version from
-  # igraph_version.h.
-  IGRAPH_PREFIX  := $(or $(IGRAPH_DIR),/usr/local)
-  IGRAPH_VERSION := $(shell sed -n 's/^\#define IGRAPH_VERSION "\([^"]*\)".*/\1/p' $(IGRAPH_PREFIX)/include/igraph/igraph_version.h 2>/dev/null)
+  # No igraph.pc: look for headers and library under a prefix; read the
+  # version from igraph_version.h. Homebrew on Apple Silicon installs to
+  # /opt/homebrew, so ask brew before falling back to /usr/local (only for
+  # native macOS builds).
+  ifdef IGRAPH_DIR
+    IGRAPH_PREFIX := $(IGRAPH_DIR)
+  else ifeq ($(TARGET_OS)$(CC_PRECOMPILER_CURRENT_TARGET),Darwin)
+    IGRAPH_PREFIX := $(or $(shell brew --prefix igraph 2>/dev/null),/usr/local)
+  else
+    IGRAPH_PREFIX := /usr/local
+  endif
+  IGRAPH_VERSION := $(shell sed -n 's/^$(HASH)define IGRAPH_VERSION "\([^"]*\)".*/\1/p' $(IGRAPH_PREFIX)/include/igraph/igraph_version.h 2>/dev/null)
   IGRAPH_CFLAGS  := -I$(IGRAPH_PREFIX)/include/igraph
-  IGRAPH_LIBDIR  := $(IGRAPH_PREFIX)/lib
+  IGRAPH_LIBFILE := $(firstword $(wildcard $(IGRAPH_PREFIX)/lib/libigraph.* $(IGRAPH_PREFIX)/lib64/libigraph.*))
+  IGRAPH_LIBDIR  := $(patsubst %/,%,$(dir $(IGRAPH_LIBFILE)))
   IGRAPH_LIBS    := -L$(IGRAPH_LIBDIR) -ligraph
+  ifdef IGRAPH_STATIC
+    IGRAPH_NEEDS_PC := 1
+  endif
 endif
 
-IGRAPH_MAJOR := $(firstword $(subst ., ,$(IGRAPH_VERSION)))
-IGRAPH_OK    := $(shell test -n "$(IGRAPH_MAJOR)" && test "$(IGRAPH_MAJOR)" -ge 1 2>/dev/null && echo 1)
+IGRAPH_MAJOR  := $(firstword $(subst ., ,$(IGRAPH_VERSION)))
+IGRAPH_INCDIR := $(patsubst -I%,%,$(firstword $(filter -I%,$(IGRAPH_CFLAGS))))
+# The NIF installs igraph error handlers per thread; that needs an igraph
+# built with thread-local storage (IGRAPH_ENABLE_TLS).
+IGRAPH_TLS    := $(shell grep -q '^$(HASH)define IGRAPH_THREAD_SAFE 1' $(IGRAPH_INCDIR)/igraph_threading.h 2>/dev/null && echo 1)
 
 ifeq ($(IGRAPH_VERSION),)
-  IGRAPH_MISSING := igraph >= 1.0 not found
-else
-  IGRAPH_MISSING := igraph $(IGRAPH_VERSION) found in $(IGRAPH_LIBDIR), but >= 1.0 is required
+  IGRAPH_PROBLEM := igraph >= 1.0 not found
+else ifneq ($(shell test "$(IGRAPH_MAJOR)" -ge 1 2>/dev/null && echo 1),1)
+  IGRAPH_PROBLEM := igraph $(IGRAPH_VERSION) found in $(or $(IGRAPH_LIBDIR),$(IGRAPH_PREFIX)), but >= 1.0 is required
+else ifeq ($(IGRAPH_NEEDS_PC),1)
+  IGRAPH_PROBLEM := IGRAPH_STATIC=1 needs igraph.pc to find igraph's private libraries
+else ifeq ($(IGRAPH_LIBFILE),)
+  IGRAPH_PROBLEM := igraph $(IGRAPH_VERSION) headers found, but no $(if $(IGRAPH_STATIC),libigraph.a,libigraph) next to them
+else ifneq ($(IGRAPH_TLS),1)
+  IGRAPH_PROBLEM := igraph $(IGRAPH_VERSION) was built without thread safety (IGRAPH_ENABLE_TLS), which the NIF needs
 endif
 
 # ── Compiler and linker flags ─────────────────────────────────────────
-CXX      ?= c++
 CXXFLAGS  = -std=c++17 -O2 -fPIC -shared -Wall -Wextra -Wno-unused-parameter
 # Hardening. No -Werror, so newer toolchains don't break end-user installs
-# over benign warnings; CI can layer that on.
-CXXFLAGS += -fvisibility=hidden -fno-strict-aliasing -D_FORTIFY_SOURCE=2
-CXXFLAGS += -fstack-protector-strong
+# over benign warnings; CI can layer that on. _FORTIFY_SOURCE is reset first
+# so a toolchain default is not redefined; glibc < 2.34 treats 3 as 2.
+CXXFLAGS += -fvisibility=hidden -fno-strict-aliasing -fstack-protector-strong
+CXXFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
 CXXFLAGS += -I$(ERTS_INCLUDE_DIR) -I$(FINE_INCLUDE_DIR) $(IGRAPH_CFLAGS)
 
-# Export only nif_init. Our code is already -fvisibility=hidden, but a static
-# libigraph.a (IGRAPH_STATIC=1) is not, and its symbols would leak.
-ifeq ($(UNAME_S),Darwin)
+# Export only nif_init: our code is -fvisibility=hidden, but weak C++
+# template instantiations and a static libigraph.a are not.
+ifeq ($(TARGET_OS),Darwin)
   # erl_nif symbols resolve against the loading VM.
   LDFLAGS_EXTRA = -undefined dynamic_lookup -Wl,-exported_symbol,_nif_init
 else
-  LDFLAGS_EXTRA = -Wl,-z,relro,-z,now -Wl,--exclude-libs,ALL
+  LDFLAGS_EXTRA = -Wl,-z,relro,-z,now -Wl,--exclude-libs,ALL \
+                  -Wl,--version-script=$(CURDIR)/c_src/grafi_nif.map
 endif
 
 # A shared libigraph needs an rpath so the NIF finds it without
-# LD_LIBRARY_PATH. On macOS prefer Homebrew's stable `opt` path over the
-# versioned Cellar path, so `brew upgrade igraph` doesn't break the NIF.
+# LD_LIBRARY_PATH. (Homebrew's dylibs carry absolute install names, so on
+# macOS this rarely matters.)
 ifeq ($(IGRAPH_STATIC),)
-  IGRAPH_RPATH := $(IGRAPH_LIBDIR)
-  ifeq ($(UNAME_S),Darwin)
-    ifndef IGRAPH_DIR
-      BREW_IGRAPH_LIB := $(shell brew --prefix igraph 2>/dev/null)/lib
-      ifeq ($(shell cd $(BREW_IGRAPH_LIB) 2>/dev/null && pwd -P),$(shell cd $(IGRAPH_LIBDIR) 2>/dev/null && pwd -P))
-        IGRAPH_RPATH := $(BREW_IGRAPH_LIB)
-      endif
-    endif
-  endif
-  LDFLAGS_EXTRA += $(if $(strip $(IGRAPH_RPATH)),-Wl$(comma)-rpath$(comma)$(IGRAPH_RPATH))
+  LDFLAGS_EXTRA += $(if $(IGRAPH_LIBDIR),-Wl$(comma)-rpath$(comma)$(IGRAPH_LIBDIR))
 endif
 
 SOURCES = c_src/grafi_nif.cpp
-HEADERS = c_src/grafi_nif.h
+HEADERS = c_src/grafi_nif.h c_src/grafi_nif.map \
+          $(wildcard $(FINE_INCLUDE_DIR)/fine.hpp $(FINE_INCLUDE_DIR)/fine/*.hpp)
 
-# Rebuild when the igraph install or link mode changes, not only when the
-# sources do. The stamp is rewritten only when its content changes.
-STAMP_CONTENT = $(IGRAPH_VERSION) $(IGRAPH_LIBDIR) static=$(IGRAPH_STATIC)
+# Rebuild when the igraph install, the link mode or the ERTS headers change,
+# not only when the sources do. The stamp is rewritten only when its content
+# changes.
+STAMP_CONTENT = $(IGRAPH_VERSION) $(IGRAPH_LIBDIR) static=$(IGRAPH_STATIC) erts=$(ERTS_INCLUDE_DIR)
 
 .PHONY: all clean FORCE
+.DELETE_ON_ERROR:
 
-ifeq ($(IGRAPH_OK),1)
+ifeq ($(IGRAPH_PROBLEM),)
 
 all: $(NIF_SO)
 
@@ -120,10 +158,10 @@ else
 
 all:
 ifeq ($(GRAFI_REQUIRE_NIF),1)
-	@echo "grafi: $(IGRAPH_MISSING), and GRAFI_REQUIRE_NIF=1" >&2
+	@echo "grafi: $(IGRAPH_PROBLEM), and GRAFI_REQUIRE_NIF=1" >&2
 	@exit 1
 else
-	@echo "grafi: $(IGRAPH_MISSING); building without NIF (pure Elixir)"
+	@echo "grafi: $(IGRAPH_PROBLEM); building without NIF (pure Elixir)"
 	@mkdir -p $(PRIV_DIR)
 	@rm -f $(NIF_SO) $(STAMP)
 	@touch $(SKIPPED)

@@ -8,11 +8,14 @@ on:
 
 env:
   MIX_ENV: test
-  IGRAPH_VERSION: "1.0.1"
-  IGRAPH_SHA256: "969f2d7d22f67e788d8638c9a8c96615f50d7819c08978b3ef4a787bb6daa96c"
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Superseded PR runs are cancelled; pushes to the default branch finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -36,11 +39,10 @@ jobs:
       GRAFI_REQUIRE_NIF: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-igraph
-        with:
-          version: ${{ env.IGRAPH_VERSION }}
-          sha256: ${{ env.IGRAPH_SHA256 }}
 
       # Lets the Grafi.Viz integration tests run.
       - name: Install graphviz
@@ -57,9 +59,9 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-igraph-${{ env.IGRAPH_VERSION }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('.github/igraph.env') }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-igraph-${{ env.IGRAPH_VERSION }}-
+            ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('.github/igraph.env') }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -106,6 +108,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
@@ -127,8 +131,8 @@ jobs:
         run: mix test
 
   # grafi as a path dependency from a git archive (no .git, like the Hex
-  # package): no artefact is published for this commit, so elixir_make falls
-  # back to a source build, which must find igraph and load.
+  # package). The consumer forces a source build, so this always tests the
+  # PR's c_src, never a published artefact; it must find igraph and load.
   consumer:
     name: Consumer build
     runs-on: ubuntu-24.04
@@ -136,11 +140,10 @@ jobs:
       GRAFI_REQUIRE_NIF: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-igraph
-        with:
-          version: ${{ env.IGRAPH_VERSION }}
-          sha256: ${{ env.IGRAPH_SHA256 }}
 
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
@@ -162,6 +165,8 @@ jobs:
             def application, do: [extra_applications: [:logger]]
           end
           EOF
+          mkdir -p config
+          printf 'import Config\nconfig :elixir_make, :force_build, grafi: true\n' > config/config.exs
           mix deps.get
           mix compile
           mix run -e '
@@ -178,6 +183,8 @@ jobs:
       GRAFI_REQUIRE_NIF: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install igraph
         run: brew install igraph
@@ -205,8 +212,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        id: beam
         with:
           elixir-version: "1.19"
           otp-version: "28"
@@ -216,16 +226,17 @@ jobs:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-quality-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-quality-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-quality-
+            ${{ runner.os }}-mix-quality-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
+      # A PLT is only valid for the OTP/Elixir it was built with.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
-          key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-plt-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-plt-
+            ${{ runner.os }}-plt-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
       - name: Install dependencies
         run: mix deps.get

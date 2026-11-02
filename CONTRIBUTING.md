@@ -166,8 +166,8 @@ New algorithms need:
   hand-built fixtures covering the obvious cases (empty graph, single
   vertex, disconnected, self-loops, etc.).
 - **Property tests** in `test/grafi/property_test.exs` exercising the
-  algorithm against generated graphs. `stream_data` is already in the
-  dev/test deps.
+  algorithm against generated graphs. `stream_data` is already a test
+  dependency.
 - **NIF-vs-Elixir cross-check** if both paths exist — both should
   produce equivalent results on the same input.
 

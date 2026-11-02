@@ -5,6 +5,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Let new releases age before proposing them (supply-chain hygiene).
+    cooldown:
+      default-days: 7
 
   # Also updates the SHA-pinned actions (keeping the `# vX.Y.Z` comments) in
   # the workflows and in .github/actions/.
@@ -14,3 +17,5 @@ updates:
       - /.github/actions/setup-igraph
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

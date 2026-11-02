@@ -1,7 +1,10 @@
 defmodule Grafi.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  # Between releases this carries a `-dev` suffix: elixir_make then always
+  # builds from source instead of fetching (stale) published artefacts. See
+  # RELEASING.md.
+  @version "0.1.0-dev"
   @source_url "https://github.com/nyo16/grafi"
 
   def project do
@@ -21,20 +24,24 @@ defmodule Grafi.MixProject do
       test_coverage: [summary: [threshold: 85]],
       # A git checkout (contributors, CI, git deps) always compiles c_src;
       # make's own dependencies decide what to rebuild. A Hex package has no
-      # .git, so consumers get the precompiled artefact. (Not `File.cwd!()`:
-      # Mix compiles a dependency from inside its own directory.) Consumers
-      # can force a source build with `config :elixir_make, :force_build, grafi: true`.
-      make_force_build: File.dir?(Path.join(__DIR__, ".git")),
+      # .git, so consumers get the precompiled artefact. `.git` is a file in
+      # worktrees and submodules, hence `exists?`. (Not `File.cwd!()`: Mix
+      # compiles a dependency from inside its own directory.) Consumers can
+      # force a source build with `config :elixir_make, :force_build, grafi: true`.
+      make_force_build: File.exists?(Path.join(__DIR__, ".git")),
+      make_clean: ["clean"],
       make_precompiler: {:nif, CCPrecompiler},
       make_precompiler_url: "#{@source_url}/releases/download/v#{@version}/@{artefact_filename}",
       make_precompiler_filename: "grafi_nif",
       make_precompiler_priv_paths: ["grafi_nif.*"],
       # NIF 2.17 is OTP 26-28; OTP 29 (NIF 2.18) loads the 2.17 artefact via
-      # elixir_make's same-major fallback. Release builds must run on OTP 26-28.
+      # elixir_make's same-major fallback. Release builds run on OTP 28.
       make_precompiler_nif_versions: [versions: ["2.17"]],
       make_env: fn -> %{"FINE_INCLUDE_DIR" => Fine.include_dir()} end,
       cc_precompiler: cc_precompiler(),
-      description: "High-performance graph library for Elixir — γραφή",
+      description:
+        "High-performance graph library for Elixir — γραφή. Apache-2.0; the optional " <>
+          "precompiled NIF statically links igraph and is GPL-3.0-or-later (see NOTICE).",
       package: package(),
       docs: docs(),
       aliases: aliases()
@@ -74,13 +81,13 @@ defmodule Grafi.MixProject do
     ]
   end
 
-  # Precompiled targets, one native runner each in release.yml.
+  # The targets with precompiled artefacts (built by release.yml's scripts).
+  # cc_precompiler uses this list on the consumer side to pick the artefact.
   #
-  # `only_listed_targets` is on only while building release artefacts, so a
-  # runner never tries to cross-build the other macOS architecture. For
-  # consumers it stays off: on an unlisted target cc_precompiler then returns
-  # `:compile` (build from source, or pure Elixir without igraph) instead of
-  # `:ignore` (no NIF at all).
+  # `only_listed_targets` stays off for consumers: on an unlisted target
+  # cc_precompiler then returns `:compile` (build from source, or pure Elixir
+  # without igraph) instead of `:ignore` (no NIF at all). It is on only for a
+  # local `CC_PRECOMPILER_PRECOMPILE_ONLY_LOCAL=true mix elixir_make.precompile`.
   defp cc_precompiler do
     [
       only_listed_targets: System.get_env("CC_PRECOMPILER_PRECOMPILE_ONLY_LOCAL") == "true",
@@ -104,8 +111,8 @@ defmodule Grafi.MixProject do
       name: "grafi",
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files:
-        ~w(lib c_src Makefile checksum.exs .formatter.exs mix.exs README.md LICENSE NOTICE CHANGELOG.md)
+      files: ~w(lib c_src Makefile checksum.exs .formatter.exs mix.exs README.md LICENSE NOTICE
+           LICENSES CHANGELOG.md)
     ]
   end
 

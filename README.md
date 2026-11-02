@@ -94,15 +94,27 @@ is required for community detection (Louvain, Leiden, label propagation).
 
 1. **Precompiled NIF** (from the first Hex release, once the licence review
    in [RELEASING.md](https://github.com/nyo16/grafi/blob/master/RELEASING.md) is signed off): downloaded and
-   checksum-verified for x86_64/aarch64 Linux (glibc >= 2.35) and
-   x86_64/aarch64 macOS on OTP 26-29. It has igraph built in; nothing else
-   to install. See [Third-party licenses](#third-party-licenses).
+   checksum-verified for x86_64/aarch64 Linux (glibc >= 2.28: RHEL 8+,
+   Debian 11+, Ubuntu 20.04+) and macOS (11+ on Apple Silicon, 10.15+ on
+   Intel) on OTP 26-29. It has igraph built in; nothing else to install.
+   **It is GPL-3.0-or-later** — see [Third-party licenses](#third-party-licenses).
 2. **Built from source** on other targets, for `git:`/`path:` deps, or when
    you force it with `config :elixir_make, :force_build, grafi: true`. This
-   needs igraph >= 1.0 and a C++17 compiler.
+   needs igraph >= 1.0 (built with thread safety, the default), `make` and a
+   C++17 compiler.
 3. **Pure Elixir** when neither is possible. The build prints
    `grafi: igraph >= 1.0 not found; building without NIF (pure Elixir)` and
    succeeds.
+
+To ship **no GPL code** (no precompiled artefact, no igraph), force the
+source build in your app's `config/config.exs` and don't install igraph:
+
+```elixir
+config :elixir_make, :force_build, grafi: true
+```
+
+Windows is not supported for the NIF: there is no precompiled artefact, and
+the source build needs `make`.
 
 Installing igraph >= 1.0 for source builds:
 
@@ -322,8 +334,12 @@ GPL-2.0-or-later and is not included in the Hex package:
 
 - **Built from source** (igraph installed on your machine): the NIF links
   your igraph dynamically.
-- **Precompiled artefacts** from the GitHub releases page statically link
-  igraph 1.0.1, so each artefact is distributed under GPL-2.0-or-later. That
-  igraph build excludes its GPL-3.0 components (GLPK and Infomap).
+- **Precompiled artefacts** (downloaded by default from the GitHub releases
+  page on supported platforms) statically link igraph 1.0.1. They combine
+  Apache-2.0 and GPL code, so each artefact is distributed under the
+  **GPL-3.0-or-later** (pending legal review). If you distribute an
+  application that includes one (e.g. a `mix release`), that licence applies
+  to it; see above for building without any GPL code.
 
-[NOTICE](NOTICE) has the details and the corresponding-source pointers.
+[NOTICE](NOTICE) has the details and the corresponding-source pointers; each
+GitHub release also carries the igraph source and the licence texts.

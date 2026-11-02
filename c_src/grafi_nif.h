@@ -8,10 +8,14 @@
 
 #include <igraph.h>
 
-// The Makefile checks the version too; this catches builds that bypass it
+// The Makefile checks these too; the guards catch builds that bypass it
 // (e.g. an unexpected include path) with a readable error.
 #if !defined(IGRAPH_VERSION_MAJOR) || IGRAPH_VERSION_MAJOR < 1
 #error "grafi requires igraph >= 1.0"
+#endif
+// The NIF installs igraph error handlers per thread (dirty schedulers).
+#if !defined(IGRAPH_THREAD_SAFE) || !IGRAPH_THREAD_SAFE
+#error "grafi requires igraph built with thread-local storage (IGRAPH_ENABLE_TLS)"
 #endif
 
 #include <chrono>

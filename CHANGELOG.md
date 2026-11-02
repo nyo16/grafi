@@ -108,41 +108,58 @@ All notable changes to Grafi are documented here, following
   was not loaded; the NIF settings now fall back to their defaults.
 
 ### Added (packaging)
-- Precompiled NIF pipeline (`.github/workflows/release.yml`): static
-  igraph 1.0.1 builds for x86_64/aarch64 Linux (glibc >= 2.35) and
-  x86_64/aarch64 macOS, NIF 2.17 (OTP 26-29), checksum-verified on
-  download. Each artefact is smoke-tested in a consumer app without
-  igraph. Uploads stay disabled until the licence review signs off (see
-  `RELEASING.md`). Precompiled artefacts link igraph statically and are
-  distributed under GPL-2.0-or-later, without igraph's GPL-3.0
-  components (GLPK, Infomap); the source package stays Apache-2.0. See
-  `NOTICE` and the README "Third-party licenses" section.
-- igraph is optional at build time. Without igraph >= 1.0 the build
-  prints a notice and Grafi runs in pure Elixir; `GRAFI_REQUIRE_NIF=1`
-  makes a missing igraph a build error, and `IGRAPH_DIR=/prefix` selects
-  one igraph install exclusively.
-- CI: Elixir/OTP matrix 1.18/26, 1.18/27, 1.19/28, 1.20/29; jobs for a
-  build without igraph, a consumer (path dependency) build, macOS with
-  Homebrew igraph, and graphviz for the Viz tests; `mix deps.audit`,
-  `mix hex.audit` and `mix deps.unlock --check-unused`; actions pinned by
-  commit SHA, with Dependabot for Mix and GitHub Actions.
+- Precompiled NIF pipeline (`.github/workflows/release.yml`) with
+  static igraph 1.0.1, NIF 2.17 (OTP 26-29):
+  - targets: x86_64/aarch64 Linux, built in manylinux_2_28 (glibc
+    >= 2.28: RHEL 8+, Debian 11+, Ubuntu 20.04+), and macOS (11+ on
+    Apple Silicon, 10.15+ on Intel);
+  - each artefact is checksum-verified on download, checked to export
+    only `nif_init` and to meet its platform floor, and smoke-tested
+    in a consumer app without igraph;
+  - releases carry `checksum.exs` (generated from the build outputs),
+    build provenance attestations, `NOTICE`, the igraph source and the
+    licence texts, and are published only from a `v*` tag matching
+    `@version`, through a protected environment, without ever
+    replacing assets;
+  - a post-release job downloads the published artefact on OTP 26, 28
+    and 29.
+
+  Uploads stay disabled until the licence review signs off (see
+  `RELEASING.md`). Precompiled artefacts statically link igraph and are
+  distributed under **GPL-3.0-or-later** (Apache-2.0 + GPL; pending
+  legal review); the source package stays Apache-2.0. See `NOTICE` and
+  the README "Third-party licenses" section, including how to build
+  without any GPL code.
+- igraph is optional at build time. Without a usable igraph (>= 1.0,
+  thread-safe, headers and library) the build prints a notice and Grafi
+  runs in pure Elixir; `GRAFI_REQUIRE_NIF=1` makes that a build error,
+  and `IGRAPH_DIR=/prefix` selects one igraph install exclusively.
+- CI:
+  - Elixir/OTP matrix 1.18/26, 1.18/27, 1.19/28, 1.20/29;
+  - jobs for a build without igraph, a consumer (path dependency) source
+    build, macOS with Homebrew igraph, and graphviz for the Viz tests;
+  - `mix deps.audit`, `mix hex.audit` and `mix deps.unlock --check-unused`;
+  - actions pinned by commit SHA, with Dependabot (7-day cooldown) for
+    Mix and GitHub Actions.
 
 ### Fixed (packaging)
 - Using grafi as a dependency failed to compile: `cc_precompiler` was an
-  optional dependency (`CCPrecompiler.current_target/0` undefined) and the
+  optional dependency (`current_target/0` undefined) and the
   Makefile could not find fine's headers (`'fine.hpp' file not found`).
 - The precompiled-artefact filename did not match the NIF, so every build
   tried, and failed, to download an artefact before compiling.
-- Old igraph (< 1.0) is detected even without pkg-config (from
-  `igraph_version.h`, with a compile-time `#error` as a backstop).
-- The NIF exports only `nif_init`; a statically linked igraph no longer
-  leaks its symbols. Linux builds use full RELRO and
-  `-fstack-protector-strong`, and macOS builds drop `-flat_namespace`.
-- Source builds rebuild when the igraph install changes, and on macOS
-  link against Homebrew's stable `opt` path, so `brew upgrade igraph`
-  no longer breaks the NIF.
-- The package lists `checksum.exs`, `NOTICE` and `CHANGELOG.md`; the
-  source URL points at `nyo16/grafi`.
+- igraph detection works without pkg-config: the version comes from
+  `igraph_version.h`, Homebrew's prefix is found on Apple Silicon, and a
+  missing library or an igraph without thread safety skips the NIF instead
+  of breaking the build. Compile-time `#error`s act as a backstop.
+- The NIF exports only `nif_init`: a statically linked igraph and C++
+  template instantiations no longer leak (Linux version script). Linux
+  builds use full RELRO and `-fstack-protector-strong`, and macOS builds
+  drop `-flat_namespace`.
+- Source builds rebuild when the igraph install, the link mode or the OTP
+  headers change, and `mix clean` removes the NIF.
+- The package lists `checksum.exs`, `NOTICE`, `LICENSES/` and
+  `CHANGELOG.md`; the source URL points at `nyo16/grafi`.
 
 ### Added
 - README sections covering pre-Hex install instructions, benchmarks
