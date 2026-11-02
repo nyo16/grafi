@@ -132,17 +132,75 @@ defmodule Grafi.VizPathTest do
       assert output =~ "Error: syntax error in line 1 near x"
     end
 
-    test "temp files are mode 0600 and removed afterwards", ctx do
+    test "temp files live in a private 0700 directory removed afterwards", ctx do
       use_fake_engine(ctx, ~S"""
-      perms=$(ls -l "$4" "$3" | cut -c1-10 | tr '\n' ' ')
-      printf '%s\n%s\n%s' "$perms" "$4" "$3" > "$3"
+      dir=$(dirname "$3")
+      perms=$(ls -ld "$dir" | cut -c1-10)
+      printf '%s\n%s\n%s' "$perms" "$dir" "$(dirname "$4")" > "$3"
       """)
 
       assert {:ok, out} = Viz.render(ctx.graph, :svg)
-      assert [perms, dot_path, out_path] = String.split(out, "\n")
-      assert perms == "-rw------- -rw------- "
-      refute File.exists?(dot_path)
-      refute File.exists?(out_path)
+      assert [perms, dir, dot_dir] = String.split(out, "\n")
+      assert perms == "drwx------"
+      assert dot_dir == dir
+      refute File.exists?(dir)
+    end
+
+    test "each render uses a fresh directory", ctx do
+      use_fake_engine(ctx, ~S"""
+      printf '%s' "$(dirname "$3")" > "$3"
+      """)
+
+      assert {:ok, dir1} = Viz.render(ctx.graph, :svg)
+      assert {:ok, dir2} = Viz.render(ctx.graph, :svg)
+      assert dir1 != dir2
+    end
+
+    test "returns {:tempfile_error, _} when the output file is missing", ctx do
+      use_fake_engine(ctx, ~S"""
+      rm -f "$3"
+      exit 0
+      """)
+
+      assert {:error, {:tempfile_error, :enoent}} = Viz.render(ctx.graph, :svg)
+    end
+
+    test "raises ArgumentError for an invalid :timeout", ctx do
+      use_fake_engine(ctx, ~S"""
+      printf 'IMAGE' > "$3"
+      """)
+
+      for t <- [0, -1, 1.5, "100", nil] do
+        assert_raise ArgumentError, ~r/:timeout/, fn ->
+          Viz.render(ctx.graph, :svg, timeout: t)
+        end
+      end
+    end
+
+    test "caps the Graphviz output kept in error payloads at 1 MiB", ctx do
+      use_fake_engine(ctx, ~S"""
+      head -c 3000000 /dev/zero
+      exit 2
+      """)
+
+      assert {:error, {:graphviz_failed, output, 2}} = Viz.render(ctx.graph, :svg)
+      assert byte_size(output) == 1_048_576
+    end
+
+    test "leaves no {:EXIT, port, _} behind for a caller trapping exits", ctx do
+      use_fake_engine(ctx, ~S"""
+      printf 'IMAGE' > "$3"
+      """)
+
+      old = Process.flag(:trap_exit, true)
+      on_exit(fn -> Process.flag(:trap_exit, old) end)
+
+      try do
+        assert {:ok, "IMAGE"} = Viz.render(ctx.graph, :svg)
+        refute_receive {:EXIT, _, _}, 100
+      after
+        Process.flag(:trap_exit, old)
+      end
     end
 
     test "kills Graphviz and returns {:error, :timeout} when :timeout expires", ctx do
@@ -153,7 +211,7 @@ defmodule Grafi.VizPathTest do
       exec sleep 30
       """)
 
-      {micros, result} = :timer.tc(fn -> Viz.render(ctx.graph, :svg, timeout: 500) end)
+      {micros, result} = :timer.tc(fn -> Viz.render(ctx.graph, :svg, timeout: 2_000) end)
 
       assert result == {:error, :timeout}
       assert micros < 10_000_000
@@ -163,9 +221,8 @@ defmodule Grafi.VizPathTest do
       refute File.exists?(dot_path)
 
       # No port messages are left behind in the caller's mailbox.
-      Process.sleep(100)
-      {:messages, messages} = Process.info(self(), :messages)
-      refute Enum.any?(messages, &match?({port, _} when is_port(port), &1))
+      refute_receive {_, {:exit_status, _}}, 100
+      refute_receive {_, {:data, _}}, 0
     end
   end
 

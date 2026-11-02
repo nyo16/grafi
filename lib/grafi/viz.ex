@@ -24,6 +24,7 @@ defmodule Grafi.Viz do
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.Util
 
   @type format :: :svg | :png | :pdf | :dot | :json | :eps
   @type engine :: :dot | :neato | :circo | :twopi | :fdp | :sfdp
@@ -32,6 +33,7 @@ defmodule Grafi.Viz do
   @valid_engines [:dot, :neato, :circo, :twopi, :fdp, :sfdp]
 
   @default_timeout 30_000
+  @max_output 1_048_576
 
   # ── Public API ────────────────────────────────────────────────────────
 
@@ -61,6 +63,12 @@ defmodule Grafi.Viz do
     * `:name` — graph name, passed to `Grafi.Serialize.DOT.to_dot/2`.
     * `:timeout` — milliseconds to wait for Graphviz (default `30_000`,
       or `:infinity`). On expiry the Graphviz OS process is killed.
+      Any other value raises `ArgumentError`.
+
+  The temporary files live in a private directory (mode `0700`) that is
+  removed when the render returns. If the calling process is killed
+  mid-render, that directory is left behind and Graphviz keeps running
+  until it finishes on its own.
 
   ## Errors
 
@@ -70,10 +78,13 @@ defmodule Grafi.Viz do
     * `{:error, {:invalid_engine, eng}}` — unsupported engine atom.
     * `{:error, {:graphviz_failed, output, exit_code}}` — Graphviz
       returned a non-zero exit status; `output` is what it printed
-      (stdout and stderr combined).
+      (stdout and stderr combined, truncated to 1 MiB). `exit_code` is
+      `-1` when the executable could not be started (for example it
+      vanished or lost its exec bit after the `PATH` lookup).
     * `{:error, :timeout}` — Graphviz did not finish within `:timeout`.
     * `{:error, {:tempfile_error, reason}}` — a temporary file could not
-      be created, written or read.
+      be created, written or read; `reason` is `:no_tmp_dir` when
+      `System.tmp_dir/0` finds no writable directory.
   """
   @spec render(Graph.t(), format(), keyword()) ::
           {:ok, binary()}
@@ -193,25 +204,36 @@ defmodule Grafi.Viz do
   # cannot close only its write end, so Graphviz would never see EOF.
   # Writing to a file rather than stdout keeps Graphviz warnings, which
   # arrive on the merged stderr stream, out of the rendered bytes. Both
-  # files are removed in an `after`.
+  # files live in a private per-render directory removed in an `after`.
   defp do_render(graph, format, exe, opts) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    timeout = validate_timeout(Keyword.get(opts, :timeout, @default_timeout))
     dot_string = Grafi.Serialize.DOT.to_dot(graph, Keyword.take(opts, [:name]))
 
-    with_tempfile("dot", dot_string, fn dot_path ->
-      with_tempfile(Atom.to_string(format), "", fn out_path ->
+    with_private_dir(fn dir ->
+      dot_path = Path.join(dir, "in.dot")
+      out_path = Path.join(dir, "out.#{format}")
+
+      with :ok <- write_tempfile(dot_path, dot_string) do
         run_graphviz(exe, ["-T#{format}", "-o", out_path, dot_path], out_path, timeout)
-      end)
+      end
     end)
   end
 
-  defp with_tempfile(ext, content, fun) do
-    case create_tempfile(ext, content) do
-      {:ok, path} ->
+  defp validate_timeout(:infinity), do: :infinity
+  defp validate_timeout(t) when is_integer(t) and t > 0, do: t
+
+  defp validate_timeout(other) do
+    raise ArgumentError,
+          "expected :timeout to be a positive integer or :infinity, got: #{inspect(other)}"
+  end
+
+  defp with_private_dir(fun) do
+    case create_private_dir(System.tmp_dir(), 5) do
+      {:ok, dir} ->
         try do
-          fun.(path)
+          fun.(dir)
         after
-          _ = File.rm(path)
+          _ = File.rm_rf(dir)
         end
 
       {:error, _} = err ->
@@ -219,38 +241,67 @@ defmodule Grafi.Viz do
     end
   end
 
-  # `:exclusive` refuses an existing path (no symlink or pre-created file
-  # can be hijacked), and the mode is tightened before any content lands.
-  defp create_tempfile(ext, content) do
-    name =
-      "grafi-viz-#{System.system_time(:nanosecond)}-#{:erlang.unique_integer([:positive])}.#{ext}"
+  # `File.mkdir/1` fails on an existing path, so a pre-created directory or
+  # symlink cannot be hijacked; the directory is tightened to 0700 before
+  # any file is created inside it, and the files inherit that protection.
+  defp create_private_dir(nil, _attempts), do: {:error, {:tempfile_error, :no_tmp_dir}}
 
-    path = Path.join(System.tmp_dir!(), name)
+  defp create_private_dir(tmp, attempts) do
+    dir = Path.join(tmp, "grafi-viz-" <> Base.url_encode64(:rand.bytes(12)))
 
-    write = fn io ->
-      with :ok <- File.chmod(path, 0o600), do: IO.binwrite(io, content)
-    end
+    case File.mkdir(dir) do
+      :ok ->
+        case File.chmod(dir, 0o700) do
+          :ok ->
+            {:ok, dir}
 
-    case File.open(path, [:write, :exclusive, :binary], write) do
-      {:ok, :ok} ->
-        {:ok, path}
+          {:error, reason} ->
+            _ = File.rm_rf(dir)
+            {:error, {:tempfile_error, reason}}
+        end
 
-      {:ok, {:error, reason}} ->
-        _ = File.rm(path)
-        {:error, {:tempfile_error, reason}}
+      {:error, :eexist} when attempts > 1 ->
+        create_private_dir(tmp, attempts - 1)
 
       {:error, reason} ->
         {:error, {:tempfile_error, reason}}
     end
   end
 
+  defp write_tempfile(path, content) do
+    case File.write(path, content, [:exclusive, :binary]) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:tempfile_error, reason}}
+    end
+  end
+
   defp run_graphviz(exe, argv, out_path, timeout) do
     with {:ok, port} <- open_port(exe, argv) do
-      case await_port(port, [], deadline(timeout)) do
-        {0, _output} -> read_output(out_path)
-        {code, output} -> {:error, {:graphviz_failed, output, code}}
-        :timeout -> kill_port(port)
-      end
+      port
+      |> await_port({[], 0}, deadline(timeout))
+      |> finish(port, out_path)
+    end
+  end
+
+  defp finish({0, _output}, port, out_path) do
+    flush_exit(port)
+    read_output(out_path)
+  end
+
+  defp finish({code, output}, port, _out_path) do
+    flush_exit(port)
+    {:error, {:graphviz_failed, output, code}}
+  end
+
+  # The process may have exited just as the deadline passed. If its exit
+  # status is already queued, use it: killing by OS pid now could hit an
+  # unrelated process that reused the pid.
+  defp finish(:timeout, port, out_path) do
+    receive do
+      {^port, {:exit_status, code}} ->
+        finish({code, ""}, port, out_path)
+    after
+      0 -> kill_port(port)
     end
   end
 
@@ -267,16 +318,24 @@ defmodule Grafi.Viz do
     e in ErlangError -> {:error, {:graphviz_failed, Exception.message(e), -1}}
   end
 
-  defp await_port(port, acc, deadline) do
+  defp await_port(port, {acc, _size} = buf, deadline) do
     receive do
       {^port, {:data, data}} ->
-        await_port(port, [acc | data], deadline)
+        await_port(port, append_output(buf, data), deadline)
 
       {^port, {:exit_status, code}} ->
         {code, IO.iodata_to_binary(acc)}
     after
       remaining(deadline) -> :timeout
     end
+  end
+
+  # Graphviz diagnostics are kept for error payloads only, so cap them.
+  defp append_output({_acc, size} = buf, _data) when size >= @max_output, do: buf
+
+  defp append_output({acc, size}, data) do
+    take = min(byte_size(data), @max_output - size)
+    {[acc | Util.own(binary_part(data, 0, take))], size + take}
   end
 
   defp deadline(:infinity), do: :infinity
@@ -300,6 +359,7 @@ defmodule Grafi.Viz do
 
     close_port(port)
     flush_port(port)
+    flush_exit(port)
     {:error, :timeout}
   end
 
@@ -320,6 +380,15 @@ defmodule Grafi.Viz do
   defp flush_port(port) do
     receive do
       {^port, _} -> flush_port(port)
+    after
+      0 -> :ok
+    end
+  end
+
+  # A caller that traps exits also receives the port's `{:EXIT, port, _}`.
+  defp flush_exit(port) do
+    receive do
+      {:EXIT, ^port, _} -> :ok
     after
       0 -> :ok
     end
