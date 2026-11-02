@@ -101,6 +101,13 @@ jobs:
       - name: Merge coverage
         run: mix test.coverage
 
+      # Scaling-ratio checks (4x the input must take < 8x the time, best of
+      # 3, e.g. the 10k-vertex GraphML/GEXF round-trips), excluded from the
+      # parallel runs above. Gated on matrix.graphviz only to run them once.
+      - name: Run slow tests alone
+        if: matrix.graphviz
+        run: mix test --only slow --max-cases 1
+
   # igraph absent: the build must succeed without a NIF and the suite must
   # pass in pure Elixir (test_helper excludes :nif tests).
   no-igraph:

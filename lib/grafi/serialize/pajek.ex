@@ -15,11 +15,28 @@ defmodule Grafi.Serialize.Pajek do
   Vertex ids are 1-indexed integer positions; the original vertex id is
   written in the label column. Multi-edges are preserved as repeated lines.
 
+  ## Labels
+
+  Labels are written in double quotes. A backslash, a double quote, a line
+  feed and a carriage return inside a label are written as `\\\\`, `\\"`,
+  `\\n` and `\\r`, so every label stays on its own line and reads back
+  unchanged. When parsing, any other backslash sequence is kept literally,
+  and text after the closing quote (coordinates, shape attributes) is
+  ignored.
+
+  ## Sections
+
+  Only the `*Vertices`, `*Arcs` and `*Edges` sections are supported (a
+  multi-relational header such as `*Arcs :2 "rel"` is read as `*Arcs`).
+  Any other section, e.g. `*Matrix`, `*Arcslist` or `*Edgeslist`, is
+  rejected with `{:error, {:unsupported_section, line}}`.
+
   Reference: <https://gephi.org/users/supported-graph-formats/pajek-net-format/>
   and <https://mrvar.fdv.uni-lj.si/pajek/>.
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.Util
 
   @doc """
   Renders a graph as a Pajek `.net` string. Line terminator is `\\n`.
@@ -51,7 +68,7 @@ defmodule Grafi.Serialize.Pajek do
       |> Enum.map(fn e ->
         a = Map.fetch!(index, e.from)
         b = Map.fetch!(index, e.to)
-        "#{a} #{b} #{format_weight(e.weight)}"
+        "#{a} #{b} #{Util.format_weight(e.weight)}"
       end)
 
     (header ++ vertex_lines ++ [edge_keyword] ++ edge_lines)
@@ -61,188 +78,252 @@ defmodule Grafi.Serialize.Pajek do
   @doc """
   Parses a Pajek string into a `Grafi.Graph`.
 
-  Vertices preserve their string labels (without surrounding quotes). The
-  graph type follows the section keyword: `*Arcs` → directed,
-  `*Edges` → undirected. If both appear, the first encountered wins.
+  Vertices are identified by their string labels (without surrounding
+  quotes, escapes decoded); a vertex line without a label gets its index as
+  the label.
 
-  Returns the graph on success or `{:error, reason}` on parse failure.
+  The graph is undirected when its edge lines all come from `*Edges`
+  sections, and directed otherwise. In a directed graph (a file mixing
+  `*Arcs` and `*Edges` sections), each `*Edges` line adds an arc in both
+  directions (one arc for a self-loop). A missing weight is `1.0`.
+
+  Duplicate labels: Pajek identifies vertices by index, so vertices that
+  share a label stay distinct. Each of them gets the id `{label, index}`;
+  vertices with a unique label keep the plain label as their id.
+
+  ## Options
+
+    * `:max_bytes` - the largest accepted input, in bytes (default 64 MiB,
+      or `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
+
+  Returns the graph on success or `{:error, reason}` on parse failure, e.g.
+  `{:error, {:unsupported_section, line}}`, `{:error, {:invalid_weight, token}}`,
+  `{:error, {:malformed_vertex_line, line}}`,
+  `{:error, {:malformed_edge_line, line}}`, `{:error, :unexpected_section}`
+  (a section header before all declared vertex lines) or
+  `{:error, :unexpected_eof}` (fewer vertex lines than declared). The
+  `line` or `token` in an error is cut to its first 200 bytes.
   """
   @spec from_pajek(String.t(), keyword()) :: Graph.t() | {:error, term()}
-  def from_pajek(text, _opts \\ []) when is_binary(text) do
-    lines =
-      text
-      |> String.split(["\n", "\r\n"], trim: false)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "%")))
+  def from_pajek(text, opts \\ []) when is_binary(text) do
+    # Two passes over the lines: the graph type depends on every section
+    # header, so the first pass reads the vertices and the sections, and
+    # the second one adds the edges.
+    with :ok <- Util.check_size(text, opts),
+         {:ok, n, labels, type} <- scan(text) do
+      ids = vertex_ids(labels)
 
-    with {:ok, expected_n, rest} <- expect_vertices_header(lines),
-         {:ok, label_map, rest} <- read_vertex_lines(rest, expected_n, %{}) do
-      parse_edges_section(rest, label_map)
+      g =
+        Enum.reduce(1..n//1, Graph.new(type: type), fn idx, g ->
+          Graph.add_vertex(g, Map.fetch!(ids, idx))
+        end)
+
+      read_edges(text, n, g, ids)
     end
-  rescue
-    e -> {:error, Exception.message(e)}
   end
 
   # ── Parsing helpers ──────────────────────────────────────────────────
 
-  defp expect_vertices_header([first | rest]) do
-    case String.split(first, ~r/\s+/, trim: true) do
-      [head, n_str] ->
-        if String.downcase(head) == "*vertices" do
-          case Integer.parse(n_str) do
-            {n, ""} -> {:ok, n, rest}
-            _ -> {:error, :bad_vertices_header}
-          end
-        else
-          {:error, :missing_vertices_header}
-        end
+  # First pass, a state machine over the lines:
+  #   :header → {:vertices, remaining, n, labels} → {:edges, n, labels, seen}
+  # where `seen` records the section kinds met (and :leading for edge lines
+  # before any section header).
+  defp scan(text) do
+    case Util.reduce_lines(text, :header, "%", &scan_line/2) do
+      {:error, _} = error -> error
+      :header -> {:error, :empty_input}
+      {:vertices, _remaining, _n, _labels} -> {:error, :unexpected_eof}
+      {:edges, n, labels, seen} -> {:ok, n, labels, graph_type(seen)}
+    end
+  end
+
+  defp scan_line(line, :header) do
+    case vertices_header(line) do
+      {:ok, n} -> {:cont, vertex_state(n, n, %{})}
+      error -> {:halt, error}
+    end
+  end
+
+  defp scan_line("*" <> _, {:vertices, _remaining, _n, _labels}),
+    do: {:halt, {:error, :unexpected_section}}
+
+  defp scan_line(line, {:vertices, remaining, n, labels}) do
+    case parse_vertex_line(line) do
+      {:ok, idx, label} when idx in 1..n//1 and not is_map_key(labels, idx) ->
+        {:cont, vertex_state(remaining - 1, n, Map.put(labels, idx, label))}
 
       _ ->
-        {:error, :missing_vertices_header}
+        {:halt, {:error, {:malformed_vertex_line, Util.excerpt(line)}}}
     end
   end
 
-  defp expect_vertices_header([]), do: {:error, :empty_input}
+  defp scan_line("*" <> _ = line, {:edges, n, labels, seen}) do
+    case section_header(line) do
+      {:ok, section} -> {:cont, {:edges, n, labels, Map.put(seen, section, true)}}
+      error -> {:halt, error}
+    end
+  end
 
-  defp read_vertex_lines(rest, 0, acc), do: {:ok, acc, rest}
+  # An edge line before any section header is an arc.
+  defp scan_line(_line, {:edges, n, labels, seen}) when map_size(seen) == 0,
+    do: {:cont, {:edges, n, labels, %{leading: true}}}
 
-  defp read_vertex_lines([line | rest], remaining, acc) do
-    if starts_with_section?(line) do
-      {:error, :unexpected_section}
-    else
-      case parse_vertex_line(line) do
-        {:ok, idx, label} ->
-          read_vertex_lines(rest, remaining - 1, Map.put(acc, idx, label))
+  defp scan_line(_line, state), do: {:cont, state}
 
-        :error ->
-          {:error, {:malformed_vertex_line, line}}
+  defp vertex_state(0, n, labels), do: {:edges, n, labels, %{}}
+  defp vertex_state(remaining, n, labels), do: {:vertices, remaining, n, labels}
+
+  # Undirected only when every edge line sits in an *Edges section.
+  defp graph_type(seen) when seen == %{edges: true}, do: :undirected
+  defp graph_type(_seen), do: :directed
+
+  defp vertices_header(line) do
+    with [head, n_str] <- String.split(line),
+         "*vertices" <- String.downcase(head) do
+      case Util.parse_int(n_str) do
+        {:ok, n} when n >= 0 -> {:ok, n}
+        _ -> {:error, :bad_vertices_header}
       end
+    else
+      _ -> {:error, :missing_vertices_header}
     end
   end
-
-  defp read_vertex_lines([], _remaining, _acc), do: {:error, :unexpected_eof}
 
   defp parse_vertex_line(line) do
-    case String.split(line, ~r/\s+/, parts: 2, trim: true) do
-      [idx_str, rest] ->
-        case Integer.parse(idx_str) do
-          {idx, ""} -> {:ok, idx, unquote_label(String.trim(rest))}
-          _ -> :error
-        end
+    {token, rest} = split_index(line)
 
-      [idx_str] ->
-        case Integer.parse(idx_str) do
-          {idx, ""} -> {:ok, idx, Integer.to_string(idx)}
-          _ -> :error
-        end
+    case Util.parse_int(token) do
+      {:ok, idx} when rest == "" -> {:ok, idx, Integer.to_string(idx)}
+      {:ok, idx} -> parse_label(rest, idx)
+      :error -> :error
+    end
+  end
 
-      _ ->
+  # Splits off the leading run of sign and digit characters (the index).
+  defp split_index(line) do
+    size = index_size(line, 0)
+    <<token::binary-size(^size), rest::binary>> = line
+    {token, rest}
+  end
+
+  defp index_size(<<c, rest::binary>>, size) when c in ?0..?9 or c in [?+, ?-],
+    do: index_size(rest, size + 1)
+
+  defp index_size(_rest, size), do: size
+
+  defp parse_label(rest, idx) do
+    case String.trim_leading(rest) do
+      # No whitespace between the index and the label, e.g. "1x".
+      ^rest -> :error
+      "\"" <> quoted -> with {:ok, label} <- unescape(quoted, []), do: {:ok, idx, label}
+      bare -> {:ok, idx, Util.own(bare)}
+    end
+  end
+
+  # Decodes a quoted label up to its closing quote; `bin` starts right after
+  # the opening quote. Text after the closing quote is ignored.
+  defp unescape(bin, acc) do
+    case :binary.match(bin, ["\\", "\""]) do
+      {pos, 1} ->
+        <<chunk::binary-size(^pos), special, rest::binary>> = bin
+        unescape_special(special, rest, [acc, chunk])
+
+      :nomatch ->
         :error
     end
   end
 
-  defp parse_edges_section(lines, label_map) do
-    {type, body} = detect_edge_section(lines)
-    g = build_graph_with_vertices(type, label_map)
-    read_edge_lines(body, g, label_map, type)
-  end
+  defp unescape_special(?", _trailing, acc), do: {:ok, Util.own(IO.iodata_to_binary(acc))}
+  defp unescape_special(?\\, <<?\\, rest::binary>>, acc), do: unescape(rest, [acc, ?\\])
+  defp unescape_special(?\\, <<?", rest::binary>>, acc), do: unescape(rest, [acc, ?"])
+  defp unescape_special(?\\, <<?n, rest::binary>>, acc), do: unescape(rest, [acc, ?\n])
+  defp unescape_special(?\\, <<?r, rest::binary>>, acc), do: unescape(rest, [acc, ?\r])
+  # Unknown escape: keep the backslash literally.
+  defp unescape_special(?\\, rest, acc), do: unescape(rest, [acc, ?\\])
 
-  defp detect_edge_section([]), do: {:directed, []}
+  defp vertex_ids(labels) do
+    counts = labels |> Map.values() |> Enum.frequencies()
 
-  defp detect_edge_section([line | rest]) do
-    case String.downcase(line) do
-      "*arcs" -> {:directed, rest}
-      "*edges" -> {:undirected, rest}
-      _ -> {:directed, [line | rest]}
-    end
-  end
-
-  defp build_graph_with_vertices(type, label_map) do
-    label_map
-    |> Enum.sort_by(fn {idx, _} -> idx end)
-    |> Enum.reduce(Graph.new(type: type), fn {_idx, label}, g ->
-      Graph.add_vertex(g, label)
+    Map.new(labels, fn {idx, label} ->
+      if Map.fetch!(counts, label) > 1, do: {idx, {label, idx}}, else: {idx, label}
     end)
   end
 
-  defp read_edge_lines([], g, _label_map, _type), do: g
+  defp section_header(line) do
+    [keyword | _] = String.split(line)
 
-  defp read_edge_lines([line | rest], g, label_map, type) do
-    if starts_with_section?(line) do
-      # Switch section mid-stream (e.g., another *Arcs/*Edges block)
-      {new_type, new_rest} = detect_edge_section([line | rest])
-      read_edge_lines(new_rest, g, label_map, new_type)
-    else
-      case parse_edge_line(line, label_map) do
-        {:ok, from, to, w} ->
-          g = Graph.add_edge(g, from, to, weight: w)
-          read_edge_lines(rest, g, label_map, type)
-
-        :error ->
-          {:error, {:malformed_edge_line, line}}
-      end
+    case String.downcase(keyword) do
+      "*arcs" -> {:ok, :arcs}
+      "*edges" -> {:ok, :edges}
+      _ -> {:error, {:unsupported_section, Util.excerpt(line)}}
     end
   end
 
-  defp parse_edge_line(line, label_map) do
-    case String.split(line, ~r/\s+/, trim: true) do
-      [a, b | tail] ->
-        with {ai, ""} <- Integer.parse(a),
-             {bi, ""} <- Integer.parse(b),
-             from when not is_nil(from) <- Map.get(label_map, ai),
-             to when not is_nil(to) <- Map.get(label_map, bi) do
-          {:ok, from, to, parse_weight(tail)}
-        else
-          _ -> :error
+  # Second pass: skips the header and vertex lines (the first pass checked
+  # them, and every section header), then adds the edges.
+  defp read_edges(text, n, g, ids) do
+    text
+    |> Util.reduce_lines({n + 1, :arcs, g}, "%", fn
+      _line, {skip, section, g} when skip > 0 ->
+        {:cont, {skip - 1, section, g}}
+
+      "*" <> _ = line, {0, _section, g} ->
+        {:ok, section} = section_header(line)
+        {:cont, {0, section, g}}
+
+      line, {0, section, g} ->
+        case parse_edge_line(line, ids) do
+          {:ok, from, to, w} -> {:cont, {0, section, add_edge(g, section, from, to, w)}}
+          error -> {:halt, error}
         end
-
-      _ ->
-        :error
+    end)
+    |> case do
+      {0, _section, g} -> g
+      {:error, _} = error -> error
     end
   end
 
-  defp parse_weight([]), do: 1.0
+  defp add_edge(%Graph{type: :directed} = g, :edges, from, to, w) when from != to do
+    g |> Graph.add_edge(from, to, weight: w) |> Graph.add_edge(to, from, weight: w)
+  end
 
-  defp parse_weight([w | _]) do
-    case Float.parse(w) do
-      {f, ""} -> f
-      _ -> parse_int_weight(w)
+  defp add_edge(g, _section, from, to, w), do: Graph.add_edge(g, from, to, weight: w)
+
+  defp parse_edge_line(line, ids) do
+    with [a, b | tail] <- String.split(line),
+         {:ok, from} <- fetch_vertex(a, ids),
+         {:ok, to} <- fetch_vertex(b, ids),
+         {:ok, w} <- edge_weight(tail) do
+      {:ok, from, to, w}
+    else
+      {:error, {:invalid_weight, _}} = error -> error
+      _ -> {:error, {:malformed_edge_line, Util.excerpt(line)}}
     end
   end
 
-  defp parse_int_weight(w) do
-    case Integer.parse(w) do
-      {i, ""} -> i * 1.0
-      _ -> 1.0
+  defp fetch_vertex(token, ids) do
+    case Util.parse_int(token) do
+      {:ok, idx} -> Map.fetch(ids, idx)
+      :error -> :error
     end
   end
 
-  defp starts_with_section?(line), do: String.starts_with?(line, "*")
+  defp edge_weight([]), do: {:ok, 1.0}
+  defp edge_weight([w | _]), do: Util.parse_weight(w)
 
   # ── Label formatting ─────────────────────────────────────────────────
 
   defp quote_label(v) do
-    s = vertex_to_string(v)
-    escaped = String.replace(s, "\"", "\\\"")
+    escaped =
+      v
+      |> Util.vertex_to_string()
+      |> String.replace(["\\", "\"", "\n", "\r"], fn
+        "\\" -> "\\\\"
+        "\"" -> "\\\""
+        "\n" -> "\\n"
+        "\r" -> "\\r"
+      end)
+
     "\"" <> escaped <> "\""
   end
-
-  defp vertex_to_string(v) when is_binary(v), do: v
-  defp vertex_to_string(v) when is_atom(v), do: Atom.to_string(v)
-  defp vertex_to_string(v) when is_integer(v), do: Integer.to_string(v)
-  defp vertex_to_string(v) when is_float(v), do: Float.to_string(v)
-  defp vertex_to_string(v), do: inspect(v)
-
-  defp unquote_label("\"" <> rest) do
-    case String.split(rest, "\"", parts: 2) do
-      [inner, _trailing] -> String.replace(inner, "\\\"", "\"")
-      [only] -> only
-    end
-  end
-
-  defp unquote_label(s), do: s
-
-  defp format_weight(w) when is_float(w), do: Float.to_string(w)
-  defp format_weight(w) when is_integer(w), do: Integer.to_string(w)
-  defp format_weight(w), do: to_string(w)
 end

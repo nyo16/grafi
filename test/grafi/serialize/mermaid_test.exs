@@ -114,4 +114,76 @@ defmodule Grafi.Serialize.MermaidTest do
       assert out =~ "v2[c]"
     end
   end
+
+  describe "label escaping" do
+    defp lines(out), do: String.split(out, ["\r\n", "\n", "\r"])
+
+    test "newlines in a node label cannot start a new statement" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> "x]\nv1 --> v0\r\nz\ry" end)
+
+      assert ~s(    v0["x]#10;v1 --#gt; v0#10;z#10;y"]) in lines(out)
+      assert length(lines(out)) == 4
+    end
+
+    # Mermaid would render `#quot;` as a quote mark if `#` were left alone.
+    test "label text that looks like an entity code stays literal" do
+      g = Graph.new() |> Graph.add_vertex(:a)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> "say #quot;hi" end)
+
+      assert out =~ ~s(v0["say #35;quot;hi"])
+    end
+
+    test "backticks, pipes and quotes in node labels become entity codes" do
+      g = Graph.new() |> Graph.add_vertex("a`|\"b")
+      assert Mermaid.to_mermaid(g) =~ ~s(v0["a#96;#124;#quot;b"])
+    end
+
+    test "edge labels escape pipes, quotes, backticks and newlines" do
+      g = Graph.new() |> Graph.add_edge(:a, :b, label: "p|q\"r`s\nt")
+      assert Mermaid.to_mermaid(g) =~ "v0 -->|p#124;q#quot;r#96;s#10;t| v1"
+    end
+
+    test "weights keep their compact display form" do
+      g = Graph.new() |> Graph.add_edge(:a, :b, weight: 2.5) |> Graph.add_edge(:b, :c, weight: 3)
+      out = Mermaid.to_mermaid(g)
+      assert out =~ "|2.5|"
+      assert out =~ "|3|"
+    end
+
+    test "weight labels use the shared weight format" do
+      g = Graph.new() |> Graph.add_edge(:a, :b, weight: 1.0e20)
+      assert Mermaid.to_mermaid(g) =~ "|1.0e20|"
+    end
+
+    test "a %%{init}%% directive in a label is not passed through" do
+      directive = "%%{init: {'flowchart': {'htmlLabels': true}, 'themeCSS': 'x'}}%%"
+      g = Graph.new() |> Graph.add_edge(:a, :b, label: directive)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> directive end)
+
+      refute out =~ "%"
+      refute out =~ "'"
+      assert out =~ "#37;#37;{init"
+    end
+
+    test "HTML in node and edge labels is entity-encoded" do
+      html = "<img src=x onerror=alert(1)> & co"
+      g = Graph.new() |> Graph.add_edge(:a, :b, label: html)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> html end)
+
+      refute out =~ "<img"
+      refute out =~ "&"
+      assert out =~ "#lt;img src=x onerror=alert(1)#gt; #amp; co"
+      # The only `>` left is the arrow's.
+      assert out |> String.graphemes() |> Enum.count(&(&1 == ">")) == 1
+    end
+
+    test "label text cannot change the node shape" do
+      g = Graph.new() |> Graph.add_vertices([:a, :b])
+      out = Mermaid.to_mermaid(g, vertex_label: fn v -> if v == :a, do: "/x/", else: "y-z" end)
+
+      assert out =~ ~s(v0["/x/"])
+      assert out =~ ~s(v1["y-z"])
+    end
+  end
 end

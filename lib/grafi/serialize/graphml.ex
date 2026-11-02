@@ -18,20 +18,29 @@ defmodule Grafi.Serialize.GraphML do
         </graph>
       </graphml>
 
-  The decoder is a small line-oriented parser tailored to the subset emitted
-  by `to_graphml/2`. It handles XML entity escaping (`&lt; &gt; &amp; &quot;
-  &apos;`) and accepts attribute values quoted with either `"` or `'`. It
-  does NOT handle CDATA sections, processing instructions, namespaces beyond
-  the default `graphml`, or nested `<graph>` elements. Round-trip on our own
-  output is the supported use case.
+  The decoder is a small linear scanner (shared with `Grafi.Serialize.GEXF`)
+  tailored to the subset emitted by `to_graphml/2`: it reads the first
+  `<graph>` element's `edgedefault`, the attributes of each `<node>`/`<edge>`
+  (quoted with `"` or `'`), and the text of their `<data>` children. It
+  decodes the predefined XML entities and numeric character references,
+  skips comments and processing instructions, reads CDATA sections inside
+  `<data>` as literal text, and rejects `<!DOCTYPE`. It does NOT validate
+  the document, and ignores namespaces beyond the default `graphml` and
+  nested `<graph>` elements. Round-trip on our own output is the supported
+  use case.
 
   Reference: <http://graphml.graphdrawing.org/specification.html>
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.{Util, XML}
 
   @doc """
   Renders a graph as a GraphML string.
+
+  Raises `ArgumentError` if an id or label (as text) is not valid UTF-8 or
+  contains a character XML 1.0 cannot represent (a control character other
+  than tab, LF and CR, or U+FFFE/U+FFFF).
 
   ## Options
     * `:name` — graph identifier written to `<graph id="...">` (default `"G"`).
@@ -50,14 +59,14 @@ defmodule Grafi.Serialize.GraphML do
     node_lines =
       Graph.vertices(g)
       |> Enum.map(fn v ->
-        id = vertex_to_string(v) |> xml_escape_attr()
+        id = v |> Util.vertex_to_string() |> XML.escape_attr()
 
         case Graph.label(g, v) do
           nil ->
             ~s(    <node id="#{id}"/>)
 
           label ->
-            label_str = label |> to_string() |> xml_escape_text()
+            label_str = label |> to_string() |> data_text()
 
             ~s(    <node id="#{id}"><data key="vlabel">#{label_str}</data></node>)
         end
@@ -67,20 +76,20 @@ defmodule Grafi.Serialize.GraphML do
       Graph.edges(g)
       |> Enum.with_index()
       |> Enum.map(fn {e, idx} ->
-        src = vertex_to_string(e.from) |> xml_escape_attr()
-        tgt = vertex_to_string(e.to) |> xml_escape_attr()
+        src = e.from |> Util.vertex_to_string() |> XML.escape_attr()
+        tgt = e.to |> Util.vertex_to_string() |> XML.escape_attr()
 
         data_parts = []
 
         data_parts =
           if e.weight != nil,
-            do: [~s(      <data key="eweight">#{format_weight(e.weight)}</data>) | data_parts],
+            do: [~s(      <data key="eweight">#{Util.format_weight(e.weight)}</data>) | data_parts],
             else: data_parts
 
         data_parts =
           if e.label,
             do: [
-              ~s(      <data key="elabel">#{xml_escape_text(to_string(e.label))}</data>)
+              ~s(      <data key="elabel">#{data_text(to_string(e.label))}</data>)
               | data_parts
             ],
             else: data_parts
@@ -101,7 +110,7 @@ defmodule Grafi.Serialize.GraphML do
       ~s(  <key id="vlabel" for="node" attr.name="label" attr.type="string"/>),
       ~s(  <key id="eweight" for="edge" attr.name="weight" attr.type="double"/>),
       ~s(  <key id="elabel" for="edge" attr.name="label" attr.type="string"/>),
-      ~s(  <graph id="#{xml_escape_attr(name)}" edgedefault="#{edgedefault}">)
+      ~s(  <graph id="#{XML.escape_attr(name)}" edgedefault="#{edgedefault}">)
     ]
     |> Kernel.++(node_lines)
     |> Kernel.++(edge_lines)
@@ -112,172 +121,48 @@ defmodule Grafi.Serialize.GraphML do
   @doc """
   Parses a GraphML string into a `Grafi.Graph`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure.
-  Vertex ids round-trip as strings (XML has no atom or integer types).
+  Returns the graph on success or `{:error, reason}` on parse failure:
+    * `{:invalid_weight, text}` for an `eweight` that is not a finite number;
+    * `:missing_graph_element` without a `<graph>` whose `edgedefault` is
+      `"directed"` or `"undirected"`;
+    * `{:unclosed_element, "node" | "edge" | "data"}`;
+    * `{:malformed_tag, excerpt}`, `{:duplicate_attribute, name}`,
+      `{:unclosed_markup, "<!--" | "<?" | "<![CDATA["}`,
+      `{:unsupported_markup, "<!DOCTYPE"}` and `{:invalid_char_ref, ref}`
+      for markup the decoder cannot read faithfully.
+
+  Vertex ids round-trip as strings (XML has no atom or integer types). An
+  edge without an `eweight` gets weight `1.0`.
 
   ## Options
     * `:max_bytes` — reject input larger than this many bytes with
-      `{:error, :input_too_large}` before parsing. Defaults to `:infinity`
-      (no limit). Set this when decoding untrusted input to bound the work
-      the regex-based parser will do.
+      `{:error, {:too_large, size, max}}` before parsing. Defaults to 64 MiB;
+      pass `:infinity` to disable the limit.
   """
   @spec from_graphml(String.t(), keyword()) :: Graph.t() | {:error, term()}
   def from_graphml(xml, opts \\ []) when is_binary(xml) do
-    with :ok <- check_size(xml, Keyword.get(opts, :max_bytes, :infinity)),
-         {:ok, type} <- detect_edge_default(xml),
-         {:ok, nodes} <- extract_nodes(xml),
-         {:ok, edges} <- extract_edges(xml) do
-      g = Graph.new(type: type)
-
-      g =
-        Enum.reduce(nodes, g, fn {id, label}, acc ->
-          opts = if label, do: [label: label], else: []
-          Graph.add_vertex(acc, id, opts)
-        end)
-
-      Enum.reduce(edges, g, fn {src, tgt, weight, label}, acc ->
-        opts = [weight: weight || 1.0]
-        opts = if label, do: Keyword.put(opts, :label, label), else: opts
-        Graph.add_edge(acc, src, tgt, opts)
-      end)
-    end
-  rescue
-    _ -> {:error, :malformed_graphml}
-  end
-
-  # ── Parsing helpers ──────────────────────────────────────────────────
-
-  defp check_size(_xml, :infinity), do: :ok
-
-  defp check_size(xml, max) when is_integer(max) do
-    if byte_size(xml) > max, do: {:error, :input_too_large}, else: :ok
-  end
-
-  defp detect_edge_default(xml) do
-    case Regex.run(~r/<graph\b[^>]*\bedgedefault\s*=\s*(["'])(directed|undirected)\1/, xml) do
-      [_, _, "directed"] -> {:ok, :directed}
-      [_, _, "undirected"] -> {:ok, :undirected}
-      _ -> {:error, :missing_graph_element}
+    with :ok <- Util.check_size(xml, opts),
+         {:ok, type, vertices, edges} <- XML.parse(xml, "edgedefault", &vertex/2, &edge/2) do
+      XML.build_graph(type, vertices, edges)
     end
   end
 
-  defp extract_nodes(xml) do
-    # Self-closing: <node id="..."/>
-    self_closed =
-      Regex.scan(~r/<node\b([^>]*?)\/>/s, xml)
-      |> Enum.map(fn [_, attrs] -> {parse_id(attrs), nil} end)
+  defp vertex(attrs, data), do: {attrs["id"], data["vlabel"]}
 
-    # With body: <node id="...">...</node>
-    bodied =
-      Regex.scan(~r/<node\b([^>]*?)>(.*?)<\/node>/s, xml)
-      |> Enum.map(fn [_, attrs, body] ->
-        label = extract_data(body, "vlabel")
-        {parse_id(attrs), label}
-      end)
+  defp edge(attrs, data),
+    do: {attrs["source"], attrs["target"], data["eweight"], data["elabel"]}
 
-    nodes =
-      (self_closed ++ bodied)
-      |> Enum.reject(fn {id, _} -> id == nil end)
+  # Escaped `<data>` text. The decoder trims data text (tolerating
+  # pretty-printed input), so leading/trailing whitespace is written as
+  # character references, which survive the trim and decode back exactly.
+  # Split by byte sizes: whitespace followed by a combining mark is one
+  # grapheme, so nothing grapheme-based (such as `String.reverse/1`) works.
+  defp data_text(s) do
+    rest = String.trim_leading(s)
+    core = String.trim_trailing(rest)
+    lead = binary_part(s, 0, byte_size(s) - byte_size(rest))
+    trail = binary_part(rest, byte_size(core), byte_size(rest) - byte_size(core))
 
-    {:ok, nodes}
-  rescue
-    _ -> {:error, :malformed_nodes}
+    XML.char_refs(lead) <> XML.escape(core) <> XML.char_refs(trail)
   end
-
-  defp extract_edges(xml) do
-    self_closed =
-      Regex.scan(~r/<edge\b([^>]*?)\/>/s, xml)
-      |> Enum.map(fn [_, attrs] ->
-        {parse_attr(attrs, "source"), parse_attr(attrs, "target"), nil, nil}
-      end)
-
-    bodied =
-      Regex.scan(~r/<edge\b([^>]*?)>(.*?)<\/edge>/s, xml)
-      |> Enum.map(fn [_, attrs, body] ->
-        src = parse_attr(attrs, "source")
-        tgt = parse_attr(attrs, "target")
-        weight = body |> extract_data("eweight") |> parse_number()
-        label = extract_data(body, "elabel")
-        {src, tgt, weight, label}
-      end)
-
-    edges =
-      (self_closed ++ bodied)
-      |> Enum.reject(fn {s, t, _, _} -> s == nil or t == nil end)
-
-    {:ok, edges}
-  rescue
-    _ -> {:error, :malformed_edges}
-  end
-
-  defp parse_id(attrs), do: parse_attr(attrs, "id")
-
-  defp parse_attr(attrs, name) do
-    case Regex.run(~r/\b#{Regex.escape(name)}\s*=\s*(["'])(.*?)\1/s, attrs) do
-      [_, _, value] -> xml_unescape(value)
-      _ -> nil
-    end
-  end
-
-  defp extract_data(body, key) do
-    case Regex.run(
-           ~r/<data\b[^>]*\bkey\s*=\s*(["'])#{Regex.escape(key)}\1[^>]*>(.*?)<\/data>/s,
-           body
-         ) do
-      [_, _, text] -> xml_unescape(String.trim(text))
-      _ -> nil
-    end
-  end
-
-  defp parse_number(nil), do: nil
-
-  defp parse_number(s) do
-    case Float.parse(s) do
-      {f, ""} ->
-        f
-
-      _ ->
-        case Integer.parse(s) do
-          {i, ""} -> i * 1.0
-          _ -> nil
-        end
-    end
-  end
-
-  # ── XML escaping ─────────────────────────────────────────────────────
-
-  defp xml_escape_attr(s) do
-    s
-    |> String.replace("&", "&amp;")
-    |> String.replace("<", "&lt;")
-    |> String.replace(">", "&gt;")
-    |> String.replace("\"", "&quot;")
-    |> String.replace("'", "&apos;")
-  end
-
-  defp xml_escape_text(s) do
-    s
-    |> String.replace("&", "&amp;")
-    |> String.replace("<", "&lt;")
-    |> String.replace(">", "&gt;")
-  end
-
-  defp xml_unescape(s) do
-    s
-    |> String.replace("&lt;", "<")
-    |> String.replace("&gt;", ">")
-    |> String.replace("&quot;", "\"")
-    |> String.replace("&apos;", "'")
-    |> String.replace("&amp;", "&")
-  end
-
-  defp vertex_to_string(v) when is_binary(v), do: v
-  defp vertex_to_string(v) when is_atom(v), do: Atom.to_string(v)
-  defp vertex_to_string(v) when is_integer(v), do: Integer.to_string(v)
-  defp vertex_to_string(v) when is_float(v), do: Float.to_string(v)
-  defp vertex_to_string(v), do: inspect(v)
-
-  defp format_weight(w) when is_float(w), do: Float.to_string(w)
-  defp format_weight(w) when is_integer(w), do: Integer.to_string(w)
-  defp format_weight(w), do: to_string(w)
 end

@@ -7,14 +7,25 @@ defmodule Grafi.Serialize.EdgeList do
       from to            # unweighted
       from to weight     # weighted
 
-  Tokens are whitespace-separated. Lines beginning with `#` are treated as
-  comments and ignored on decode. The format does not carry edge labels or
-  vertex labels — for those, prefer GraphML or JSON.
+  Tokens are whitespace-separated by default; see the `:separator` option of
+  both functions. Lines beginning with `#` are treated as comments and
+  ignored on decode. The format does not carry edge labels or vertex
+  labels — for those, prefer GraphML or JSON.
+
+  ## Simple ids only
+
+  Vertex ids are written as plain tokens, without quoting or escaping, so
+  the encoder raises `ArgumentError` for an id whose text could not be read
+  back as the same single token: an empty id, one starting with `#`, one
+  containing a line break, leading or trailing whitespace, or the
+  separator (any whitespace under the default separator). Use GraphML or
+  JSON for arbitrary ids.
 
   Reference: <https://en.wikipedia.org/wiki/Edge_list>
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.{LineIds, Util}
 
   @doc """
   Renders a graph as an edge list string.
@@ -23,8 +34,11 @@ defmodule Grafi.Serialize.EdgeList do
     * `:weighted` — include a weight column (default `true` if any edge
       weight differs from `1.0`, otherwise `false`).
     * `:separator` — column separator (default `" "`).
-    * `:comment` — optional comment line written at the top, prefixed
-      with `# `.
+    * `:comment` — optional single-line comment written at the top,
+      prefixed with `# `. A line break in it raises `ArgumentError`.
+
+  Raises `ArgumentError` for a vertex id that this format cannot carry
+  (see "Simple ids only" above).
 
   Isolated vertices (no edges) are not preserved by this format.
 
@@ -37,6 +51,7 @@ defmodule Grafi.Serialize.EdgeList do
   @spec to_edge_list(Graph.t(), keyword()) :: String.t()
   def to_edge_list(%Graph{} = g, opts \\ []) do
     sep = Keyword.get(opts, :separator, " ")
+    token = &LineIds.vertex_token!(&1, sep, "an edge list")
     edges = Graph.edges(g)
 
     weighted =
@@ -47,13 +62,13 @@ defmodule Grafi.Serialize.EdgeList do
     header =
       case Keyword.get(opts, :comment) do
         nil -> []
-        c when is_binary(c) -> ["# " <> c]
+        c when is_binary(c) -> ["# " <> LineIds.comment!(c)]
       end
 
     edge_lines =
       Enum.map(edges, fn e ->
-        base = [to_token(e.from), sep, to_token(e.to)]
-        if weighted, do: base ++ [sep, format_weight(e.weight)], else: base
+        base = [token.(e.from), sep, token.(e.to)]
+        if weighted, do: base ++ [sep, Util.format_weight(e.weight)], else: base
       end)
 
     (header ++ Enum.map(edge_lines, &IO.iodata_to_binary/1))
@@ -65,15 +80,31 @@ defmodule Grafi.Serialize.EdgeList do
 
   ## Options
     * `:directed` — `true` (default) or `false`.
-    * `:weighted` — `true` if a third weight column is present (auto-detected
-      from the first non-comment line when not given).
-    * `:default_weight` — fallback weight when `:weighted` is `false`
+    * `:separator` — column separator. By default columns are separated by
+      any run of whitespace. When given, each line is split on exactly this
+      string and every field is trimmed of surrounding whitespace, so
+      vertex names may contain spaces (e.g. with `"\\t"` or `","`). An
+      empty field makes the line malformed.
+    * `:weighted` — how the third column is read. When not given, each line
+      is judged on its own: two fields are an unweighted edge (it gets
+      `:default_weight`), three fields are an edge whose third field is the
+      weight, and more fields are malformed, so weighted and unweighted
+      lines may be mixed. `true` requires exactly three fields on every
+      line. `false` uses the first two fields and ignores any further
+      columns.
+    * `:default_weight` — weight of edges without a weight column
       (default `1.0`).
-    * `:vertices_as_atoms` — if `true`, vertex tokens are cast to atoms via
-      `String.to_atom/1`. Default `false` (strings) to avoid the atom-table
-      attack.
+    * `:vertices_as_atoms` — if `true`, a vertex token that names an
+      existing atom becomes that atom; any other token stays a string.
+      Input never creates atoms (the atom table is not garbage-collected).
+      Default `false` (strings).
+    * `:max_bytes` — maximum input size in bytes (default 64 MiB, or
+      `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure.
+  Returns the graph on success or `{:error, reason}`: `{:malformed_line,
+  line}` for a line with the wrong number of fields, and `{:invalid_weight,
+  token}` for a weight that is not a finite number. The `line` and `token`
+  in an error are cut to their first 200 bytes.
 
   ## Examples
 
@@ -83,86 +114,49 @@ defmodule Grafi.Serialize.EdgeList do
   """
   @spec from_edge_list(String.t(), keyword()) :: Graph.t() | {:error, term()}
   def from_edge_list(text, opts \\ []) when is_binary(text) do
-    directed = Keyword.get(opts, :directed, true)
-    type = if directed, do: :directed, else: :undirected
-    default_w = Keyword.get(opts, :default_weight, 1.0)
-    atoms? = Keyword.get(opts, :vertices_as_atoms, false)
-
-    lines =
-      text
-      |> String.split(["\n", "\r\n"], trim: false)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
-
-    weighted = Keyword.get_lazy(opts, :weighted, fn -> detect_weighted(lines) end)
-
-    Enum.reduce_while(lines, Graph.new(type: type), fn line, g ->
-      case parse_line(line, weighted, default_w, atoms?) do
-        {:ok, from, to, w} ->
-          {:cont, Graph.add_edge(g, from, to, weight: w)}
-
-        :error ->
-          {:halt, {:error, {:malformed_line, line}}}
-      end
-    end)
+    with :ok <- Util.check_size(text, opts) do
+      parse(text, opts)
+    end
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp to_token(v) when is_binary(v), do: v
-  defp to_token(v) when is_atom(v), do: Atom.to_string(v)
-  defp to_token(v) when is_integer(v), do: Integer.to_string(v)
-  defp to_token(v) when is_float(v), do: Float.to_string(v)
-  defp to_token(v), do: inspect(v)
+  defp parse(text, opts) do
+    type = if Keyword.get(opts, :directed, true), do: :directed, else: :undirected
+    weighted = Keyword.get(opts, :weighted, :auto)
+    default_w = Keyword.get(opts, :default_weight, 1.0)
+    atoms? = Keyword.get(opts, :vertices_as_atoms, false)
+    split = Util.field_splitter(Keyword.get(opts, :separator))
 
-  defp format_weight(w) when is_float(w), do: Float.to_string(w)
-  defp format_weight(w) when is_integer(w), do: Integer.to_string(w)
-  defp format_weight(w), do: to_string(w)
+    Util.reduce_lines(text, Graph.new(type: type), "#", fn line, g ->
+      case parse_line(line, split.(line), weighted, default_w) do
+        {:ok, from, to, w} ->
+          from = Util.cast_vertex(from, atoms?)
+          to = Util.cast_vertex(to, atoms?)
+          {:cont, Graph.add_edge(g, from, to, weight: w)}
 
-  defp detect_weighted([line | _]) do
-    case String.split(line, ~r/\s+/, trim: true) do
-      [_, _, _ | _] -> true
-      _ -> false
-    end
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
   end
 
-  defp detect_weighted([]), do: false
-
-  defp parse_line(line, weighted, default_w, atoms?) do
-    tokens = String.split(line, ~r/\s+/, trim: true)
-
-    case {weighted, tokens} do
-      {true, [a, b, w]} ->
-        case parse_weight(w) do
-          {:ok, weight} -> {:ok, cast_vertex(a, atoms?), cast_vertex(b, atoms?), weight}
-          :error -> :error
-        end
-
-      {false, [a, b]} ->
-        {:ok, cast_vertex(a, atoms?), cast_vertex(b, atoms?), default_w}
-
-      {false, [a, b | _]} ->
-        # Tolerate extra columns when weighted=false was forced.
-        {:ok, cast_vertex(a, atoms?), cast_vertex(b, atoms?), default_w}
-
-      _ ->
-        :error
-    end
+  defp parse_line(line, fields, weighted, default_w) do
+    if "" in fields,
+      do: {:error, {:malformed_line, Util.excerpt(line)}},
+      else: parse_fields(line, fields, weighted, default_w)
   end
 
-  defp parse_weight(s) do
-    case Float.parse(s) do
-      {f, ""} ->
-        {:ok, f}
-
-      _ ->
-        case Integer.parse(s) do
-          {i, ""} -> {:ok, i * 1.0}
-          _ -> :error
-        end
-    end
+  defp parse_fields(_line, [a, b, w], weighted, _default_w) when weighted in [true, :auto] do
+    with {:ok, weight} <- Util.parse_weight(w), do: {:ok, a, b, weight}
   end
 
-  defp cast_vertex(s, true), do: String.to_atom(s)
-  defp cast_vertex(s, false), do: s
+  defp parse_fields(_line, [a, b], weighted, default_w) when weighted in [false, :auto],
+    do: {:ok, a, b, default_w}
+
+  # Tolerate extra columns when weighted: false was forced.
+  defp parse_fields(_line, [a, b | _], false, default_w), do: {:ok, a, b, default_w}
+
+  defp parse_fields(line, _fields, _weighted, _default_w),
+    do: {:error, {:malformed_line, Util.excerpt(line)}}
 end

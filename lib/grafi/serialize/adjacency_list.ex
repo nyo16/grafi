@@ -6,8 +6,18 @@ defmodule Grafi.Serialize.AdjacencyList do
 
       source neighbor1 neighbor2 neighbor3 ...
 
-  Tokens are whitespace-separated. Lines beginning with `#` are comments.
+  Tokens are whitespace-separated by default; see the `:separator` option of
+  both functions. Lines beginning with `#` are comments.
   Isolated vertices appear as a single-token line (just the vertex id).
+
+  ## Simple ids only
+
+  Vertex ids are written as plain tokens, without quoting or escaping, so
+  the encoder raises `ArgumentError` for an id whose text could not be read
+  back as the same single token: an empty id, one starting with `#`, one
+  containing a line break, leading or trailing whitespace, or the
+  separator (any whitespace under the default separator). Use GraphML or
+  JSON for arbitrary ids.
 
   ## Limitations
 
@@ -21,6 +31,7 @@ defmodule Grafi.Serialize.AdjacencyList do
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.{LineIds, Util}
 
   @doc """
   Renders a graph as an adjacency-list string.
@@ -31,6 +42,9 @@ defmodule Grafi.Serialize.AdjacencyList do
       appears once per line; when `false`, repeated edges between the same
       pair produce repeated neighbor tokens.
 
+  Raises `ArgumentError` for a vertex id that this format cannot carry
+  (see "Simple ids only" above).
+
   ## Examples
 
       iex> g = Grafi.Graph.new() |> Grafi.Graph.add_edge(:a, :b)
@@ -40,6 +54,7 @@ defmodule Grafi.Serialize.AdjacencyList do
   @spec to_adjacency_list(Graph.t(), keyword()) :: String.t()
   def to_adjacency_list(%Graph{} = g, opts \\ []) do
     sep = Keyword.get(opts, :separator, " ")
+    token = &LineIds.vertex_token!(&1, sep, "an adjacency list")
     collapse? = Keyword.get(opts, :collapse_multi_edges, true)
 
     Graph.vertices(g)
@@ -51,7 +66,7 @@ defmodule Grafi.Serialize.AdjacencyList do
           for {to, edges} <- Map.get(g.out_edges, v, %{}), _e <- edges, do: to
         end
 
-      [to_token(v) | Enum.map(neighbors, &to_token/1)]
+      [token.(v) | Enum.map(neighbors, token)]
       |> Enum.join(sep)
     end)
     |> Enum.join("\n")
@@ -62,10 +77,21 @@ defmodule Grafi.Serialize.AdjacencyList do
 
   ## Options
     * `:directed` — `true` (default) or `false`.
-    * `:vertices_as_atoms` — if `true`, cast tokens via `String.to_atom/1`.
-      Defaults to `false` to avoid the atom-table attack.
+    * `:separator` — token separator. By default tokens are separated by
+      any run of whitespace. When given, each line is split on exactly this
+      string and every token is trimmed of surrounding whitespace, so
+      vertex names may contain spaces. An empty token makes the line
+      malformed.
+    * `:vertices_as_atoms` — if `true`, a vertex token that names an
+      existing atom becomes that atom; any other token stays a string.
+      Input never creates atoms (the atom table is not garbage-collected).
+      Default `false` (strings).
+    * `:max_bytes` — maximum input size in bytes (default 64 MiB, or
+      `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure.
+  Returns the graph on success or `{:error, reason}`, e.g.
+  `{:malformed_line, line}` for an empty token under a custom separator
+  (the `line` cut to its first 200 bytes).
 
   ## Examples
 
@@ -75,45 +101,33 @@ defmodule Grafi.Serialize.AdjacencyList do
   """
   @spec from_adjacency_list(String.t(), keyword()) :: Graph.t() | {:error, term()}
   def from_adjacency_list(text, opts \\ []) when is_binary(text) do
-    directed = Keyword.get(opts, :directed, true)
-    type = if directed, do: :directed, else: :undirected
-    atoms? = Keyword.get(opts, :vertices_as_atoms, false)
-
-    lines =
-      text
-      |> String.split(["\n", "\r\n"], trim: false)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
-
-    Enum.reduce_while(lines, Graph.new(type: type), fn line, g ->
-      case String.split(line, ~r/\s+/, trim: true) do
-        [] ->
-          {:cont, g}
-
-        [source | neighbors] ->
-          s = cast_vertex(source, atoms?)
-          g = Graph.add_vertex(g, s)
-
-          g =
-            Enum.reduce(neighbors, g, fn n, acc ->
-              Graph.add_edge(acc, s, cast_vertex(n, atoms?))
-            end)
-
-          {:cont, g}
-      end
-    end)
-  rescue
-    e -> {:error, Exception.message(e)}
+    with :ok <- Util.check_size(text, opts) do
+      parse(text, opts)
+    end
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp to_token(v) when is_binary(v), do: v
-  defp to_token(v) when is_atom(v), do: Atom.to_string(v)
-  defp to_token(v) when is_integer(v), do: Integer.to_string(v)
-  defp to_token(v) when is_float(v), do: Float.to_string(v)
-  defp to_token(v), do: inspect(v)
+  defp parse(text, opts) do
+    type = if Keyword.get(opts, :directed, true), do: :directed, else: :undirected
+    atoms? = Keyword.get(opts, :vertices_as_atoms, false)
+    split = Util.field_splitter(Keyword.get(opts, :separator))
 
-  defp cast_vertex(s, true), do: String.to_atom(s)
-  defp cast_vertex(s, false), do: s
+    Util.reduce_lines(text, Graph.new(type: type), "#", fn line, g ->
+      # A non-empty line always splits into at least one token.
+      [source | neighbors] = tokens = split.(line)
+
+      if "" in tokens,
+        do: {:halt, {:error, {:malformed_line, Util.excerpt(line)}}},
+        else: {:cont, add_line(g, source, neighbors, atoms?)}
+    end)
+  end
+
+  defp add_line(g, source, neighbors, atoms?) do
+    s = Util.cast_vertex(source, atoms?)
+
+    Enum.reduce(neighbors, Graph.add_vertex(g, s), fn n, acc ->
+      Graph.add_edge(acc, s, Util.cast_vertex(n, atoms?))
+    end)
+  end
 end

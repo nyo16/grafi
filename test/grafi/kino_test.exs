@@ -49,5 +49,17 @@ defmodule Grafi.KinoTest do
       # and run without it.
       refute Code.ensure_loaded?(Kino.Markdown)
     end
+
+    test "a label containing a code fence cannot close the markdown fence" do
+      g =
+        Graph.new()
+        |> Graph.add_vertex("x\n```\n# injected")
+        |> Graph.add_edge(:a, :b, label: "```")
+
+      md = GKino.to_kino(g)
+      fence_lines = md |> String.split(["\r\n", "\n", "\r"]) |> Enum.filter(&(&1 =~ "```"))
+
+      assert fence_lines == ["```mermaid", "```"]
+    end
   end
 end
