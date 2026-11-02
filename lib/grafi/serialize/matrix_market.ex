@@ -33,6 +33,9 @@ defmodule Grafi.Serialize.MatrixMarket do
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.Util
+
+  @default_max_vertices 10_000_000
 
   @doc """
   Renders a graph as a Matrix Market string.
@@ -82,7 +85,7 @@ defmodule Grafi.Serialize.MatrixMarket do
     body_lines =
       cells
       |> Enum.sort_by(fn {{i, j}, _} -> {i, j} end)
-      |> Enum.map(fn {{i, j}, w} -> "#{i} #{j} #{format_weight(w)}" end)
+      |> Enum.map(fn {{i, j}, w} -> "#{i} #{j} #{Util.format_weight(w)}" end)
 
     ([header] ++ id_lines ++ [size_line] ++ body_lines)
     |> Enum.join("\n")
@@ -94,30 +97,79 @@ defmodule Grafi.Serialize.MatrixMarket do
   Recovers vertex ids from `%GRAFI_VERTEX i ID` comment lines when present.
   Otherwise falls back to integer ids `1..n`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure.
+  Returns the graph on success or `{:error, reason}` on parse failure:
+
+    * `{:too_large, size, max}`: the input exceeds `:max_bytes`.
+    * `:missing_header` / `:bad_header`: no `%%MatrixMarket` line, or one
+      that is not a `coordinate` matrix with `general` or `symmetric`
+      symmetry (`array`, `skew-symmetric` and `hermitian` are unsupported).
+    * `:bad_vertex_comment` / `{:bad_vertex_comment, index}`: a malformed
+      `%GRAFI_VERTEX` line.
+    * `:missing_size_line` / `:bad_size_line`: no `rows cols nnz` line, or
+      one that is not three non-negative integers.
+    * `{:too_many_vertices, n}`: `rows` or `cols` exceeds `:max_vertices`.
+      Checked before any vertex is allocated.
+    * `{:malformed_entry, line}`: an entry that is not `i j [value]`.
+    * `{:invalid_weight, value}`: a value that is not a finite number.
+    * `{:index_out_of_range, i}`: an index outside `1..rows` / `1..cols`.
+    * `{:nnz_mismatch, declared, seen}`: the entry count differs from `nnz`.
+
+  ## Options
+
+    * `:max_bytes` - maximum input size in bytes (default 64 MiB, or
+      `:infinity`).
+    * `:max_vertices` - maximum `rows`/`cols` (default 10_000_000, or
+      `:infinity`). A header declaring a huge matrix would otherwise
+      allocate that many vertices.
   """
   @spec from_matrix_market(String.t(), keyword()) :: Graph.t() | {:error, term()}
-  def from_matrix_market(text, _opts \\ []) when is_binary(text) do
-    lines =
-      text
-      |> String.split(["\n", "\r\n"], trim: false)
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
+  def from_matrix_market(text, opts \\ []) when is_binary(text) do
+    max_vertices = max_vertices!(opts)
 
-    with {:ok, type, rest} <- parse_header(lines),
+    with :ok <- Util.check_size(text, opts),
+         lines = split_lines(text),
+         {:ok, type, rest} <- parse_header(lines),
          {:ok, id_map, rest} <- collect_id_comments(rest, %{}),
-         rest <- drop_remaining_comments(rest),
-         {:ok, rows, _cols, _nnz, rest} <- parse_size_line(rest) do
-      build_from_entries(type, rows, id_map, rest)
+         rest = drop_remaining_comments(rest),
+         {:ok, rows, cols, nnz, rest} <- parse_size_line(rest),
+         :ok <- check_vertex_count(rows, cols, max_vertices) do
+      build_from_entries(type, {rows, cols, nnz}, id_map, rest)
     end
-  rescue
-    e -> {:error, Exception.message(e)}
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
 
+  defp max_vertices!(opts) do
+    case Keyword.get(opts, :max_vertices, @default_max_vertices) do
+      :infinity ->
+        :infinity
+
+      max when is_integer(max) and max >= 0 ->
+        max
+
+      other ->
+        raise ArgumentError,
+              "expected :max_vertices to be a non-negative integer or :infinity, " <>
+                "got: #{inspect(other)}"
+    end
+  end
+
+  defp split_lines(text) do
+    text
+    |> String.split(["\n", "\r\n"], trim: false)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp check_vertex_count(_rows, _cols, :infinity), do: :ok
+
+  defp check_vertex_count(rows, cols, max) do
+    n = max(rows, cols)
+    if n > max, do: {:error, {:too_many_vertices, n}}, else: :ok
+  end
+
   defp parse_header(["%%MatrixMarket" <> rest | tail]) do
-    parts = rest |> String.split(~r/\s+/, trim: true) |> Enum.map(&String.downcase/1)
+    parts = rest |> String.split() |> Enum.map(&String.downcase/1)
 
     case parts do
       ["matrix", "coordinate", _field, sym] when sym in ["general", "symmetric"] ->
@@ -158,11 +210,11 @@ defmodule Grafi.Serialize.MatrixMarket do
     do: Enum.drop_while(lines, &String.starts_with?(&1, "%"))
 
   defp parse_size_line([line | rest]) do
-    case String.split(line, ~r/\s+/, trim: true) do
+    case String.split(line) do
       [r, c, nnz] ->
-        with {ri, ""} <- Integer.parse(r),
-             {ci, ""} <- Integer.parse(c),
-             {ni, ""} <- Integer.parse(nnz) do
+        with {ri, ""} when ri >= 0 <- Integer.parse(r),
+             {ci, ""} when ci >= 0 <- Integer.parse(c),
+             {ni, ""} when ni >= 0 <- Integer.parse(nnz) do
           {:ok, ri, ci, ni, rest}
         else
           _ -> {:error, :bad_size_line}
@@ -175,62 +227,56 @@ defmodule Grafi.Serialize.MatrixMarket do
 
   defp parse_size_line([]), do: {:error, :missing_size_line}
 
-  defp build_from_entries(type, n, id_map, body_lines) do
+  defp build_from_entries(type, {rows, cols, nnz}, id_map, body_lines) do
     # Initialize vertices in canonical 1..n order so isolated rows remain.
     g =
-      Enum.reduce(1..n//1, Graph.new(type: type), fn i, acc ->
+      Enum.reduce(1..max(rows, cols)//1, Graph.new(type: type), fn i, acc ->
         Graph.add_vertex(acc, Map.get(id_map, i, i))
       end)
 
-    Enum.reduce_while(body_lines, g, fn line, g ->
-      case parse_entry(line) do
-        {:ok, i, j, w} ->
+    result =
+      Enum.reduce_while(body_lines, {g, 0}, fn line, {g, seen} ->
+        with {:ok, i, j, w} <- parse_entry(line),
+             :ok <- check_index(i, rows),
+             :ok <- check_index(j, cols) do
           from = Map.get(id_map, i, i)
           to = Map.get(id_map, j, j)
-          {:cont, Graph.add_edge(g, from, to, weight: w)}
+          {:cont, {Graph.add_edge(g, from, to, weight: w), seen + 1}}
+        else
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
 
-        :error ->
-          {:halt, {:error, {:malformed_entry, line}}}
-      end
-    end)
+    case result do
+      {:error, _} = error -> error
+      {g, ^nnz} -> g
+      {_g, seen} -> {:error, {:nnz_mismatch, nnz, seen}}
+    end
   end
+
+  defp check_index(i, max) when i >= 1 and i <= max, do: :ok
+  defp check_index(i, _max), do: {:error, {:index_out_of_range, i}}
 
   defp parse_entry(line) do
-    case String.split(line, ~r/\s+/, trim: true) do
-      [i, j, w] ->
+    case String.split(line) do
+      [i, j | value] when length(value) <= 1 ->
         with {ii, ""} <- Integer.parse(i),
              {jj, ""} <- Integer.parse(j),
-             {:ok, weight} <- parse_value(w) do
+             {:ok, weight} <- parse_value(value) do
           {:ok, ii, jj, weight}
         else
-          _ -> :error
-        end
-
-      [i, j] ->
-        with {ii, ""} <- Integer.parse(i),
-             {jj, ""} <- Integer.parse(j) do
-          {:ok, ii, jj, 1.0}
-        else
-          _ -> :error
+          {:error, {:invalid_weight, _}} = error -> error
+          _ -> {:error, {:malformed_entry, line}}
         end
 
       _ ->
-        :error
+        {:error, {:malformed_entry, line}}
     end
   end
 
-  defp parse_value(s) do
-    case Float.parse(s) do
-      {f, ""} ->
-        {:ok, f}
-
-      _ ->
-        case Integer.parse(s) do
-          {i, ""} -> {:ok, i * 1.0}
-          _ -> :error
-        end
-    end
-  end
+  # Pattern matrices omit the value; the entry is an unweighted edge.
+  defp parse_value([]), do: {:ok, 1.0}
+  defp parse_value([w]), do: Util.parse_weight(w)
 
   defp encode_id(v) when is_binary(v), do: percent_encode(v)
   defp encode_id(v) when is_atom(v), do: "atom:" <> percent_encode(Atom.to_string(v))
@@ -242,13 +288,7 @@ defmodule Grafi.Serialize.MatrixMarket do
   # (atoms are never garbage-collected). Ids whose atom was never created in
   # this VM degrade to their string form rather than minting a new atom.
   defp decode_id("atom:" <> rest) do
-    decoded = percent_decode(rest)
-
-    try do
-      String.to_existing_atom(decoded)
-    rescue
-      ArgumentError -> decoded
-    end
+    rest |> percent_decode() |> Util.cast_vertex(true)
   end
 
   defp decode_id("int:" <> rest) do
@@ -296,8 +336,4 @@ defmodule Grafi.Serialize.MatrixMarket do
   end
 
   defp do_decode(<<c, rest::binary>>, acc), do: do_decode(rest, acc <> <<c>>)
-
-  defp format_weight(w) when is_float(w), do: Float.to_string(w)
-  defp format_weight(w) when is_integer(w), do: Integer.to_string(w)
-  defp format_weight(w), do: to_string(w)
 end
