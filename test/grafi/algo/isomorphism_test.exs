@@ -1,5 +1,6 @@
 defmodule Grafi.Algo.IsomorphismTest do
   use ExUnit.Case, async: true
+  use ExUnitProperties
 
   alias Grafi.Algo.Isomorphism
   alias Grafi.Graph
@@ -263,6 +264,95 @@ defmodule Grafi.Algo.IsomorphismTest do
     end
   end
 
+  describe "elixir engine against brute force" do
+    property "isomorphic?/3 and isomorphism/3 agree with trying every bijection" do
+      check all({g1, g2} <- small_graph_pair(6, 6)) do
+        expected = brute_isomorphic?(g1, g2)
+        assert Isomorphism.isomorphic?(g1, g2, engine: :elixir) == expected
+
+        case Isomorphism.isomorphism(g1, g2, engine: :elixir) do
+          {:ok, mapping} -> assert expected and valid_iso?(g1, g2, mapping)
+          :no_isomorphism -> refute expected
+        end
+      end
+    end
+
+    property "count_subgraph_isomorphisms/3 counts every edge-preserving injection" do
+      check all({pattern, host} <- small_graph_pair(4, 6)) do
+        expected = brute_subiso_count(host, pattern)
+        assert Isomorphism.count_subgraph_isomorphisms(host, pattern, engine: :elixir) == expected
+        assert Isomorphism.subgraph_isomorphic?(host, pattern, engine: :elixir) == expected > 0
+
+        case Isomorphism.subgraph_isomorphism(host, pattern, engine: :elixir) do
+          {:ok, mapping} -> assert valid_subiso?(host, pattern, mapping)
+          :no_isomorphism -> assert expected == 0
+        end
+      end
+    end
+
+    # igraph's VF2 rejects self-loops, so the pairs here have none.
+    @tag :nif
+    property "the elixir and nif engines agree on loop-free graphs" do
+      check all({g1, g2} <- small_graph_pair(6, 6, false)) do
+        for {a, b} <- [{g1, g2}, {g2, g1}] do
+          assert Isomorphism.isomorphic?(a, b, engine: :elixir) ==
+                   Isomorphism.isomorphic?(a, b, engine: :nif)
+
+          assert Isomorphism.count_subgraph_isomorphisms(a, b, engine: :elixir) ==
+                   Isomorphism.count_subgraph_isomorphisms(a, b, engine: :nif)
+        end
+      end
+    end
+
+    test "a pattern self-loop maps only onto a host self-loop" do
+      host = path([1, 2, 3])
+      pattern = Graph.new(type: :undirected) |> Graph.add_edges([{:x, :x}, {:x, :y}])
+
+      assert Isomorphism.count_subgraph_isomorphisms(host, pattern, engine: :elixir) == 0
+      refute Isomorphism.subgraph_isomorphic?(host, pattern, engine: :elixir)
+
+      looped = Graph.add_edge(host, 2, 2)
+      assert Isomorphism.count_subgraph_isomorphisms(looped, pattern, engine: :elixir) == 2
+    end
+
+    property "a graph is isomorphic to a shuffled relabelling of itself" do
+      check all(g <- Grafi.Test.Generators.graph(max_vertices: 30, max_edges: 60, weights: false)) do
+        h = shuffled_copy(g, :erlang.phash2(g))
+        assert Isomorphism.isomorphic?(g, h, engine: :elixir)
+        assert {:ok, mapping} = Isomorphism.isomorphism(g, h, engine: :elixir)
+        assert valid_iso?(g, h, mapping)
+      end
+    end
+
+    # Colour refinement splits random 3-regular graphs, which degrees cannot,
+    # so the search barely backtracks: 4x the vertices takes about 5x as
+    # long. Without it the search is exponential (n = 100 ran > 60 s).
+    @tag :slow
+    test "isomorphic?/3 scales near-linearly on random 3-regular graphs" do
+      best = fn n ->
+        g = Grafi.Generators.random_regular(n, 3, seed: 1, type: :undirected)
+        h = shuffled_copy(g, n)
+        assert Isomorphism.isomorphic?(g, h, engine: :elixir, timeout: 30_000)
+
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+
+            {t, true} =
+              :timer.tc(fn -> Isomorphism.isomorphic?(g, h, engine: :elixir, timeout: 30_000) end)
+
+            max(t, 1_000)
+          end
+        )
+      end
+
+      {t_small, t_large} = {best.(126), best.(504)}
+
+      assert t_large < 8 * t_small,
+             "4x the vertices took #{Float.round(t_large / t_small, 1)}x as long"
+    end
+  end
+
   describe "resolve_timeout/2 (the config :grafi, vf2_timeout path)" do
     test "an explicit :timeout wins over any config value, even an invalid one" do
       assert Isomorphism.resolve_timeout([timeout: 50], 1_000) == 50
@@ -289,5 +379,98 @@ defmodule Grafi.Algo.IsomorphismTest do
       assert Isomorphism.resolve_timeout([timeout: 1], nil) == 1
       assert Isomorphism.resolve_timeout([timeout: 0xFFFF_FFFF], nil) == 0xFFFF_FFFF
     end
+  end
+
+  # ── Brute force and generators ───────────────────────────────────────
+
+  # Two graphs without parallel edges (and with self-loops if `loops?`) of
+  # the same type, on 1..max1 and 1..max2 vertices.
+  defp small_graph_pair(max1, max2, loops? \\ true) do
+    gen all(
+          type <- member_of([:undirected, :directed]),
+          g1 <- small_graph(type, max1, loops?),
+          g2 <- small_graph(type, max2, loops?)
+        ) do
+      {g1, g2}
+    end
+  end
+
+  defp small_graph(type, max_n, loops?) do
+    gen all(
+          n <- integer(1..max_n),
+          edges <- list_of({integer(0..(n - 1)), integer(0..(n - 1))}, max_length: 10)
+        ) do
+      edges =
+        if type == :undirected,
+          do: Enum.map(edges, fn {a, b} -> {min(a, b), max(a, b)} end),
+          else: edges
+
+      edges = if loops?, do: edges, else: Enum.reject(edges, fn {a, b} -> a == b end)
+
+      Graph.new(type: type)
+      |> Graph.add_vertices(Enum.to_list(0..(n - 1)))
+      |> Graph.add_edges(Enum.uniq(edges))
+    end
+  end
+
+  # The arcs of g under `rename`, both ways round for an undirected edge.
+  defp arcs(g, rename) do
+    for e <- Graph.edges(g),
+        arc <-
+          if(g.type == :undirected, do: [{e.from, e.to}, {e.to, e.from}], else: [{e.from, e.to}]),
+        into: MapSet.new() do
+      {rename.(elem(arc, 0)), rename.(elem(arc, 1))}
+    end
+  end
+
+  defp brute_isomorphic?(g1, g2) do
+    v1 = Graph.vertices(g1)
+    target = arcs(g2, & &1)
+
+    length(v1) == Graph.num_vertices(g2) and Graph.num_edges(g1) == Graph.num_edges(g2) and
+      Enum.any?(permutations(Graph.vertices(g2)), fn perm ->
+        m = Map.new(Enum.zip(v1, perm))
+        arcs(g1, &Map.fetch!(m, &1)) == target
+      end)
+  end
+
+  defp brute_subiso_count(host, pattern) do
+    host_arcs = arcs(host, & &1)
+    pv = Graph.vertices(pattern)
+
+    host
+    |> Graph.vertices()
+    |> injections(length(pv))
+    |> Enum.count(fn image ->
+      m = Map.new(Enum.zip(pv, image))
+      pattern |> arcs(&Map.fetch!(m, &1)) |> MapSet.subset?(host_arcs)
+    end)
+  end
+
+  defp permutations(list), do: injections(list, length(list))
+
+  # Every ordered choice of k distinct elements of list.
+  defp injections(_list, 0), do: [[]]
+
+  defp injections(list, k) do
+    for x <- list, rest <- injections(list -- [x], k - 1), do: [x | rest]
+  end
+
+  # g with its vertices renamed by a random permutation, and its vertices
+  # and edges inserted in a random order.
+  defp shuffled_copy(g, seed) do
+    :rand.seed(:exsss, {seed, 17, 29})
+    vs = Graph.vertices(g)
+    rename = vs |> Enum.zip(Enum.shuffle(vs)) |> Map.new(fn {a, b} -> {a, {:copy, b}} end)
+
+    base =
+      vs
+      |> Enum.shuffle()
+      |> Enum.reduce(Graph.new(type: g.type), &Graph.add_vertex(&2, rename[&1]))
+
+    g
+    |> Graph.edges()
+    |> Enum.shuffle()
+    |> Enum.reduce(base, &Graph.add_edge(&2, rename[&1.from], rename[&1.to]))
   end
 end

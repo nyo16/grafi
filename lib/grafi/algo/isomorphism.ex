@@ -17,9 +17,12 @@ defmodule Grafi.Algo.Isomorphism do
   With `:auto`, all functions use igraph's `igraph_isomorphic_vf2` /
   `igraph_subisomorphic_vf2` family whenever the NIF is available, at any
   graph size. Otherwise a pure-Elixir, VF2-style backtracking search runs.
-  It uses the same feasibility pruning ideas (degree-based candidate
-  filtering, look-ahead via 1-neighbour terminal sets) but is intended for
-  small graphs only (≲ 12 vertices).
+  It extends the mapping along pattern edges, so candidates come from the
+  neighbourhood of an already-mapped vertex, and prunes by degree
+  (sub-isomorphism) or by colour refinement over both graphs
+  (isomorphism). Random sparse graphs with thousands of vertices are
+  quick, but graphs that colour refinement cannot split, such as
+  non-isomorphic strongly regular graphs, can take exponential time.
 
   ## Timeouts
 
@@ -60,6 +63,10 @@ defmodule Grafi.Algo.Isomorphism do
     * Multi-edges: the igraph engine matches edge multiplicities, while the
       Elixir engine treats parallel edges as a single adjacency. The engines
       can disagree on multigraphs.
+    * Self-loops: the Elixir engine maps a pattern self-loop only onto a host
+      self-loop. igraph's VF2 rejects graphs with self-loops, so the NIF
+      engine returns `{:error, {:igraph, message}}` for them (the `?`
+      predicates raise `Grafi.NIFError`).
 
   ## Examples
 
@@ -83,6 +90,10 @@ defmodule Grafi.Algo.Isomorphism do
   @default_vf2_timeout :infinity
   # The largest timeout the NIF can turn into a steady_clock deadline.
   @max_timeout 0xFFFF_FFFF
+  # Colour refinement (Elixir engine, full isomorphism): seed depth and
+  # round budget, see `refine/3`.
+  @profile_depth 3
+  @refine_rounds_per_bit 2
 
   # ── Public API ────────────────────────────────────────────────────────
 
@@ -404,21 +415,27 @@ defmodule Grafi.Algo.Isomorphism do
 
   # ── Pure-Elixir VF2-style backtracking fallback ───────────────────────
   #
-  # This is a simpler version of VF2: state-space search with degree-based
-  # feasibility pruning and a "candidate from the next mapped vertex's
-  # neighbourhood" heuristic to keep the branching factor down. It also
-  # falls back to the unmapped pool when no neighbour candidate exists.
-  # Adequate for small graphs (≤ ~12 vertices).
+  # A simpler version of VF2: state-space search over a pattern order
+  # computed once (see `search_order/3`). Every vertex after a component
+  # root has an earlier neighbour, its BFS parent, so its candidates are the
+  # host neighbours of the parent's image rather than the whole host. Each
+  # step also lists the pattern edges to earlier vertices, so the
+  # consistency check reads only those.
+  #
+  # Every vertex has a key that a match must respect:
+  #   * sub-isomorphism: `{out_degree, in_degree}`, and the host vertex's
+  #     degrees must dominate the pattern vertex's;
+  #   * full isomorphism: a colour from `refine/3` (colour refinement over
+  #     both graphs), which must be equal. Colours subsume degrees and split
+  #     regular graphs that degrees cannot.
   #
   # The search state that never changes lives in a context map:
-  #   pat_vs   : vertices of the pattern (the smaller graph)
-  #   host_vs  : vertices of the host (the larger or same-size graph)
-  #   pat_adj  : adjacency map for pat_vs
-  #   host_adj : adjacency map for host_vs
-  #   dir?     : edge mode
-  #   strict?  : true for full isomorphism (degrees must match exactly),
-  #              false for sub-isomorphism (host degree must dominate)
-  #   deadline : monotonic millisecond deadline, or :infinity
+  #   host_vs    : vertices of the host (the larger or same-size graph)
+  #   host_adj   : %{h => {out :: MapSet, in :: MapSet}}
+  #   host_key   : %{h => key}
+  #   host_class : %{key => [h]} (full isomorphism only; root candidates)
+  #   strict?    : true for full isomorphism, false for sub-isomorphism
+  #   deadline   : monotonic millisecond deadline, or :infinity
 
   defp elixir_isomorphic?(g1, g2, deadline) do
     degree_seq(g1) == degree_seq(g2) and find_one(g1, g2, true, deadline) != nil
@@ -436,35 +453,49 @@ defmodule Grafi.Algo.Isomorphism do
   defp find_one_subiso(graph, pattern, deadline), do: find_one(pattern, graph, false, deadline)
 
   defp elixir_count_subgraph_isomorphisms(graph, pattern, deadline) do
-    backtrack_count(context(pattern, graph, false, deadline), %{}, MapSet.new())
+    {:ok, steps, ctx} = prepare(pattern, graph, false, deadline)
+    backtrack_count(steps, %{}, MapSet.new(), ctx)
   end
 
   defp find_one(pattern, host, strict?, deadline) do
-    backtrack_one(context(pattern, host, strict?, deadline), %{}, MapSet.new())
+    case prepare(pattern, host, strict?, deadline) do
+      {:ok, steps, ctx} -> backtrack_one(steps, %{}, MapSet.new(), ctx)
+      :mismatch -> nil
+    end
   end
 
-  defp context(pattern, host, strict?, deadline) do
-    pat_vs = Graph.vertices(pattern)
-    host_vs = Graph.vertices(host)
+  # Returns `{:ok, steps, ctx}`, or `:mismatch` when the colour classes
+  # already rule out an isomorphism.
+  defp prepare(pattern, host, strict?, deadline) do
+    pat_adj = adjacency(pattern)
+    host_adj = adjacency(host)
+    dir? = pattern.type == :directed
 
-    %{
-      pat_vs: pat_vs,
-      host_vs: host_vs,
-      pat_adj: adjacency(pattern, pat_vs),
-      host_adj: adjacency(host, host_vs),
-      dir?: pattern.type == :directed,
-      strict?: strict?,
-      deadline: deadline
-    }
+    with {:ok, pat_key, host_key} <- keys(pat_adj, host_adj, dir?, strict?) do
+      ctx = %{
+        host_vs: Graph.vertices(host),
+        host_adj: host_adj,
+        host_key: host_key,
+        host_class: if(strict?, do: Enum.group_by(host_key, &elem(&1, 1), &elem(&1, 0))),
+        strict?: strict?,
+        deadline: deadline
+      }
+
+      {:ok, search_order(pat_adj, pat_key, dir?), ctx}
+    end
   end
+
+  defp keys(pat_adj, host_adj, _dir?, false), do: {:ok, degrees(pat_adj), degrees(host_adj)}
+  defp keys(pat_adj, host_adj, dir?, true), do: refine(pat_adj, host_adj, dir?)
+
+  defp degrees(adj),
+    do: Map.new(adj, fn {v, {out, in_}} -> {v, {MapSet.size(out), MapSet.size(in_)}} end)
 
   defp check_deadline!(%{deadline: :infinity}), do: :ok
 
   defp check_deadline!(%{deadline: deadline}) do
     if System.monotonic_time(:millisecond) >= deadline, do: throw(@timeout_throw), else: :ok
   end
-
-  # ── Internal: backtracking ───────────────────────────────────────────
 
   defp degree_seq(%Graph{type: :undirected} = g) do
     Graph.vertices(g) |> Enum.map(&Graph.degree(g, &1)) |> Enum.sort()
@@ -476,110 +507,224 @@ defmodule Grafi.Algo.Isomorphism do
     |> Enum.sort()
   end
 
-  # adjacency: %{v => %{out: MapSet, in: MapSet}}
-  defp adjacency(g, vs) do
-    Map.new(vs, fn v ->
-      {v,
-       %{
-         out: MapSet.new(Graph.out_neighbors(g, v)),
-         in: MapSet.new(Graph.in_neighbors(g, v))
-       }}
+  # %{v => {out :: MapSet, in :: MapSet}}. Undirected graphs list every
+  # neighbour in both sets.
+  defp adjacency(g) do
+    Map.new(Graph.vertices(g), fn v ->
+      {v, {MapSet.new(Graph.out_neighbors(g, v)), MapSet.new(Graph.in_neighbors(g, v))}}
     end)
   end
+
+  # ── Internal: search order ───────────────────────────────────────────
+
+  # The pattern vertices in search order, as steps
+  # `{v, parent, back_out, back_in, loop?, key}`:
+  #
+  #   * the order is a BFS of each component, rooted at the vertex with the
+  #     rarest key (then the highest degree), visiting neighbours in the
+  #     same order, so the most constrained vertices come first;
+  #   * `parent` is `nil` for a root, else `{p, :out}` (edge p -> v, so v's
+  #     image is an out-neighbour of p's) or `{p, :in}` (edge v -> p);
+  #   * `back_out`/`back_in` are v's out-/in-neighbours earlier in the
+  #     order, whose images must be out-/in-neighbours of v's image
+  #     (`back_in` is empty for undirected graphs, whose sets are equal);
+  #   * `loop?` is whether v has a self-loop.
+  defp search_order(pat_adj, pat_key, dir?) do
+    key_count = pat_key |> Map.values() |> Enum.frequencies()
+
+    rank =
+      Map.new(pat_adj, fn {v, {o, i}} ->
+        {v, {Map.fetch!(key_count, Map.fetch!(pat_key, v)), -(MapSet.size(o) + MapSet.size(i))}}
+      end)
+
+    {order, _seen} =
+      pat_adj
+      |> Map.keys()
+      |> Enum.sort_by(&Map.fetch!(rank, &1))
+      |> Enum.reduce({[], MapSet.new()}, fn root, {order, seen} ->
+        if MapSet.member?(seen, root),
+          do: {order, seen},
+          else:
+            bfs_order(:queue.from_list([{root, nil}]), MapSet.put(seen, root), order, pat_adj, rank)
+      end)
+
+    order = Enum.reverse(order)
+    pos = order |> Enum.with_index() |> Map.new(fn {{v, _parent}, i} -> {v, i} end)
+
+    Enum.map(order, fn {v, parent} ->
+      {out, in_} = Map.fetch!(pat_adj, v)
+      earlier? = &(&1 != v and Map.fetch!(pos, &1) < Map.fetch!(pos, v))
+      back_out = Enum.filter(out, earlier?)
+      back_in = if dir?, do: Enum.filter(in_, earlier?), else: []
+      {v, parent, back_out, back_in, MapSet.member?(out, v), Map.fetch!(pat_key, v)}
+    end)
+  end
+
+  defp bfs_order(queue, seen, order, pat_adj, rank) do
+    case :queue.out(queue) do
+      {:empty, _} ->
+        {order, seen}
+
+      {{:value, {v, _parent} = entry}, queue} ->
+        {out, in_} = Map.fetch!(pat_adj, v)
+
+        next =
+          out
+          |> MapSet.union(in_)
+          |> Enum.reject(&MapSet.member?(seen, &1))
+          |> Enum.sort_by(&Map.fetch!(rank, &1))
+
+        queue =
+          Enum.reduce(next, queue, fn u, q ->
+            :queue.in({u, {v, if(MapSet.member?(out, u), do: :out, else: :in)}}, q)
+          end)
+
+        bfs_order(queue, Enum.into(next, seen), [entry | order], pat_adj, rank)
+    end
+  end
+
+  # ── Internal: backtracking ───────────────────────────────────────────
 
   # Searches for a single witness mapping (pattern vertex => host vertex), or
   # returns nil.
-  defp backtrack_one(ctx, mapping, used) do
+  defp backtrack_one([], mapping, _used, _ctx), do: mapping
+
+  defp backtrack_one([{v, _, _, _, _, _} = step | rest], mapping, used, ctx) do
     check_deadline!(ctx)
 
-    case pick_next_pattern_vertex(ctx.pat_vs, mapping) do
-      nil ->
-        mapping
-
-      v ->
-        Enum.find_value(candidates_for(v, mapping, used, ctx), fn h ->
-          if consistent?(v, h, mapping, ctx),
-            do: backtrack_one(ctx, Map.put(mapping, v, h), MapSet.put(used, h)),
-            else: nil
-        end)
-    end
-  end
-
-  defp backtrack_count(ctx, mapping, used) do
-    check_deadline!(ctx)
-
-    case pick_next_pattern_vertex(ctx.pat_vs, mapping) do
-      nil ->
-        1
-
-      v ->
-        Enum.reduce(candidates_for(v, mapping, used, ctx), 0, fn h, acc ->
-          if consistent?(v, h, mapping, ctx),
-            do: acc + backtrack_count(ctx, Map.put(mapping, v, h), MapSet.put(used, h)),
-            else: acc
-        end)
-    end
-  end
-
-  # Next pattern vertex to map: the first unmapped one, or nil when every
-  # pattern vertex is mapped.
-  defp pick_next_pattern_vertex(pat_vs, mapping) do
-    Enum.find(pat_vs, &(not Map.has_key?(mapping, &1)))
-  end
-
-  defp candidates_for(v, mapping, used, ctx) do
-    %{host_vs: host_vs, host_adj: host_adj, pat_adj: pat_adj, strict?: strict?} = ctx
-    pat_deg_out = MapSet.size(pat_adj[v].out)
-    pat_deg_in = MapSet.size(pat_adj[v].in)
-
-    pool =
-      Enum.filter(host_vs, fn h ->
-        ho_out = MapSet.size(host_adj[h].out)
-        ho_in = MapSet.size(host_adj[h].in)
-
-        not MapSet.member?(used, h) and
-          if strict? do
-            # Full isomorphism: degrees must match exactly.
-            ho_out == pat_deg_out and ho_in == pat_deg_in
-          else
-            # Sub-isomorphism: host must dominate pattern degree.
-            ho_out >= pat_deg_out and ho_in >= pat_deg_in
-          end
-      end)
-
-    # If some neighbour of v is already mapped, restrict candidates to
-    # neighbours of that mapped host vertex. The consistency check would
-    # still reject inconsistent picks, but filtering early prunes the search.
-    mapped_neighbour_in_pattern =
-      Enum.find(MapSet.union(pat_adj[v].out, pat_adj[v].in), &Map.has_key?(mapping, &1))
-
-    case mapped_neighbour_in_pattern do
-      nil ->
-        pool
-
-      pu ->
-        h_pu = mapping[pu]
-        constraint = MapSet.union(host_adj[h_pu].out, host_adj[h_pu].in)
-        Enum.filter(pool, &MapSet.member?(constraint, &1))
-    end
-  end
-
-  # For each already-mapped pattern neighbour u of v, mapping[u] must be a
-  # corresponding neighbour of h.
-  defp consistent?(v, h, mapping, %{pat_adj: pat_adj, host_adj: host_adj, dir?: dir?}) do
-    pa = pat_adj[v]
-    ha = host_adj[h]
-
-    mapped_within?(pa.out, ha.out, mapping) and
-      (not dir? or mapped_within?(pa.in, ha.in, mapping))
-  end
-
-  defp mapped_within?(pattern_neighbours, host_neighbours, mapping) do
-    Enum.all?(pattern_neighbours, fn u ->
-      case Map.fetch(mapping, u) do
-        {:ok, hu} -> MapSet.member?(host_neighbours, hu)
-        :error -> true
-      end
+    Enum.find_value(candidates(step, mapping, ctx), fn h ->
+      if feasible?(step, h, mapping, used, ctx),
+        do: backtrack_one(rest, Map.put(mapping, v, h), MapSet.put(used, h), ctx),
+        else: nil
     end)
   end
+
+  defp backtrack_count([], _mapping, _used, _ctx), do: 1
+
+  defp backtrack_count([{v, _, _, _, _, _} = step | rest], mapping, used, ctx) do
+    check_deadline!(ctx)
+
+    Enum.reduce(candidates(step, mapping, ctx), 0, fn h, acc ->
+      if feasible?(step, h, mapping, used, ctx),
+        do: acc + backtrack_count(rest, Map.put(mapping, v, h), MapSet.put(used, h), ctx),
+        else: acc
+    end)
+  end
+
+  # A root may map anywhere; any other vertex must map next to its parent's
+  # image, along the parent edge's direction.
+  defp candidates({_v, nil, _, _, _, key}, _mapping, %{strict?: true} = ctx),
+    do: Map.get(ctx.host_class, key, [])
+
+  defp candidates({_v, nil, _, _, _, _}, _mapping, ctx), do: ctx.host_vs
+
+  defp candidates({_v, {p, dir}, _, _, _, _}, mapping, ctx) do
+    {out, in_} = Map.fetch!(ctx.host_adj, Map.fetch!(mapping, p))
+    if dir == :out, do: out, else: in_
+  end
+
+  defp feasible?({_v, _parent, back_out, back_in, loop?, key}, h, mapping, used, ctx) do
+    {h_out, h_in} = Map.fetch!(ctx.host_adj, h)
+
+    not MapSet.member?(used, h) and
+      key_fits?(Map.fetch!(ctx.host_key, h), key, ctx.strict?) and
+      (not loop? or MapSet.member?(h_out, h)) and
+      Enum.all?(back_out, &MapSet.member?(h_out, Map.fetch!(mapping, &1))) and
+      Enum.all?(back_in, &MapSet.member?(h_in, Map.fetch!(mapping, &1)))
+  end
+
+  # Full isomorphism: colours must be equal. Sub-isomorphism: the host
+  # degrees must dominate the pattern degrees.
+  defp key_fits?(host_colour, pat_colour, true), do: host_colour == pat_colour
+
+  defp key_fits?({h_out, h_in}, {p_out, p_in}, false), do: h_out >= p_out and h_in >= p_in
+
+  # ── Internal: colour refinement ──────────────────────────────────────
+
+  # Colour refinement (1-dimensional Weisfeiler–Leman) run on both graphs
+  # at once, so equal colours mean the same thing in each: an isomorphism
+  # can only map a vertex to one of the same colour. The seed colour is
+  # the degrees, the self-loop flag, and the number of vertices at
+  # distance 1..`@profile_depth` (ignoring direction), which also splits
+  # regular graphs; each round then appends the sorted colours of the out-
+  # (and, if directed, in-) neighbours. Stops when a round splits no class,
+  # or after `@refine_rounds_per_bit` rounds per bit of the vertex count
+  # (any round's colours are valid, later ones only prune more).
+  #
+  # Returns `{:ok, colours1, colours2}`, or `:mismatch` when the two graphs
+  # have different numbers of vertices of some colour.
+  defp refine(adj1, adj2, dir?) do
+    max_rounds = @refine_rounds_per_bit * bit_length(map_size(adj1))
+    {c1, c2, classes} = intern(seed_colours(adj1), seed_colours(adj2))
+    refine(c1, c2, classes, adj1, adj2, dir?, max_rounds)
+  end
+
+  defp refine(c1, c2, classes, adj1, adj2, dir?, rounds_left) do
+    cond do
+      histogram(c1) != histogram(c2) ->
+        :mismatch
+
+      rounds_left == 0 ->
+        {:ok, c1, c2}
+
+      true ->
+        case intern(signatures(c1, adj1, dir?), signatures(c2, adj2, dir?)) do
+          {_, _, ^classes} -> {:ok, c1, c2}
+          {d1, d2, more} -> refine(d1, d2, more, adj1, adj2, dir?, rounds_left - 1)
+        end
+    end
+  end
+
+  defp seed_colours(adj) do
+    undirected = Map.new(adj, fn {v, {out, in_}} -> {v, MapSet.to_list(MapSet.union(out, in_))} end)
+
+    Map.new(adj, fn {v, {out, in_}} ->
+      {v, {MapSet.size(out), MapSet.size(in_), MapSet.member?(out, v), layer_sizes(undirected, v)}}
+    end)
+  end
+
+  # The number of vertices at distance 1, 2, .. @profile_depth from v.
+  defp layer_sizes(undirected, v) do
+    {sizes, _frontier, _seen} =
+      Enum.reduce(1..@profile_depth, {[], [v], MapSet.new([v])}, fn _, {sizes, frontier, seen} ->
+        next =
+          frontier
+          |> Enum.flat_map(&Map.fetch!(undirected, &1))
+          |> Enum.reject(&MapSet.member?(seen, &1))
+          |> Enum.uniq()
+
+        {[length(next) | sizes], next, Enum.into(next, seen)}
+      end)
+
+    Enum.reverse(sizes)
+  end
+
+  defp signatures(colours, adj, dir?) do
+    Map.new(adj, fn {v, {out, in_}} ->
+      in_colours = if dir?, do: neighbour_colours(colours, in_), else: []
+      {v, {Map.fetch!(colours, v), neighbour_colours(colours, out), in_colours}}
+    end)
+  end
+
+  defp neighbour_colours(colours, vs), do: vs |> Enum.map(&Map.fetch!(colours, &1)) |> Enum.sort()
+
+  # Replaces each signature by its rank among the distinct signatures of
+  # both graphs. Signatures hold no vertex ids, so the ranks agree across
+  # the graphs. Also returns the number of distinct signatures.
+  defp intern(sig1, sig2) do
+    ids =
+      (Map.values(sig1) ++ Map.values(sig2))
+      |> Enum.uniq()
+      |> Enum.sort()
+      |> Enum.with_index()
+      |> Map.new()
+
+    rename = fn sigs -> Map.new(sigs, fn {v, sig} -> {v, Map.fetch!(ids, sig)} end) end
+    {rename.(sig1), rename.(sig2), map_size(ids)}
+  end
+
+  defp histogram(colours), do: colours |> Map.values() |> Enum.frequencies()
+
+  defp bit_length(n) when n < 2, do: 1
+  defp bit_length(n), do: 1 + bit_length(div(n, 2))
 end
