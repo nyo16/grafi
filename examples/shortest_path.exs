@@ -26,7 +26,7 @@ case Grafi.shortest_path(graph, "Athens", "Olympia") do
     IO.puts("  " <> Enum.join(path, " → "))
     IO.puts("  total: #{cost} km")
 
-  :no_path ->
+  {:error, :no_path} ->
     IO.puts("No route from Athens to Olympia.")
 end
 
@@ -36,6 +36,6 @@ case Grafi.shortest_path(graph, "Athens", "Heraklion") do
   {:ok, {path, cost}} ->
     IO.puts("Athens → Heraklion: #{Enum.join(path, " → ")} (#{cost} km)")
 
-  :no_path ->
-    IO.puts("Athens → Heraklion: :no_path (Crete is an island)")
+  {:error, :no_path} ->
+    IO.puts("Athens → Heraklion: no path (Crete is an island)")
 end

@@ -28,7 +28,7 @@ case Grafi.Algo.Cycles.find_cycle(graph) do
   {:ok, cycle} ->
     IO.puts("One cycle: " <> Enum.join(cycle, " → "))
 
-  :no_cycle ->
+  {:error, :no_cycle} ->
     IO.puts("No cycle.")
 end
 

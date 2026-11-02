@@ -43,14 +43,14 @@ case sp_result do
     IO.puts("  hops:   #{length(path) - 1}")
     IO.puts("  dist:   #{Float.round(dist, 3)}")
 
-  :no_path ->
-    IO.puts("shortest_path #{source} → #{target}: :no_path (#{sp_us} µs)")
+  {:error, :no_path} ->
+    IO.puts("shortest_path #{source} → #{target}: no path (#{sp_us} µs)")
 end
 
 IO.puts("")
 
 {pr_us, ranks} =
-  :timer.tc(fn -> Grafi.pagerank(graph, iterations: 30) end)
+  :timer.tc(fn -> Grafi.pagerank(graph, max_iter: 30) end)
 
 {top_v, top_r} = Enum.max_by(ranks, fn {_, r} -> r end)
 
