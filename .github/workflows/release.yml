@@ -1,0 +1,321 @@
+name: Release
+
+# Builds the precompiled NIF for each target (static igraph), checks and
+# smoke-tests it, and, for a v* tag push after the licence sign-off, publishes
+# it to the GitHub release with checksum.exs, provenance attestations and the
+# corresponding source. See RELEASING.md and NOTICE.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  # Dry run (build, check, smoke; never uploads) on PRs touching the native build.
+  pull_request:
+    branches: [main, master]
+    paths:
+      - c_src/**
+      - Makefile
+      - mix.exs
+      - mix.lock
+      - lib/grafi/nif.ex
+      - NOTICE
+      - LICENSES/**
+      - .github/igraph.env
+      - .github/scripts/**
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a tag build half-way; superseded PR runs can go.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Artefacts are tagged with the build runtime's NIF version. OTP 26-28 is
+  # NIF 2.17 (mix.exs make_precompiler_nif_versions); OTP 29 loads it too.
+  OTP_VERSION: "28"
+  ELIXIR_VERSION: "1.19"
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds run in manylinux_2_28 (glibc 2.28: RHEL 8+, Debian 11+,
+          # Ubuntu 20.04+); see .github/scripts/build-release-nif.sh.
+          - runner: ubuntu-24.04
+            target: x86_64-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            macos_target: "11.0"
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            macos_target: "10.15"
+    env:
+      MIX_ENV: prod
+      ELIXIR_MAKE_CACHE_DIR: ${{ github.workspace }}/elixir_make_cache
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the tag matches @version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/^  @version "\(.*\)"$/\1/p' mix.exs)
+          case "$version" in
+            *-dev*) echo "mix.exs @version $version is a development version; bump it before tagging" >&2; exit 1 ;;
+          esac
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match mix.exs @version $version" >&2
+            exit 1
+          fi
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      - name: Fetch dependencies
+        run: mix deps.get
+
+      - name: Build static igraph and the NIF
+        run: .github/scripts/build-release-nif.sh "$RUNNER_TEMP/nif"
+
+      - name: Package the artefact
+        run: .github/scripts/pack-nif-artefact.sh "${{ matrix.target }}" "$RUNNER_TEMP/nif" "$ELIXIR_MAKE_CACHE_DIR"
+
+      - name: Check exports and platform floor
+        run: .github/scripts/check-nif-artefact.sh "$ELIXIR_MAKE_CACHE_DIR"/grafi-nif-*.tar.gz
+
+      # A package-like copy (no .git, so no forced source build) consumed by a
+      # scratch app on a runner without igraph: elixir_make must take the
+      # artefact from the cache, verify its checksum and load it.
+      - name: Smoke-test the artefact in a consumer
+        env:
+          MIX_ENV: dev
+        run: |
+          src="${RUNNER_TEMP}/grafi_src"
+          mkdir -p "$src"
+          git archive HEAD | tar -x -C "$src"
+          {
+            echo "%{"
+            for f in "$ELIXIR_MAKE_CACHE_DIR"/*.tar.gz.sha256; do
+              read -r sum name < "$f"
+              echo "  \"$name\" => \"sha256:$sum\","
+            done
+            echo "}"
+          } > "$src/checksum.exs"
+          cat "$src/checksum.exs"
+          # The smoke must exercise the artefact, so a -dev version (which
+          # elixir_make always force-builds) is pinned to its release form.
+          sed -i.bak 's/^  @version "\(.*\)-dev"$/  @version "\1"/' "$src/mix.exs"
+          cd "$RUNNER_TEMP"
+          mix new consumer
+          cd consumer
+          cat > mix.exs <<EOF
+          defmodule Consumer.MixProject do
+            use Mix.Project
+            def project, do: [app: :consumer, version: "0.1.0", deps: [{:grafi, path: "$src"}]]
+            def application, do: [extra_applications: [:logger]]
+          end
+          EOF
+          mix deps.get
+          mix compile
+          mix run -e '
+            unless Grafi.NIF.available?(), do: Mix.raise("the precompiled NIF did not load")
+            unless File.regular?(Application.app_dir(:grafi, "priv/grafi_nif.licenses/igraph/COPYING")),
+              do: Mix.raise("the artefact licence files did not reach priv/")
+            g = Grafi.Generators.erdos_renyi(600, 0.01, seed: 1)
+            sum = g |> Grafi.Algo.Centrality.pagerank(engine: :nif) |> Map.values() |> Enum.sum()
+            if abs(sum - 1.0) > 1.0e-9, do: Mix.raise("pagerank sums to #{sum}")
+            IO.puts("precompiled NIF OK, pagerank sum #{sum}")
+          '
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nif-${{ matrix.target }}
+          path: |
+            ${{ env.ELIXIR_MAKE_CACHE_DIR }}/*.tar.gz
+            ${{ env.ELIXIR_MAKE_CACHE_DIR }}/*.tar.gz.sha256
+          if-no-files-found: error
+
+  # Only a tag push publishes: never a manual run or a PR. The `release`
+  # environment should have required reviewers (RELEASING.md), and nothing is
+  # uploaded until the licence review sets RELEASE_LICENSE_APPROVED.
+  # Existing assets are never replaced: a bad artefact means a new version.
+  upload:
+    name: Publish to the GitHub release
+    needs: build
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      vars.RELEASE_LICENSE_APPROVED == 'true'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: nif-*
+          path: artefacts
+          merge-multiple: true
+
+      # checksum.exs comes from the bytes the build jobs produced, not from
+      # whatever later sits on the release page.
+      - name: Verify the artefacts and write checksum.exs
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd artefacts
+          shopt -s nullglob
+          archives=(*.tar.gz)
+          [ "${#archives[@]}" -eq 4 ] || { echo "expected 4 artefacts, got ${#archives[@]}" >&2; exit 1; }
+          # Exactly the names consumers request (NIF 2.17, mix.exs targets).
+          for target in x86_64-linux-gnu aarch64-linux-gnu aarch64-apple-darwin x86_64-apple-darwin; do
+            f="grafi-nif-2.17-${target}-${TAG#v}.tar.gz"
+            [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }
+          done
+          sha256sum -c ./*.tar.gz.sha256
+          {
+            echo "%{"
+            for f in "${archives[@]}"; do
+              echo "  \"$f\" => \"sha256:$(sha256sum "$f" | cut -d' ' -f1)\","
+            done
+            echo "}"
+          } > checksum.exs
+          cat checksum.exs
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: artefacts/*.tar.gz
+
+      # Corresponding source for the statically linked igraph, published next
+      # to the binaries (GPL).
+      - name: Fetch the igraph source
+        run: |
+          source .github/igraph.env
+          curl -fsSL -o "igraph-${IGRAPH_VERSION}.tar.gz" \
+            "https://github.com/igraph/igraph/releases/download/${IGRAPH_VERSION}/igraph-${IGRAPH_VERSION}.tar.gz"
+          echo "${IGRAPH_SHA256}  igraph-${IGRAPH_VERSION}.tar.gz" | sha256sum -c -
+
+      - name: Write the release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          source .github/igraph.env
+          cat > notes.md <<EOF
+          Changes: see [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md).
+
+          ## Precompiled NIF artefacts
+
+          \`grafi-nif-*.tar.gz\` statically link igraph ${IGRAPH_VERSION} and are distributed under the
+          **GPL-3.0-or-later** (the Grafi source package itself is Apache-2.0). Each archive contains the
+          NIF, \`grafi_nif.NOTICE\`, the GPL-3.0 and Apache-2.0 texts, and igraph's licence files
+          (\`grafi_nif.licenses/igraph/\`, including those of the vendored code compiled in).
+          \`checksum.exs\` lists their SHA-256; build provenance:
+          \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY} --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/release.yml\`.
+
+          Corresponding source:
+          - Grafi: https://github.com/${GITHUB_REPOSITORY}/tree/${TAG} (build: \`.github/scripts/\`, \`.github/workflows/release.yml\`)
+          - igraph ${IGRAPH_VERSION}: \`igraph-${IGRAPH_VERSION}.tar.gz\` attached to this release
+            (SHA-256 ${IGRAPH_SHA256}), from https://github.com/igraph/igraph/releases/tag/${IGRAPH_VERSION}
+          EOF
+          cat notes.md
+
+      # One `gh release create` with the assets attached: gh creates a draft,
+      # uploads, then publishes. With immutable releases nothing can be added
+      # after publishing, so an existing release is never reused.
+      - name: Create the release with its assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          source .github/igraph.env
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; publish a new version instead" >&2
+            exit 1
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes-file notes.md \
+            artefacts/*.tar.gz artefacts/*.tar.gz.sha256 artefacts/checksum.exs \
+            NOTICE "igraph-${IGRAPH_VERSION}.tar.gz"
+
+  # End to end, as a Hex consumer: download from the release URL, verify
+  # against the published checksum.exs, and load it on every target, on
+  # OTP 26 (NIF 2.17) and OTP 29 (NIF 2.18 falling back to the 2.17
+  # artefact). No igraph installed.
+  verify-published:
+    name: Verify published artefact (OTP ${{ matrix.otp }}, ${{ matrix.runner }})
+    needs: upload
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            otp: "26"
+            elixir: "1.18"
+          - runner: ubuntu-24.04
+            otp: "29"
+            elixir: "1.20"
+          - runner: ubuntu-24.04-arm
+            otp: "28"
+            elixir: "1.19"
+          - runner: macos-15
+            otp: "28"
+            elixir: "1.19"
+          - runner: macos-15-intel
+            otp: "28"
+            elixir: "1.19"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      - name: Consume the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          src="${RUNNER_TEMP}/grafi_src"
+          mkdir -p "$src"
+          git archive HEAD | tar -x -C "$src"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksum.exs --dir "$src"
+          cd "$RUNNER_TEMP"
+          mix new consumer
+          cd consumer
+          cat > mix.exs <<EOF
+          defmodule Consumer.MixProject do
+            use Mix.Project
+            def project, do: [app: :consumer, version: "0.1.0", deps: [{:grafi, path: "$src"}]]
+            def application, do: [extra_applications: [:logger]]
+          end
+          EOF
+          mix deps.get
+          mix compile 2>&1 | tee compile.log
+          grep -q "Downloading precompiled NIF" compile.log || { echo "did not download the artefact" >&2; exit 1; }
+          mix run -e '
+            unless Grafi.NIF.available?(), do: Mix.raise("the published NIF did not load")
+            g = Grafi.Generators.erdos_renyi(600, 0.01, seed: 1)
+            sum = g |> Grafi.Algo.Centrality.pagerank(engine: :nif) |> Map.values() |> Enum.sum()
+            if abs(sum - 1.0) > 1.0e-9, do: Mix.raise("pagerank sums to #{sum}")
+          '

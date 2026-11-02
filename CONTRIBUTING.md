@@ -8,40 +8,58 @@ patches, new algorithms, and documentation are all fair game.
 
 Prerequisites:
 
-- Elixir 1.15+ and Erlang/OTP 26+
+- Elixir 1.18+ and Erlang/OTP 26+
 - A C++17 toolchain (`clang++` or `g++`) — only if you want to build
   the NIF
-- [igraph](https://igraph.org) C library (optional, for NIF
+- [igraph](https://igraph.org) >= 1.0 C library (optional, for NIF
   acceleration)
 
 ```bash
 # macOS
 brew install igraph
 
-# Debian / Ubuntu
-sudo apt install libigraph-dev
+# Linux: build the 1.0.1 release; distro packages are often 0.10
+# (see README "Installation")
 ```
 
 Clone and build:
 
 ```bash
-git clone https://github.com/nmaroulis/grafi.git
+git clone https://github.com/nyo16/grafi.git
 cd grafi
 mix deps.get
 mix compile
 ```
 
-If igraph is not installed, the NIF build is skipped and Grafi falls
-back to pure Elixir. There are no hard build failures from a missing
-igraph.
+In a git checkout the NIF is always built from source (never downloaded).
+If igraph >= 1.0 is not found, the build prints
+`grafi: igraph >= 1.0 not found; building without NIF (pure Elixir)` and
+succeeds; set `GRAFI_REQUIRE_NIF=1` to make that an error, or
+`IGRAPH_DIR=/prefix` to pick a specific igraph install.
 
 ## Running tests
 
 ```bash
 mix test                                  # default suite
-mix test --include nif                    # include NIF-tagged tests
+GRAFI_NIF_THRESHOLD=0 mix test            # NIF for every graph size
 GRAFI_NIF_ENABLED=false mix test          # force pure-Elixir paths
 ```
+
+`:nif` tests run automatically when the NIF is loaded; `:no_nif` tests
+run only without it (e.g. under `GRAFI_NIF_ENABLED=false`). No
+`--include` flag is needed.
+
+CI runs all three modes and merges their coverage. To reproduce it:
+
+```bash
+mix test --cover --export-coverage default
+GRAFI_NIF_THRESHOLD=0 mix test --cover --export-coverage nif
+GRAFI_NIF_ENABLED=false mix test --cover --export-coverage elixir
+mix test.coverage
+```
+
+The 85% coverage floor applies to the merged report, not to a single
+mode.
 
 Property tests use `stream_data` and run as part of the default
 suite. Please add tests for any new algorithm or bug fix — see
@@ -102,15 +120,18 @@ igraph reference: https://igraph.org/c/doc/
 ### Adding a new NIF
 
 1. Declare the function in `c_src/grafi_nif.h`.
-2. Implement it in `c_src/grafi_nif.cpp` and register it via the
-   `FINE_NIF` macro.
-3. Add an Elixir stub in `lib/grafi/nif.ex` that raises
+2. Implement it in `c_src/grafi_nif.cpp`, wrap the body in `run_nif`
+   (which installs igraph's thread-local handlers), and register it in
+   the `nif_funcs` table with `ERL_NIF_DIRTY_JOB_CPU_BOUND`.
+3. Add a `@doc false` Elixir stub in `lib/grafi/nif.ex` that raises
    `:nif_not_loaded` (the `@on_load` hook handles the rest).
-4. Add a pure-Elixir fallback in the appropriate `lib/grafi/algo/`
-   module and dispatch via the `use_nif?/1` pattern (size threshold +
-   `Grafi.NIF.available?()`).
-5. Write tests covering both the NIF path (`@tag :nif`) and the
-   fallback path.
+4. Add a pure-Elixir implementation in the appropriate `lib/grafi/algo/`
+   module. Validate options with the helpers in `lib/grafi/args.ex` before dispatch, pick the
+   engine with `Grafi.NIF.engine/3`, and normalize the NIF result with
+   `Grafi.NIF.call/1` (or `call!/1` for functions without an error
+   return).
+5. Add a parity test to `test/grafi/nif_parity_test.exs` that runs both
+   engines via `engine:`, and tag NIF-only tests `@tag :nif`.
 
 ### Pure-Elixir fallback policy
 
@@ -145,8 +166,8 @@ New algorithms need:
   hand-built fixtures covering the obvious cases (empty graph, single
   vertex, disconnected, self-loops, etc.).
 - **Property tests** in `test/grafi/property_test.exs` exercising the
-  algorithm against generated graphs. `stream_data` is already in the
-  dev/test deps.
+  algorithm against generated graphs. `stream_data` is already a test
+  dependency.
 - **NIF-vs-Elixir cross-check** if both paths exist — both should
   produce equivalent results on the same input.
 

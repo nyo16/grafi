@@ -1,0 +1,37 @@
+name: Set up igraph
+description: >
+  Build igraph (version and SHA-256 from .github/igraph.env, same configuration
+  as the release artefacts, shared library) into ~/.igraph, cached per runner
+  image, and export IGRAPH_DIR for the grafi Makefile. Linux only. Nothing is
+  installed into system paths.
+
+runs:
+  using: composite
+  steps:
+    # The runner image (ImageOS/ImageVersion are runner env vars, not in the
+    # `env` context) and the build inputs (version, SHA-256, flags) are all
+    # part of the key.
+    - name: Compute the igraph cache key
+      id: key
+      shell: bash
+      run: |
+        inputs=$(cat .github/igraph.env .github/scripts/build-igraph.sh | sha256sum | cut -c1-16)
+        echo "key=${RUNNER_OS}-${RUNNER_ARCH}-${ImageOS}-${ImageVersion}-igraph-${inputs}" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: cache
+      with:
+        path: ~/.igraph
+        key: ${{ steps.key.outputs.key }}
+
+    - name: Build igraph
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: .github/scripts/build-igraph.sh shared "$HOME/.igraph"
+
+    - name: Export IGRAPH_DIR
+      shell: bash
+      run: |
+        echo "IGRAPH_DIR=$HOME/.igraph" >> "$GITHUB_ENV"
+        echo "PKG_CONFIG_PATH=$HOME/.igraph/lib/pkgconfig" >> "$GITHUB_ENV"
+        echo "LD_LIBRARY_PATH=$HOME/.igraph/lib" >> "$GITHUB_ENV"

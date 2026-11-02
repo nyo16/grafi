@@ -19,11 +19,12 @@ defmodule Grafi.Graph do
 
   alias Grafi.Edge
 
-  # A vertex id may be any term, but it MUST be a comparable Erlang term and
-  # used consistently: vertices are keyed in maps and, for undirected graphs,
-  # edge endpoints are canonicalised with Erlang term ordering (`f <= t`), so
-  # mixing incomparable id types in one graph gives surprising dedup results.
-  # Prefer a single id type per graph (all atoms, all integers, or all binaries).
+  # A vertex id may be any term, but prefer one id type per graph (all atoms,
+  # all integers, or all binaries). Vertices are map keys, matched exactly,
+  # while undirected edges and `to_csr/1` order endpoints by Erlang term
+  # order, so ids that compare equal but differ (`1` and `1.0`) are distinct
+  # vertices, and an undirected edge between them is listed once with an
+  # unspecified orientation.
   @type vertex_id :: any()
   @type t :: %__MODULE__{
           vertices: %{vertex_id() => true},
@@ -111,13 +112,20 @@ defmodule Grafi.Graph do
     if not Map.has_key?(g.vertices, v) do
       g
     else
-      out_count = g.out_edges |> Map.get(v, %{}) |> edge_count_in_map()
-      in_count = g.in_edges |> Map.get(v, %{}) |> edge_count_in_map()
-      reduction = if g.type == :undirected, do: out_count, else: out_count + in_count
+      out = Map.get(g.out_edges, v, %{})
+      ine = Map.get(g.in_edges, v, %{})
+      # Self-loops at v appear in both maps (directed) or twice in the
+      # out-list (undirected); subtract the double count.
+      loops = out |> Map.get(v, []) |> length()
+
+      reduction =
+        if g.type == :undirected,
+          do: edge_count_in_map(out) - div(loops, 2),
+          else: edge_count_in_map(out) + edge_count_in_map(ine) - loops
 
       # Distinct neighbors that had an edge involving v (for degree maintenance)
-      out_targets = g.out_edges |> Map.get(v, %{}) |> Map.keys()
-      in_sources = g.in_edges |> Map.get(v, %{}) |> Map.keys()
+      out_targets = Map.keys(out)
+      in_sources = Map.keys(ine)
 
       out_edges = g.out_edges |> Map.delete(v) |> strip_target(v)
       in_edges = g.in_edges |> Map.delete(v) |> strip_target(v)
@@ -291,18 +299,19 @@ defmodule Grafi.Graph do
   @spec vertices(t()) :: [vertex_id()]
   def vertices(%__MODULE__{vertices: vs}), do: Map.keys(vs)
 
-  @doc "Returns all edges in the graph."
+  @doc """
+  Returns all edges in the graph, each exactly once.
+
+  Parallel edges and self-loops are included, so
+  `length(edges(g)) == num_edges(g)`. On undirected graphs each edge is
+  returned in the orientation stored under its lower endpoint, so
+  `from <= to` in Erlang term order.
+  """
   @spec edges(t()) :: [Edge.t()]
   def edges(%__MODULE__{out_edges: out, type: type}) do
-    all = for {_f, targets} <- out, {_t, el} <- targets, e <- el, do: e
+    directed? = type == :directed
 
-    if type == :undirected do
-      Enum.uniq_by(all, fn %Edge{from: f, to: t, label: l} ->
-        if f <= t, do: {f, t, l}, else: {t, f, l}
-      end)
-    else
-      all
-    end
+    for {f, targets} <- out, {t, el} <- targets, e <- stored_copies(el, directed?, f, t), do: e
   end
 
   @doc "Returns the outgoing neighbors of a vertex."
@@ -365,26 +374,32 @@ defmodule Grafi.Graph do
 
   # ── Transforms ────────────────────────────────────────────────────────
 
-  @doc "Returns a subgraph induced by the given list of vertices."
+  @doc """
+  Returns a subgraph induced by the given list of vertices.
+
+  Vertex labels, edge weights and labels, and the order of parallel edges
+  are preserved. Ids not in `g` are ignored.
+  """
   @spec subgraph(t(), [vertex_id()]) :: t()
   def subgraph(%__MODULE__{} = g, keep) do
-    vset = MapSet.new(keep)
+    vset = keep |> Enum.filter(&Map.has_key?(g.vertices, &1)) |> MapSet.new()
+    directed? = g.type == :directed
 
-    Enum.reduce(keep, new(type: g.type), fn v, acc ->
-      if not Map.has_key?(g.vertices, v) do
-        acc
-      else
-        acc = add_vertex(acc, v, label: Map.get(g.vertex_labels, v))
+    acc =
+      Enum.reduce(vset, new(type: g.type), fn v, acc ->
+        add_vertex(acc, v, label: Map.get(g.vertex_labels, v))
+      end)
 
-        g.out_edges
-        |> Map.get(v, %{})
-        |> Enum.reduce(acc, fn {to, el}, a ->
-          if MapSet.member?(vset, to),
-            do: Enum.reduce(el, a, &add_edge(&2, v, to, weight: &1.weight, label: &1.label)),
-            else: a
-        end)
-      end
-    end)
+    # Only the kept vertices' adjacency is visited. Stored lists are newest
+    # first and `add_edge/4` prepends, so re-adding oldest first keeps the
+    # order (and `delete_edge/3`'s "most recent" choice) intact.
+    for v <- vset,
+        {t, el} <- Map.get(g.out_edges, v, %{}),
+        MapSet.member?(vset, t),
+        e <- el |> stored_copies(directed?, v, t) |> Enum.reverse(),
+        reduce: acc do
+      acc -> add_edge(acc, v, t, weight: e.weight, label: e.label)
+    end
   end
 
   @doc "Returns the transpose (edge-reversed) graph."
@@ -404,47 +419,89 @@ defmodule Grafi.Graph do
   Converts to CSR (Compressed Sparse Row) format for the igraph NIF engine.
 
   Returns `{index_map, csr_map}` where `index_map` maps vertex_ids to
-  integer indices `[0, n_vertices)`, and `csr_map` has the keys
-  `:row_offsets`, `:col_indices`, `:weights`, `:n_vertices`, `:directed`
-  consumed by `Grafi.NIF`.
+  integer indices `[0, n_vertices)`, and `csr_map` has the keys consumed by
+  `Grafi.NIF`:
+
+    * `:row_offsets` — `n_vertices + 1` offsets into the edge arrays
+    * `:col_indices` — target vertex index of each edge
+    * `:weights` — weight of each edge
+    * `:n_vertices`, `:directed`
+
+  plus `:vertices`, a tuple whose element `i` is the vertex id at index `i`
+  (the reverse of `index_map`).
+
+  The three arrays are native-endian binaries (`signed-native-64` integers,
+  `float-native-64` weights) that the NIF reads without decoding terms
+  element by element. Decode them with, for example,
+  `for <<i::signed-native-64 <- csr.col_indices>>, do: i`.
+
+  Every edge appears exactly once, so `byte_size(col_indices) == 8 * num_edges(g)`.
+  For undirected graphs an edge is listed in the row of its lower-index
+  endpoint.
   """
   @spec to_csr(t()) :: {%{vertex_id() => non_neg_integer()}, map()}
   def to_csr(%__MODULE__{} = g) do
     sorted = vertices(g) |> Enum.sort()
     idx = sorted |> Enum.with_index() |> Map.new()
+    directed? = g.type == :directed
 
-    # Accumulate row_offsets in reverse (cheap, length n+1), and accumulate
-    # cols/weights in *reverse* order across all vertices, then reverse once
-    # at the end. Avoids the per-vertex Enum.reverse that the old impl did.
-    {rev_offsets, rev_cols, rev_weights} =
-      Enum.reduce(sorted, {[0], [], []}, fn v, {[prev_off | _] = off, c, w} ->
-        out = Map.get(g.out_edges, v, %{})
-
-        pairs =
-          Enum.flat_map(out, fn {to, el} ->
+    # Build the three arrays as iodata in CSR order and flatten each once.
+    {offsets, cols, weights, _count} =
+      sorted
+      |> Enum.with_index()
+      |> Enum.reduce({[<<0::signed-native-64>>], [], [], 0}, fn {v, iv}, {off, c, w, count} ->
+        {c, w, count} =
+          g.out_edges
+          |> Map.get(v, %{})
+          |> Enum.flat_map(fn {to, el} ->
             i = Map.fetch!(idx, to)
-            Enum.map(el, fn e -> {i, e.weight} end)
+            el |> stored_copies(directed?, iv, i) |> Enum.map(&{i, &1.weight})
           end)
           |> Enum.sort_by(&elem(&1, 0))
-
-        {new_off, c, w} =
-          Enum.reduce(pairs, {prev_off, c, w}, fn {i, weight}, {n, c_acc, w_acc} ->
-            {n + 1, [i | c_acc], [weight | w_acc]}
+          |> Enum.reduce({c, w, count}, fn {i, weight}, {c, w, k} ->
+            {[c, <<i::signed-native-64>>], [w, <<weight::float-native-64>>], k + 1}
           end)
 
-        {[new_off | off], c, w}
+        {[off, <<count::signed-native-64>>], c, w, count}
       end)
 
     csr_map = %{
-      row_offsets: Enum.reverse(rev_offsets),
-      col_indices: Enum.reverse(rev_cols),
-      weights: Enum.reverse(rev_weights),
+      row_offsets: IO.iodata_to_binary(offsets),
+      col_indices: IO.iodata_to_binary(cols),
+      weights: IO.iodata_to_binary(weights),
       n_vertices: g.num_vertices,
-      directed: g.type == :directed
+      directed: directed?,
+      vertices: List.to_tuple(sorted)
     }
 
     {idx, csr_map}
   end
+
+  # An undirected edge {u, v} is stored under both endpoints, and an
+  # undirected self-loop twice under its vertex. Keep exactly one copy of
+  # each edge: the copy stored under the lower endpoint, and one copy of each
+  # self-loop. `add_edge/4` prepends each undirected loop as the adjacent
+  # pair `[rev, e]` and `delete_edge/3` removes both elements of the pair, so
+  # every other element is exactly one copy of each loop.
+  #
+  # `to_csr/1` calls this with vertex indices and `edges/1` with vertex ids.
+  # Both keep one copy of every edge. They pick the same copy because
+  # `to_csr/1` indexes vertices in sorted term order, so `index(u) < index(v)`
+  # iff `u < v`, except for ids that compare equal but differ (`1` and
+  # `1.0`): neither is `<` the other and the repeated-variable clause needs
+  # an exact match, so a deterministic tie-break keeps exactly one copy.
+  defp stored_copies(el, true = _directed?, _from, _to), do: el
+  defp stored_copies(el, false, from, to) when from < to, do: el
+  defp stored_copies(el, false, same, same), do: Enum.take_every(el, 2)
+
+  defp stored_copies(el, false, from, to) when from == to do
+    if :erlang.term_to_binary(from, [:deterministic]) <
+         :erlang.term_to_binary(to, [:deterministic]),
+       do: el,
+       else: []
+  end
+
+  defp stored_copies(_el, false, _from, _to), do: []
 
   # ── Internal helpers ──────────────────────────────────────────────────
 

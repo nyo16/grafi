@@ -1,10 +1,11 @@
 # nif_availability.exs — report NIF status and which algos dispatch to it.
-# Dispatch is by graph size: algorithms above :nif_threshold (default 500)
-# use the NIF if available, otherwise they run in pure Elixir.
+# With the default `engine: :auto`, most algorithms use the NIF above
+# :nif_threshold (default 500) when it is available, and pure Elixir otherwise.
+# Pass `engine: :nif` or `engine: :elixir` to force one.
 # Run with: mix run examples/nif_availability.exs
 
 available? = Grafi.NIF.available?()
-threshold = Application.get_env(:grafi, :nif_threshold, 500)
+threshold = Application.fetch_env!(:grafi, :nif_threshold)
 
 IO.puts("Grafi.NIF.available?  => #{available?}")
 IO.puts("nif_threshold          => #{threshold} vertices")
@@ -13,21 +14,21 @@ IO.puts("")
 if available? do
   IO.puts("igraph NIF is loaded. Algorithms above the threshold dispatch to C.")
 else
-  IO.puts("igraph NIF NOT loaded. All algorithms run in pure Elixir.")
+  IO.puts("igraph NIF NOT loaded (or nif_enabled: false). All algorithms run in pure Elixir.")
   IO.puts("Install igraph (see README) and rebuild to enable NIF acceleration.")
 end
 
 IO.puts("")
-IO.puts("Per-algorithm dispatch (V = num_vertices):\n")
+IO.puts("Per-algorithm dispatch with engine: :auto (V = num_vertices):\n")
 
 table = [
   {"Dijkstra (shortest_path)", "NIF if V > #{threshold} and NIF available, else Elixir"},
   {"PageRank", "NIF (PRPACK) if V > #{threshold} and NIF available, else Elixir"},
-  {"Betweenness", "NIF if V > #{threshold} and NIF available, else Brandes/Elixir"},
-  {"Closeness", "NIF if V > #{threshold} and NIF available, else Elixir"},
-  {"Louvain / Leiden", "NIF only — no Elixir fallback"},
-  {"Label propagation", "NIF if available, else label_propagation_simple/1"},
-  {"BFS / DFS / cycles / DAG", "always pure Elixir"}
+  {"Betweenness / closeness", "NIF if V > #{threshold} and NIF available, else Elixir"},
+  {"SCC / topological sort", "NIF if V > #{threshold} and NIF available, else Elixir"},
+  {"Isomorphism (VF2)", "NIF whenever available, else Elixir backtracking"},
+  {"Louvain / Leiden / LPA", "NIF only — {:error, :nif_not_available} without it"},
+  {"BFS / DFS / cycle detection", "always pure Elixir"}
 ]
 
 Enum.each(table, fn {algo, dispatch} ->

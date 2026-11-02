@@ -1,53 +1,97 @@
 defmodule Grafi.Algo.Centrality do
   @moduledoc """
-  Centrality measures: PageRank, betweenness, closeness, degree.
+  Centrality measures: PageRank, betweenness, closeness, degree, and more.
 
-  For graphs above the configured `:nif_threshold` vertices, algorithms dispatch
-  to igraph via NIF. Below that, pure Elixir implementations run.
+  PageRank, betweenness and closeness accept `engine: :auto | :nif | :elixir`
+  (see `Grafi.NIF`). With `:auto`, graphs above the configured
+  `:nif_threshold` vertices dispatch to igraph; smaller graphs run in pure
+  Elixir. They raise `ArgumentError` on invalid options and
+  `Grafi.NIFError` if the NIF fails or `engine: :nif` is unavailable.
   """
 
+  alias Grafi.Algo.MinHeap
+  alias Grafi.Args
   alias Grafi.Graph
+  alias Grafi.NIF
 
   # ── PageRank ──────────────────────────────────────────────────────────
 
   @doc """
   PageRank via power iteration (Elixir) or PRPACK (igraph NIF).
 
+  Edge weights are used (an edge's weight defaults to `1.0`; parallel edges
+  add up). The rank of dangling vertices (no outgoing weight) is spread
+  uniformly over all vertices, so the ranks sum to 1. This matches igraph,
+  and NetworkX on graphs without undirected self-loops: an undirected
+  self-loop adds its weight twice to its vertex's outgoing weight (igraph's
+  degree convention), while NetworkX counts it once.
+
   ## Options
-    - `:damping` — damping factor, default `0.85`
-    - `:iterations` — max iterations, default `100`
-    - `:tolerance` — convergence epsilon, default `1.0e-6`
+    - `:damping` — damping factor in `[0, 1)`, default `0.85`
+    - `:iterations` — max iterations (positive integer), default `100`
+    - `:tolerance` — convergence threshold (positive), default `1.0e-6`;
+      iteration stops once the L1 change is below `n * tolerance`
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`
+
+  `:iterations` and `:tolerance` apply to the Elixir engine only; igraph's
+  PRPACK solver runs to its own convergence.
+
+  Raises `ArgumentError` if an edge weight is negative.
   """
   @spec pagerank(Graph.t(), keyword()) :: %{any() => float()}
   def pagerank(%Graph{} = g, opts \\ []) do
-    damping = Keyword.get(opts, :damping, 0.85)
-    max_iter = Keyword.get(opts, :iterations, 100)
+    Args.engine!(opts)
+    damping = Args.float!(opts, :damping, 0.85, &(&1 >= 0 and &1 < 1), "a number in [0, 1)")
+    max_iter = Args.pos_integer!(opts, :iterations, 100)
+    tol = Args.float!(opts, :tolerance, 1.0e-6, &(&1 > 0), "a positive number")
+    Args.non_negative_weights!(g)
 
-    if use_nif?(g) do
-      {idx, csr} = Graph.to_csr(g)
-      _ = Grafi.NIF.validate_csr!(csr)
-      ranks = Grafi.NIF.nif_pagerank(csr, damping, max_iter)
-      reverse_idx = Map.new(idx, fn {v, i} -> {i, v} end)
-      ranks |> Enum.with_index() |> Map.new(fn {r, i} -> {reverse_idx[i], r} end)
-    else
-      pagerank_elixir(g, damping, max_iter, Keyword.get(opts, :tolerance, 1.0e-6))
-    end
+    dispatch(
+      g,
+      opts,
+      &NIF.nif_pagerank(&1, damping, max_iter),
+      fn -> pagerank_elixir(g, damping, max_iter, tol) end
+    )
   end
 
   # ── Betweenness ───────────────────────────────────────────────────────
 
-  @doc "Computes betweenness centrality for every vertex."
-  @spec betweenness(Graph.t()) :: %{any() => float()}
-  def betweenness(%Graph{} = g) do
-    if use_nif?(g) do
-      {idx, csr} = Graph.to_csr(g)
-      _ = Grafi.NIF.validate_csr!(csr)
-      scores = Grafi.NIF.nif_betweenness(csr)
-      reverse_idx = Map.new(idx, fn {v, i} -> {i, v} end)
-      scores |> Enum.with_index() |> Map.new(fn {s, i} -> {reverse_idx[i], s} end)
-    else
-      betweenness_elixir(g)
-    end
+  @doc """
+  Computes betweenness centrality for every vertex: the number of shortest
+  paths between other vertex pairs that pass through it.
+
+  Follows NetworkX's `betweenness_centrality`. On undirected graphs each
+  unordered pair counts once. With `normalized: true` the scores are scaled
+  by `2 / ((n - 1)(n - 2))` (undirected) or `1 / ((n - 1)(n - 2))`
+  (directed), so the centre of a star scores `1.0`. Graphs with fewer than
+  three vertices are not normalized.
+
+  ## Options
+    - `:weighted` — use edge weights as path lengths, default `false`
+      (every edge has length 1)
+    - `:normalized` — default `true`
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`
+
+  On multigraphs the engines can differ: igraph counts parallel edges as
+  distinct shortest paths, while the Elixir engine counts each neighbour
+  once (using the lightest parallel edge when weighted).
+
+  Raises `ArgumentError` if `weighted: true` and an edge weight is zero or
+  negative. Unweighted betweenness ignores weights.
+  """
+  @spec betweenness(Graph.t(), keyword()) :: %{any() => float()}
+  def betweenness(%Graph{} = g, opts \\ []) do
+    Args.engine!(opts)
+    weighted? = Args.boolean!(opts, :weighted, false)
+    normalized? = Args.boolean!(opts, :normalized, true)
+    if weighted?, do: Args.positive_weights!(g)
+
+    dispatch(
+      g,
+      opts,
+      &NIF.nif_betweenness(&1, weighted?, normalized?),
+      fn -> betweenness_elixir(g, weighted?, normalized?) end
+    )
   end
 
   # ── Closeness ─────────────────────────────────────────────────────────
@@ -55,27 +99,40 @@ defmodule Grafi.Algo.Centrality do
   @doc """
   Computes closeness centrality for every vertex — the reciprocal of the
   average shortest-path distance from a vertex to every other reachable
-  vertex.
+  vertex. Edge weights are path lengths (an edge's weight defaults to `1.0`).
 
   Returns `%{}` for an empty or single-vertex graph (closeness is undefined
   with fewer than two vertices). Vertices that cannot reach any other
   vertex score `0.0`.
+
+  ## Options
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`
+
+  Raises `ArgumentError` if an edge weight is zero or negative.
   """
-  @spec closeness(Graph.t()) :: %{any() => float()}
-  def closeness(%Graph{} = g) do
-    cond do
-      Graph.num_vertices(g) <= 1 ->
-        %{}
+  @spec closeness(Graph.t(), keyword()) :: %{any() => float()}
+  def closeness(%Graph{} = g, opts \\ []) do
+    Args.engine!(opts)
+    Args.positive_weights!(g)
 
-      use_nif?(g) ->
-        {idx, csr} = Graph.to_csr(g)
-        _ = Grafi.NIF.validate_csr!(csr)
-        scores = Grafi.NIF.nif_closeness(csr)
-        reverse_idx = Map.new(idx, fn {v, i} -> {i, v} end)
-        scores |> Enum.with_index() |> Map.new(fn {s, i} -> {reverse_idx[i], s} end)
+    if Graph.num_vertices(g) <= 1,
+      do: %{},
+      else: dispatch(g, opts, &NIF.nif_closeness/1, fn -> closeness_elixir(g) end)
+  end
 
-      true ->
-        closeness_elixir(g)
+  # Runs `nif_fun.(csr)` or `elixir_fun.()` according to the selected engine.
+  # NIF results are per-index lists, re-keyed by vertex id.
+  defp dispatch(g, opts, nif_fun, elixir_fun) do
+    case NIF.engine(g, opts) do
+      :nif ->
+        {_idx, csr} = Graph.to_csr(g)
+        NIF.by_vertex(csr, NIF.call!(nif_fun.(csr)))
+
+      :elixir ->
+        elixir_fun.()
+
+      {:error, reason} ->
+        raise Grafi.NIFError, reason: reason
     end
   end
 
@@ -90,6 +147,9 @@ defmodule Grafi.Algo.Centrality do
 
   # ── Pure Elixir fallbacks ─────────────────────────────────────────────
 
+  # Power iteration on the weighted transition matrix. `in_adj[v]` lists
+  # `{u, w_uv / out_strength(u)}` for every u with an edge into v, built once
+  # per call. Dangling vertices (out_strength 0) hand their rank out evenly.
   defp pagerank_elixir(g, d, max_iter, tol) do
     vs = Graph.vertices(g)
     n = length(vs)
@@ -97,96 +157,197 @@ defmodule Grafi.Algo.Centrality do
     if n == 0 do
       %{}
     else
-      ranks = Map.new(vs, &{&1, 1.0 / n})
-      do_pr(g, ranks, vs, n, d, max_iter, tol, 0)
+      strength = out_strength(g)
+
+      ctx = %{
+        vs: vs,
+        n: n,
+        d: d,
+        max_iter: max_iter,
+        tol: tol,
+        in_adj: in_adjacency(g, strength),
+        dangling: Enum.filter(vs, &(Map.get(strength, &1, 0.0) == 0.0))
+      }
+
+      do_pr(ctx, Map.new(vs, &{&1, 1.0 / n}), 0)
     end
   end
 
-  defp do_pr(_, ranks, _, _, _, max, _, i) when i >= max, do: ranks
+  defp do_pr(%{max_iter: max}, ranks, i) when i >= max, do: ranks
 
-  defp do_pr(g, ranks, vs, n, d, max, tol, i) do
+  defp do_pr(%{vs: vs, n: n, d: d} = ctx, ranks, i) do
+    dangling_mass = Enum.reduce(ctx.dangling, 0.0, &(ranks[&1] + &2))
+    base = (1.0 - d) / n + d * dangling_mass / n
+
     new =
       Map.new(vs, fn v ->
-        sum =
-          Graph.in_neighbors(g, v)
-          |> Enum.reduce(0.0, fn u, acc ->
-            od = Graph.out_degree(g, u)
-            if od > 0, do: acc + ranks[u] / od, else: acc
-          end)
+        inflow =
+          ctx.in_adj
+          |> Map.get(v, [])
+          |> Enum.reduce(0.0, fn {u, p}, acc -> acc + ranks[u] * p end)
 
-        {v, (1.0 - d) / n + d * sum}
+        {v, base + d * inflow}
       end)
 
-    if Enum.all?(vs, &(abs(new[&1] - ranks[&1]) < tol)),
-      do: new,
-      else: do_pr(g, new, vs, n, d, max, tol, i + 1)
+    err = Enum.reduce(vs, 0.0, &(abs(new[&1] - ranks[&1]) + &2))
+    if err < n * ctx.tol, do: new, else: do_pr(ctx, new, i + 1)
   end
 
-  defp betweenness_elixir(g) do
-    vs = Graph.vertices(g)
-    cb = Map.new(vs, &{&1, 0.0})
+  defp out_strength(%Graph{out_edges: out}) do
+    Map.new(out, fn {u, targets} ->
+      {u, Enum.reduce(targets, 0.0, fn {_v, edges}, acc -> acc + total_weight(edges) end)}
+    end)
+  end
 
-    cb =
-      Enum.reduce(vs, cb, fn s, cb_acc ->
-        {stack, sigma, _dist, pred} = brandes_bfs(g, s, vs)
-        delta = Map.new(vs, &{&1, 0.0})
-
-        {_, cb2} =
-          Enum.reduce(stack, {delta, cb_acc}, fn w, {d, c} ->
-            coeff = (1.0 + d[w]) / Map.get(sigma, w, 1.0)
-
-            d =
-              Enum.reduce(Map.get(pred, w, []), d, fn v, d2 ->
-                Map.update!(d2, v, &(&1 + Map.get(sigma, v, 1.0) * coeff))
-              end)
-
-            c = if w != s, do: Map.update!(c, w, &(&1 + d[w])), else: c
-            {d, c}
-          end)
-
-        cb2
-      end)
-
-    n = length(vs)
-
-    if n > 2 do
-      f = if g.type == :directed, do: 1.0 / ((n - 1) * (n - 2)), else: 2.0 / ((n - 1) * (n - 2))
-      Map.new(cb, fn {v, val} -> {v, val * f} end)
-    else
-      cb
+  defp in_adjacency(%Graph{out_edges: out}, strength) do
+    for {u, targets} <- out,
+        s_u = Map.fetch!(strength, u),
+        s_u > 0,
+        {v, edges} <- targets,
+        edges != [],
+        reduce: %{} do
+      acc ->
+        p = total_weight(edges) / s_u
+        Map.update(acc, v, [{u, p}], &[{u, p} | &1])
     end
   end
 
-  defp brandes_bfs(g, s, _vs) do
-    do_brandes(:queue.from_list([s]), [], %{s => 1.0}, %{s => 0}, %{}, g)
+  defp total_weight(edges), do: Enum.reduce(edges, 0.0, &(&1.weight + &2))
+
+  # Brandes' algorithm: one single-source shortest-path pass per vertex (BFS
+  # when unweighted, Dijkstra when weighted), then dependency accumulation in
+  # order of non-increasing distance.
+  defp betweenness_elixir(g, weighted?, normalized?) do
+    vs = Graph.vertices(g)
+
+    raw =
+      Enum.reduce(vs, Map.new(vs, &{&1, 0.0}), fn s, cb ->
+        {stack, sigma, pred} = if weighted?, do: sssp_dijkstra(g, s), else: sssp_bfs(g, s)
+        accumulate(stack, sigma, pred, s, cb)
+      end)
+
+    scale = betweenness_scale(length(vs), g.type, normalized?)
+    Map.new(raw, fn {v, x} -> {v, x * scale} end)
   end
 
-  defp do_brandes(q, stack, sigma, dist, pred, g) do
+  defp accumulate(stack, sigma, pred, s, cb) do
+    {_delta, cb} =
+      Enum.reduce(stack, {%{}, cb}, fn w, {delta, cb} ->
+        delta_w = Map.get(delta, w, 0.0)
+        coeff = (1.0 + delta_w) / sigma[w]
+
+        delta =
+          Enum.reduce(Map.get(pred, w, []), delta, fn v, acc ->
+            Map.update(acc, v, sigma[v] * coeff, &(&1 + sigma[v] * coeff))
+          end)
+
+        cb = if w == s, do: cb, else: Map.update!(cb, w, &(&1 + delta_w))
+        {delta, cb}
+      end)
+
+    cb
+  end
+
+  # Undirected traversal reaches every unordered pair from both ends, so the
+  # raw sum counts each pair twice; halve it. Normalization then divides by
+  # the number of (ordered or unordered) pairs excluding the vertex itself.
+  defp betweenness_scale(n, type, normalized?) do
+    pair_factor = if type == :undirected, do: 0.5, else: 1.0
+
+    cond do
+      not normalized? or n <= 2 -> pair_factor
+      type == :undirected -> 2.0 / ((n - 1) * (n - 2)) * pair_factor
+      true -> 1.0 / ((n - 1) * (n - 2))
+    end
+  end
+
+  # Returns {stack, sigma, pred}; the stack head is the farthest vertex.
+  defp sssp_bfs(g, s) do
+    do_sssp_bfs(:queue.from_list([s]), [], %{s => 1.0}, %{s => 0}, %{}, g)
+  end
+
+  defp do_sssp_bfs(q, stack, sigma, dist, pred, g) do
     case :queue.out(q) do
       {:empty, _} ->
-        {stack, sigma, %{}, pred}
+        {stack, sigma, pred}
 
       {{:value, v}, rest_q} ->
-        stack = [v | stack]
+        dv = dist[v]
 
-        {qa, sigma, dist, pred} =
+        {q, sigma, dist, pred} =
           Graph.out_neighbors(g, v)
-          |> Enum.reduce({[], sigma, dist, pred}, fn w, {qa, sig, d, p} ->
-            if not Map.has_key?(d, w) do
-              {[w | qa], Map.put(sig, w, sig[v]), Map.put(d, w, d[v] + 1), Map.put(p, w, [v])}
-            else
-              if d[w] == d[v] + 1 do
-                {qa, Map.update!(sig, w, &(&1 + sig[v])), d, Map.update(p, w, [v], &[v | &1])}
-              else
-                {qa, sig, d, p}
-              end
+          |> Enum.reduce({rest_q, sigma, dist, pred}, fn w, {q, sig, d, p} ->
+            case Map.fetch(d, w) do
+              :error ->
+                {:queue.in(w, q), Map.put(sig, w, sig[v]), Map.put(d, w, dv + 1),
+                 Map.put(p, w, [v])}
+
+              {:ok, dw} when dw == dv + 1 ->
+                {q, Map.update!(sig, w, &(&1 + sig[v])), d, Map.update!(p, w, &[v | &1])}
+
+              {:ok, _} ->
+                {q, sig, d, p}
             end
           end)
 
-        new_q = Enum.reduce(Enum.reverse(qa), rest_q, fn w, q -> :queue.in(w, q) end)
-        do_brandes(new_q, stack, sigma, dist, pred, g)
+        do_sssp_bfs(q, [v | stack], sigma, dist, pred, g)
     end
   end
+
+  # Weighted single-source pass (Dijkstra). Parallel edges contribute their
+  # lightest weight. Path lengths are compared with igraph's relative epsilon
+  # so that float rounding doesn't split equal-length paths.
+  defp sssp_dijkstra(g, s) do
+    heap = MinHeap.new() |> MinHeap.insert({0.0, s})
+    do_sssp_dijkstra(g, heap, %{s => 0.0}, %{s => 1.0}, %{}, %{}, [])
+  end
+
+  # `done` is a plain map used as a set of finalized vertices.
+  defp do_sssp_dijkstra(g, heap, dist, sigma, pred, done, stack) do
+    case MinHeap.pop(heap) do
+      :empty ->
+        {stack, sigma, pred}
+
+      {:ok, {d, v}, heap} ->
+        if Map.has_key?(done, v) or d > dist[v] do
+          do_sssp_dijkstra(g, heap, dist, sigma, pred, done, stack)
+        else
+          {heap, dist, sigma, pred} =
+            g.out_edges
+            |> Map.get(v, %{})
+            |> Enum.reject(fn {w, edges} -> edges == [] or Map.has_key?(done, w) end)
+            |> Enum.reduce({heap, dist, sigma, pred}, fn {w, edges}, acc ->
+              relax(acc, v, w, d + Enum.min_by(edges, & &1.weight).weight)
+            end)
+
+          do_sssp_dijkstra(g, heap, dist, sigma, pred, Map.put(done, v, true), [v | stack])
+        end
+    end
+  end
+
+  defp relax({heap, dist, sigma, pred}, v, w, alt) do
+    case Map.fetch(dist, w) do
+      {:ok, dw} ->
+        cond do
+          same_length?(alt, dw) ->
+            {heap, dist, Map.update!(sigma, w, &(&1 + sigma[v])), Map.update!(pred, w, &[v | &1])}
+
+          alt < dw ->
+            {MinHeap.insert(heap, {alt, w}), Map.put(dist, w, alt), Map.put(sigma, w, sigma[v]),
+             Map.put(pred, w, [v])}
+
+          true ->
+            {heap, dist, sigma, pred}
+        end
+
+      :error ->
+        {MinHeap.insert(heap, {alt, w}), Map.put(dist, w, alt), Map.put(sigma, w, sigma[v]),
+         Map.put(pred, w, [v])}
+    end
+  end
+
+  # igraph_cmp_epsilon with IGRAPH_SHORTEST_PATH_EPSILON (1e-10).
+  defp same_length?(a, b), do: a == b or abs(a - b) < 1.0e-10 * (abs(a) + abs(b))
 
   # Uses Wasserman–Faust normalization: each vertex's closeness is
   # (reachable - 1) / sum_of_distances_to_reachable, i.e. normalized by the
@@ -206,10 +367,6 @@ defmodule Grafi.Algo.Centrality do
           {v, if(total > 0, do: (map_size(dists) - 1) / total, else: 0.0)}
         end)
   end
-
-  defp use_nif?(g), do: Graph.num_vertices(g) > nif_threshold() and Grafi.NIF.available?()
-
-  defp nif_threshold, do: Application.get_env(:grafi, :nif_threshold, 500)
 
   # ── HITS ──────────────────────────────────────────────────────────────
 

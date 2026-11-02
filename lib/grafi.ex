@@ -150,12 +150,12 @@ defmodule Grafi do
     do: Grafi.Algo.Centrality.pagerank(g, opts)
 
   @doc "Betweenness centrality for all vertices."
-  def betweenness(g),
-    do: Grafi.Algo.Centrality.betweenness(g)
+  def betweenness(g, opts \\ []),
+    do: Grafi.Algo.Centrality.betweenness(g, opts)
 
   @doc "Closeness centrality for all vertices."
-  def closeness(g),
-    do: Grafi.Algo.Centrality.closeness(g)
+  def closeness(g, opts \\ []),
+    do: Grafi.Algo.Centrality.closeness(g, opts)
 
   @doc """
   Returns true if the graph contains at least one directed cycle.
@@ -179,9 +179,9 @@ defmodule Grafi do
   def find_cycle(g),
     do: Grafi.Algo.Cycles.find_cycle(g)
 
-  @doc "Strongly connected components (Tarjan)."
-  def scc(g),
-    do: Grafi.Algo.Cycles.strongly_connected_components(g)
+  @doc "Strongly connected components (canonical order; see `Grafi.Algo.Cycles`)."
+  def scc(g, opts \\ []),
+    do: Grafi.Algo.Cycles.strongly_connected_components(g, opts)
 
   @doc "Connected components."
   def components(g),
@@ -192,8 +192,8 @@ defmodule Grafi do
     do: Grafi.Algo.Cycles.condensation(g)
 
   @doc "Community detection via Louvain (requires NIF)."
-  def louvain(g),
-    do: Grafi.Algo.Community.louvain(g)
+  def louvain(g, opts \\ []),
+    do: Grafi.Algo.Community.louvain(g, opts)
 
   @doc "Community detection via Leiden (requires NIF)."
   def leiden(g, opts \\ []),
@@ -304,8 +304,19 @@ defmodule Grafi do
 
   # ── Isomorphism ───────────────────────────────────────────────────────
 
-  defdelegate isomorphic?(g1, g2), to: Grafi.Algo.Isomorphism
-  defdelegate subgraph_isomorphic?(g, pattern), to: Grafi.Algo.Isomorphism
+  @doc """
+  Returns `true` if `g1` and `g2` are isomorphic. Always a boolean: raises
+  `Grafi.TimeoutError` on timeout and `Grafi.NIFError` on a NIF failure.
+  See `Grafi.Algo.Isomorphism.isomorphic?/3`.
+  """
+  defdelegate isomorphic?(g1, g2, opts \\ []), to: Grafi.Algo.Isomorphism
+
+  @doc """
+  Returns `true` if `pattern` is sub-isomorphic to `g`. Always a boolean:
+  raises `Grafi.TimeoutError` on timeout and `Grafi.NIFError` on a NIF
+  failure. See `Grafi.Algo.Isomorphism.subgraph_isomorphic?/3`.
+  """
+  defdelegate subgraph_isomorphic?(g, pattern, opts \\ []), to: Grafi.Algo.Isomorphism
 
   # ── Serialization ─────────────────────────────────────────────────────
 

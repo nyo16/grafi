@@ -8,66 +8,60 @@ on:
 
 env:
   MIX_ENV: test
-  IGRAPH_VERSION: "1.0.1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  # Superseded PR runs are cancelled; pushes to the default branch finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Test (Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - elixir: "1.18"
+            otp: "26"
+          - elixir: "1.18"
+            otp: "27"
+          - elixir: "1.19"
             otp: "28"
-
+            graphviz: true
+          - elixir: "1.20"
+            otp: "29"
+    env:
+      # igraph is installed here, so a skipped NIF build is a failure.
+      GRAFI_REQUIRE_NIF: "1"
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install igraph build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake bison flex libxml2-dev libgmp-dev libglpk-dev pkg-config
-
-      - name: Cache igraph install
-        id: cache-igraph
-        uses: actions/cache@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: /usr/local
-          key: ${{ runner.os }}-igraph-${{ env.IGRAPH_VERSION }}
+          persist-credentials: false
 
-      - name: Build and install igraph from source
-        if: steps.cache-igraph.outputs.cache-hit != 'true'
-        run: |
-          wget -q "https://github.com/igraph/igraph/releases/download/${IGRAPH_VERSION}/igraph-${IGRAPH_VERSION}.tar.gz"
-          tar xzf "igraph-${IGRAPH_VERSION}.tar.gz"
-          cd "igraph-${IGRAPH_VERSION}"
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-          make -j"$(nproc)"
-          sudo make install
+      - uses: ./.github/actions/setup-igraph
 
-      - name: Refresh dynamic linker cache
-        run: sudo ldconfig
+      # Lets the Grafi.Viz integration tests run.
+      - name: Install graphviz
+        if: matrix.graphviz
+        run: sudo apt-get install -y graphviz
 
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: ${{ matrix.elixir }}
           otp-version: ${{ matrix.otp }}
 
-      - name: Cache deps
-        uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('.github/igraph.env') }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
+            ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-${{ hashFiles('.github/igraph.env') }}-
 
       - name: Install dependencies
         run: mix deps.get
@@ -75,76 +69,189 @@ jobs:
       - name: Compile (warnings as errors)
         run: mix compile --warnings-as-errors
 
-      - name: Run tests
-        run: mix test
+      # :nif-tagged tests are skipped when the NIF is unavailable, so fail
+      # loudly here instead of silently testing only the Elixir engine.
+      - name: Assert the NIF loaded
+        run: |
+          mix run -e 'Grafi.NIF.available?() || Mix.raise("the Grafi NIF did not load; :nif tests would be skipped")'
+
+      # Three engine modes; each exports coverage, merged at the end.
+      - name: Run tests (default threshold)
+        run: mix test --cover --export-coverage default
+
+      - name: Run tests (NIF for every graph size)
+        env:
+          GRAFI_NIF_THRESHOLD: "0"
+        run: mix test --cover --export-coverage nif
+
+      # config/runtime.exs maps GRAFI_NIF_ENABLED to `nif_enabled`. If that
+      # wiring breaks, the next step silently re-runs the NIF suite and
+      # skips every :no_nif test.
+      - name: Assert the NIF is disabled
+        env:
+          GRAFI_NIF_ENABLED: "false"
+        run: |
+          mix run -e 'Grafi.NIF.available?() && Mix.raise("GRAFI_NIF_ENABLED=false did not disable the NIF; :no_nif tests would be skipped")'
 
       - name: Run tests (pure Elixir, no NIF)
         env:
           GRAFI_NIF_ENABLED: "false"
+        run: mix test --cover --export-coverage elixir
+
+      - name: Merge coverage
+        run: mix test.coverage
+
+  # igraph absent: the build must succeed without a NIF and the suite must
+  # pass in pure Elixir (test_helper excludes :nif tests).
+  no-igraph:
+    name: Build and test without igraph
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: "1.19"
+          otp-version: "28"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Assert the NIF was skipped, not broken
+        run: |
+          test -f _build/test/lib/grafi/priv/.grafi_nif_skipped
+          mix run -e 'Grafi.NIF.available?() && Mix.raise("expected no NIF without igraph")'
+
+      - name: Run tests
+        run: mix test
+
+  # grafi as a path dependency from a git archive (no .git, like the Hex
+  # package). The consumer forces a source build, so this always tests the
+  # PR's c_src, never a published artefact; it must find igraph and load.
+  consumer:
+    name: Consumer build
+    runs-on: ubuntu-24.04
+    env:
+      GRAFI_REQUIRE_NIF: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-igraph
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: "1.19"
+          otp-version: "28"
+
+      - name: Build a scratch consumer
+        run: |
+          src="${RUNNER_TEMP}/grafi_src"
+          mkdir -p "$src"
+          git archive HEAD | tar -x -C "$src"
+          cd "$RUNNER_TEMP"
+          mix new consumer
+          cd consumer
+          cat > mix.exs <<EOF
+          defmodule Consumer.MixProject do
+            use Mix.Project
+            def project, do: [app: :consumer, version: "0.1.0", deps: [{:grafi, path: "$src"}]]
+            def application, do: [extra_applications: [:logger]]
+          end
+          EOF
+          mkdir -p config
+          printf 'import Config\nconfig :elixir_make, :force_build, grafi: true\n' > config/config.exs
+          mix deps.get
+          mix compile
+          mix run -e '
+            unless Grafi.NIF.available?(), do: Mix.raise("the NIF did not load in the consumer")
+            g = Grafi.Generators.erdos_renyi(600, 0.01, seed: 1)
+            sum = g |> Grafi.Algo.Centrality.pagerank(engine: :nif) |> Map.values() |> Enum.sum()
+            if abs(sum - 1.0) > 1.0e-9, do: Mix.raise("pagerank sums to #{sum}")
+          '
+
+  macos:
+    name: Test (macOS, Homebrew igraph)
+    runs-on: macos-latest
+    env:
+      GRAFI_REQUIRE_NIF: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install igraph
+        run: brew install igraph
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: "1.19"
+          otp-version: "28"
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile (warnings as errors)
+        run: mix compile --warnings-as-errors
+
+      - name: Assert the NIF loaded
+        run: |
+          mix run -e 'Grafi.NIF.available?() || Mix.raise("the Grafi NIF did not load; :nif tests would be skipped")'
+
+      - name: Run tests
         run: mix test
 
   quality:
-    name: Code Quality
-    runs-on: ubuntu-latest
-
+    name: Code quality and supply chain
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install igraph build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake bison flex libxml2-dev libgmp-dev libglpk-dev pkg-config
-
-      - name: Cache igraph install
-        id: cache-igraph
-        uses: actions/cache@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: /usr/local
-          key: ${{ runner.os }}-igraph-${{ env.IGRAPH_VERSION }}
+          persist-credentials: false
 
-      - name: Build and install igraph from source
-        if: steps.cache-igraph.outputs.cache-hit != 'true'
-        run: |
-          wget -q "https://github.com/igraph/igraph/releases/download/${IGRAPH_VERSION}/igraph-${IGRAPH_VERSION}.tar.gz"
-          tar xzf "igraph-${IGRAPH_VERSION}.tar.gz"
-          cd "igraph-${IGRAPH_VERSION}"
-          mkdir build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
-          make -j"$(nproc)"
-          sudo make install
-
-      - name: Refresh dynamic linker cache
-        run: sudo ldconfig
-
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        id: beam
         with:
-          elixir-version: "1.18"
+          elixir-version: "1.19"
           otp-version: "28"
 
-      - name: Cache deps
-        uses: actions/cache@v4
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             deps
             _build
-          key: ${{ runner.os }}-mix-quality-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-mix-quality-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-mix-quality-
+            ${{ runner.os }}-mix-quality-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
-      - name: Cache PLTs
-        uses: actions/cache@v4
+      # A PLT is only valid for the OTP/Elixir it was built with.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: priv/plts
-          key: ${{ runner.os }}-plt-${{ hashFiles('**/mix.lock') }}
+          key: ${{ runner.os }}-plt-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
-            ${{ runner.os }}-plt-
+            ${{ runner.os }}-plt-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
       - name: Install dependencies
         run: mix deps.get
 
       - name: Check formatting
         run: mix format --check-formatted
+
+      - name: Check for unused dependencies
+        run: mix deps.unlock --check-unused
+
+      - name: Hex audit (retired packages)
+        run: mix hex.audit
+
+      - name: Dependency audit (security advisories)
+        run: mix deps.audit
 
       - name: Run Credo
         run: mix credo --strict

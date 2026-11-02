@@ -6,25 +6,60 @@ defmodule Grafi.Algo.Isomorphism do
 
   Two graphs `g1` and `g2` are **isomorphic** if there is a bijection
   `f: V(g1) -> V(g2)` such that `(u, v) ∈ E(g1) ⇔ (f(u), f(v)) ∈ E(g2)`.
-  A pattern `p` is **sub-isomorphic** to a host `h` if `p` is isomorphic to
-  some vertex-induced subgraph of `h`.
+  A pattern `p` is **sub-isomorphic** to a host `h` if there is an injection
+  `f: V(p) -> V(h)` such that every edge `(u, v)` of `p` maps to an edge
+  `(f(u), f(v))` of `h`. The matched subgraph does not have to be induced: a
+  path on 3 vertices is sub-isomorphic to a triangle.
 
   ## Backends
 
-  When the igraph NIF is loaded, all functions in this module dispatch to
-  igraph's battle-tested `igraph_isomorphic_vf2` / `igraph_subisomorphic_vf2`
-  family. Otherwise a pure-Elixir, VF2-style backtracking search runs as a
-  fallback. The fallback uses the same feasibility pruning ideas
-  (degree-based candidate filtering, look-ahead via 1-neighbour terminal
-  sets) but is intended for small graphs only (≲ 12 vertices).
+  Every function accepts `engine: :auto | :nif | :elixir` (see `Grafi.NIF`).
+  With `:auto`, all functions use igraph's `igraph_isomorphic_vf2` /
+  `igraph_subisomorphic_vf2` family whenever the NIF is available, at any
+  graph size. Otherwise a pure-Elixir, VF2-style backtracking search runs.
+  It uses the same feasibility pruning ideas (degree-based candidate
+  filtering, look-ahead via 1-neighbour terminal sets) but is intended for
+  small graphs only (≲ 12 vertices).
+
+  ## Timeouts
+
+  VF2 is exponential in the worst case. Pass `timeout: milliseconds` (an
+  integer in `1..0xFFFFFFFF`) or `:infinity` to bound the search on either
+  engine. When the option is absent, the `:grafi` application env key
+  `vf2_timeout` applies; its default is `:infinity`:
+
+      config :grafi, vf2_timeout: 5_000
+
+  Deployments that match graphs from untrusted input should set a finite
+  `vf2_timeout`, so one adversarial graph cannot pin a dirty scheduler (or
+  the calling process) indefinitely. An explicit `:timeout` always wins
+  over the config value.
+
+  A search that runs out of time returns `{:error, :timeout}` from
+  `isomorphism/3`, `subgraph_isomorphism/3` and
+  `count_subgraph_isomorphisms/3`, and raises `Grafi.TimeoutError` from the
+  `?` predicates.
+
+  ## Errors
+
+  The `?` predicates always return a boolean. They raise
+  `Grafi.TimeoutError` on timeout and `Grafi.NIFError` for
+  `:nif_not_available` (with `engine: :nif` and no NIF) or
+  `{:igraph, message}` (an unexpected igraph failure).
+
+  The other three functions return those as `{:error, :timeout}`,
+  `{:error, :nif_not_available}` and `{:error, {:igraph, message}}`.
+
+  Every function raises `ArgumentError` if the graphs differ in
+  directedness, for an invalid `:engine` or `:timeout`, or for an invalid
+  `vf2_timeout` when no `:timeout` is given.
 
   ## Caveats
 
-    * Both graphs must have the same directedness (`:directed`/`:undirected`).
-      Otherwise `ArgumentError` is raised.
     * Vertex and edge labels are **ignored** — only structure matters.
-    * Multi-edges and self-loops in the input contribute only as a single
-      adjacency for matching purposes (matches igraph's VF2 behaviour).
+    * Multi-edges: the igraph engine matches edge multiplicities, while the
+      Elixir engine treats parallel edges as a single adjacency. The engines
+      can disagree on multigraphs.
 
   ## Examples
 
@@ -36,17 +71,38 @@ defmodule Grafi.Algo.Isomorphism do
       true
   """
 
+  alias Grafi.Args
   alias Grafi.Graph
+  alias Grafi.NIF
 
   @type mapping :: %{Graph.vertex_id() => Graph.vertex_id()}
+  @type error :: {:error, :timeout | :nif_not_available | {:igraph, String.t()}}
+
+  @timeout_throw {__MODULE__, :timeout}
+  # Duplicated in mix.exs `application/0` `env:`; keep both in sync.
+  @default_vf2_timeout :infinity
+  # The largest timeout the NIF can turn into a steady_clock deadline.
+  @max_timeout 0xFFFF_FFFF
 
   # ── Public API ────────────────────────────────────────────────────────
 
   @doc """
   Returns `true` if `g1` and `g2` are isomorphic.
 
-  Different vertex counts or edge counts immediately return `false`. For
-  undirected graphs, mismatched degree multisets are an instant `false`.
+  Different vertex counts or edge counts immediately return `false`. The
+  Elixir engine also returns `false` at once when the degree multisets
+  differ, on both graph types (in/out degree pairs when directed).
+
+  ## Options
+    - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`
+    - `:timeout` — integer milliseconds in `1..0xFFFFFFFF`, or `:infinity`;
+      defaults to `config :grafi, vf2_timeout` (`:infinity` unless set)
+
+  ## Raises
+    - `Grafi.TimeoutError` if the search runs out of time
+    - `Grafi.NIFError` if `engine: :nif` is unavailable or igraph fails
+    - `ArgumentError` for mixed directedness, an invalid option, or an
+      invalid `vf2_timeout` config when no `:timeout` is given
 
   ## Examples
 
@@ -55,21 +111,37 @@ defmodule Grafi.Algo.Isomorphism do
       iex> Grafi.Algo.Isomorphism.isomorphic?(g, g)
       true
   """
-  @spec isomorphic?(Graph.t(), Graph.t()) :: boolean()
-  def isomorphic?(%Graph{} = g1, %Graph{} = g2) do
-    same_kind!(g1, g2)
+  @spec isomorphic?(Graph.t(), Graph.t(), keyword()) :: boolean()
+  def isomorphic?(%Graph{} = g1, %Graph{} = g2, opts \\ []) do
+    timeout = validate!(g1, g2, opts)
 
     cond do
-      Graph.num_vertices(g1) != Graph.num_vertices(g2) -> false
-      Graph.num_edges(g1) != Graph.num_edges(g2) -> false
-      Graph.num_vertices(g1) == 0 -> true
-      use_nif?(g1, g2) -> nif_isomorphic?(g1, g2)
-      true -> elixir_isomorphic?(g1, g2)
+      Graph.num_vertices(g1) != Graph.num_vertices(g2) ->
+        false
+
+      Graph.num_edges(g1) != Graph.num_edges(g2) ->
+        false
+
+      Graph.num_vertices(g1) == 0 ->
+        true
+
+      true ->
+        g1
+        |> dispatch(
+          opts,
+          timeout,
+          fn t -> unwrap_ok(nif2(&NIF.nif_isomorphic_vf2/3, g1, g2, t)) end,
+          fn deadline -> elixir_isomorphic?(g1, g2, deadline) end
+        )
+        |> boolean!(timeout)
     end
   end
 
   @doc """
   Returns `true` if `pattern` is sub-isomorphic to `graph`.
+
+  Accepts the same options, and raises the same exceptions, as
+  `isomorphic?/3`.
 
   ## Examples
 
@@ -80,15 +152,26 @@ defmodule Grafi.Algo.Isomorphism do
       iex> Grafi.Algo.Isomorphism.subgraph_isomorphic?(k4, tri)
       true
   """
-  @spec subgraph_isomorphic?(Graph.t(), Graph.t()) :: boolean()
-  def subgraph_isomorphic?(%Graph{} = graph, %Graph{} = pattern) do
-    same_kind!(graph, pattern)
+  @spec subgraph_isomorphic?(Graph.t(), Graph.t(), keyword()) :: boolean()
+  def subgraph_isomorphic?(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
+    timeout = validate!(graph, pattern, opts)
 
     cond do
-      Graph.num_vertices(pattern) == 0 -> true
-      Graph.num_vertices(pattern) > Graph.num_vertices(graph) -> false
-      use_nif?(graph, pattern) -> nif_subisomorphic?(graph, pattern)
-      true -> elixir_subgraph_isomorphic?(graph, pattern)
+      Graph.num_vertices(pattern) == 0 ->
+        true
+
+      Graph.num_vertices(pattern) > Graph.num_vertices(graph) ->
+        false
+
+      true ->
+        graph
+        |> dispatch(
+          opts,
+          timeout,
+          fn t -> unwrap_ok(nif2(&NIF.nif_subisomorphic_vf2/3, graph, pattern, t)) end,
+          fn deadline -> find_one_subiso(graph, pattern, deadline) != nil end
+        )
+        |> boolean!(timeout)
     end
   end
 
@@ -97,11 +180,16 @@ defmodule Grafi.Algo.Isomorphism do
   `g2`, or `:no_isomorphism`.
 
   The returned mapping has keys from `g1`'s vertex set and values from
-  `g2`'s vertex set.
+  `g2`'s vertex set. Accepts the same options as `isomorphic?/3`.
+
+  Returns `{:error, :timeout}` if the search runs out of time,
+  `{:error, :nif_not_available}` if `engine: :nif` is unavailable, and
+  `{:error, {:igraph, message}}` if igraph fails.
   """
-  @spec isomorphism(Graph.t(), Graph.t()) :: {:ok, mapping()} | :no_isomorphism
-  def isomorphism(%Graph{} = g1, %Graph{} = g2) do
-    same_kind!(g1, g2)
+  @spec isomorphism(Graph.t(), Graph.t(), keyword()) ::
+          {:ok, mapping()} | :no_isomorphism | error()
+  def isomorphism(%Graph{} = g1, %Graph{} = g2, opts \\ []) do
+    timeout = validate!(g1, g2, opts)
 
     cond do
       Graph.num_vertices(g1) != Graph.num_vertices(g2) ->
@@ -113,21 +201,28 @@ defmodule Grafi.Algo.Isomorphism do
       Graph.num_vertices(g1) == 0 ->
         {:ok, %{}}
 
-      use_nif?(g1, g2) ->
-        nif_isomorphism(g1, g2)
-
       true ->
-        elixir_isomorphism(g1, g2)
+        dispatch(
+          g1,
+          opts,
+          timeout,
+          fn t -> nif_isomorphism(g1, g2, t) end,
+          fn deadline -> elixir_isomorphism(g1, g2, deadline) end
+        )
     end
   end
 
   @doc """
   Returns `{:ok, mapping}` with one witness sub-isomorphism (keys are
   `pattern` vertices, values are `graph` vertices), or `:no_isomorphism`.
+
+  Accepts the same options as `isomorphic?/3` and returns the same
+  `{:error, _}` tuples as `isomorphism/3`.
   """
-  @spec subgraph_isomorphism(Graph.t(), Graph.t()) :: {:ok, mapping()} | :no_isomorphism
-  def subgraph_isomorphism(%Graph{} = graph, %Graph{} = pattern) do
-    same_kind!(graph, pattern)
+  @spec subgraph_isomorphism(Graph.t(), Graph.t(), keyword()) ::
+          {:ok, mapping()} | :no_isomorphism | error()
+  def subgraph_isomorphism(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
+    timeout = validate!(graph, pattern, opts)
 
     cond do
       Graph.num_vertices(pattern) == 0 ->
@@ -136,11 +231,19 @@ defmodule Grafi.Algo.Isomorphism do
       Graph.num_vertices(pattern) > Graph.num_vertices(graph) ->
         :no_isomorphism
 
-      use_nif?(graph, pattern) ->
-        nif_subgraph_isomorphism(graph, pattern)
-
       true ->
-        elixir_subgraph_isomorphism(graph, pattern)
+        dispatch(
+          graph,
+          opts,
+          timeout,
+          fn t -> nif_subgraph_isomorphism(graph, pattern, t) end,
+          fn deadline ->
+            case find_one_subiso(graph, pattern, deadline) do
+              nil -> :no_isomorphism
+              mapping -> {:ok, mapping}
+            end
+          end
+        )
     end
   end
 
@@ -152,10 +255,14 @@ defmodule Grafi.Algo.Isomorphism do
   they hit the same vertex set in `graph` — for example a triangle pattern
   matched into K_3 yields 6 sub-isomorphisms (3! orderings), not 1. This
   matches igraph's `igraph_count_subisomorphisms_vf2` semantics.
+
+  Accepts the same options as `isomorphic?/3` and returns the same
+  `{:error, _}` tuples as `isomorphism/3`.
   """
-  @spec count_subgraph_isomorphisms(Graph.t(), Graph.t()) :: non_neg_integer()
-  def count_subgraph_isomorphisms(%Graph{} = graph, %Graph{} = pattern) do
-    same_kind!(graph, pattern)
+  @spec count_subgraph_isomorphisms(Graph.t(), Graph.t(), keyword()) ::
+          non_neg_integer() | error()
+  def count_subgraph_isomorphisms(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
+    timeout = validate!(graph, pattern, opts)
 
     cond do
       Graph.num_vertices(pattern) == 0 ->
@@ -164,128 +271,136 @@ defmodule Grafi.Algo.Isomorphism do
       Graph.num_vertices(pattern) > Graph.num_vertices(graph) ->
         0
 
-      use_nif?(graph, pattern) ->
-        nif_count_subisomorphisms(graph, pattern)
-
       true ->
-        elixir_count_subgraph_isomorphisms(graph, pattern)
+        dispatch(
+          graph,
+          opts,
+          timeout,
+          fn t -> unwrap_ok(nif2(&NIF.nif_count_subisomorphisms_vf2/3, graph, pattern, t)) end,
+          fn deadline -> elixir_count_subgraph_isomorphisms(graph, pattern, deadline) end
+        )
     end
   end
 
   # ── Dispatch helpers ──────────────────────────────────────────────────
+
+  # Runs every argument check before the early returns, so invalid options
+  # raise on every input. Returns the resolved timeout.
+  defp validate!(g1, g2, opts) do
+    Args.engine!(opts)
+    same_kind!(g1, g2)
+    resolve_timeout(opts, Application.get_env(:grafi, :vf2_timeout, @default_vf2_timeout))
+  end
 
   defp same_kind!(%Graph{type: a}, %Graph{type: b}) when a == b, do: :ok
 
   defp same_kind!(_, _),
     do: raise(ArgumentError, "isomorphism requires both graphs to have the same type")
 
-  defp use_nif? do
-    Grafi.NIF.available?() and Application.get_env(:grafi, :nif_enabled, true)
+  @doc false
+  # The effective VF2 timeout: an explicit `:timeout` option wins over the
+  # `config :grafi, vf2_timeout` value, which is validated only when used.
+  # Pure, so the config path is testable without global state.
+  @spec resolve_timeout(keyword(), term()) :: pos_integer() | :infinity
+  def resolve_timeout(opts, config_value) do
+    case Keyword.fetch(opts, :timeout) do
+      {:ok, value} -> timeout!(value, ":timeout")
+      :error -> timeout!(config_value, "config :grafi, vf2_timeout")
+    end
   end
 
-  defp use_nif?(_g1, _g2), do: use_nif?()
+  defp timeout!(:infinity, _source), do: :infinity
+  defp timeout!(ms, _source) when is_integer(ms) and ms in 1..@max_timeout, do: ms
+
+  defp timeout!(other, source) do
+    raise ArgumentError,
+          "expected #{source} to be an integer in 1..#{@max_timeout} (milliseconds) " <>
+            "or :infinity, got: #{inspect(other)}"
+  end
+
+  # VF2 has an Elixir engine, so `:auto` prefers the NIF at any size rather
+  # than applying :nif_threshold. `nif_fun` receives the NIF's timeout
+  # argument (0 = none); `elixir_fun` receives an absolute monotonic deadline.
+  defp dispatch(host, opts, timeout, nif_fun, elixir_fun) do
+    case NIF.engine(host, opts, prefer: :nif) do
+      :nif -> nif_fun.(if timeout == :infinity, do: 0, else: timeout)
+      :elixir -> run_elixir(timeout, elixir_fun)
+      {:error, _} = error -> error
+    end
+  end
+
+  # The `?` predicates promise a strict boolean, so the error tuples the
+  # other functions return become exceptions here.
+  defp boolean!(result, _timeout) when is_boolean(result), do: result
+  defp boolean!({:error, :timeout}, timeout), do: raise(Grafi.TimeoutError, timeout: timeout)
+  defp boolean!({:error, reason}, _timeout), do: raise(Grafi.NIFError, reason: reason)
+
+  defp run_elixir(timeout, fun) do
+    deadline =
+      if timeout == :infinity,
+        do: :infinity,
+        else: System.monotonic_time(:millisecond) + timeout
+
+    fun.(deadline)
+  catch
+    :throw, @timeout_throw -> {:error, :timeout}
+  end
 
   # ── NIF dispatch ──────────────────────────────────────────────────────
 
-  defp nif_isomorphic?(g1, g2) do
+  defp nif2(nif_fun, g1, g2, timeout_ms) do
     {_, csr1} = Graph.to_csr(g1)
     {_, csr2} = Graph.to_csr(g2)
-    _ = Grafi.NIF.validate_csr!(csr1)
-    _ = Grafi.NIF.validate_csr!(csr2)
-
-    case Grafi.NIF.nif_isomorphic_vf2(csr1, csr2) do
-      {:ok, iso} -> iso
-      {:error, _reason} -> elixir_isomorphic?(g1, g2)
-    end
+    NIF.call(nif_fun.(csr1, csr2, timeout_ms))
   end
 
-  defp nif_subisomorphic?(graph, pattern) do
-    {_, csr_g} = Graph.to_csr(graph)
-    {_, csr_p} = Graph.to_csr(pattern)
-    _ = Grafi.NIF.validate_csr!(csr_g)
-    _ = Grafi.NIF.validate_csr!(csr_p)
+  defp unwrap_ok({:ok, value}), do: value
+  defp unwrap_ok({:error, _} = error), do: error
 
-    case Grafi.NIF.nif_subisomorphic_vf2(csr_g, csr_p) do
-      {:ok, iso} -> iso
-      {:error, _reason} -> elixir_subgraph_isomorphic?(graph, pattern)
-    end
-  end
+  defp nif_isomorphism(g1, g2, timeout_ms) do
+    {_, csr1} = Graph.to_csr(g1)
+    {_, csr2} = Graph.to_csr(g2)
 
-  defp nif_isomorphism(g1, g2) do
-    {idx1, csr1} = Graph.to_csr(g1)
-    {idx2, csr2} = Graph.to_csr(g2)
-    _ = Grafi.NIF.validate_csr!(csr1)
-    _ = Grafi.NIF.validate_csr!(csr2)
-
-    rev1 = reverse_index(idx1)
-    rev2 = reverse_index(idx2)
-
-    case Grafi.NIF.nif_isomorphism_vf2(csr1, csr2) do
+    case NIF.call(NIF.nif_isomorphism_vf2(csr1, csr2, timeout_ms)) do
       {:ok, map12} ->
         mapping =
           map12
           |> Enum.with_index()
-          |> Map.new(fn {j, i} -> {Map.fetch!(rev1, i), Map.fetch!(rev2, j)} end)
+          |> Map.new(fn {j, i} -> {elem(csr1.vertices, i), elem(csr2.vertices, j)} end)
 
         {:ok, mapping}
 
       {:error, :no_isomorphism} ->
         :no_isomorphism
 
-      {:error, _reason} ->
-        elixir_isomorphism(g1, g2)
+      {:error, _} = error ->
+        error
     end
   end
 
-  defp nif_subgraph_isomorphism(graph, pattern) do
-    # igraph's subisomorphic_vf2(G, P) returns map12 of length |V(G)|
-    # where entry i is the pattern vertex that host vertex i was mapped
-    # to (or -1 if host vertex i isn't part of the match). We invert to
-    # produce a pattern -> host mapping.
-    {idx_g, csr_g} = Graph.to_csr(graph)
-    {idx_p, csr_p} = Graph.to_csr(pattern)
-    _ = Grafi.NIF.validate_csr!(csr_g)
-    _ = Grafi.NIF.validate_csr!(csr_p)
+  # igraph's subisomorphic_vf2(G, P) returns map12 of length |V(G)| where
+  # entry i is the pattern vertex that host vertex i was mapped to (or -1 if
+  # host vertex i isn't part of the match). Invert it to pattern -> host.
+  defp nif_subgraph_isomorphism(graph, pattern, timeout_ms) do
+    {_, csr_g} = Graph.to_csr(graph)
+    {_, csr_p} = Graph.to_csr(pattern)
 
-    rev_g = reverse_index(idx_g)
-    rev_p = reverse_index(idx_p)
-
-    case Grafi.NIF.nif_subgraph_isomorphism_vf2(csr_g, csr_p) do
+    case NIF.call(NIF.nif_subgraph_isomorphism_vf2(csr_g, csr_p, timeout_ms)) do
       {:ok, map12} ->
         mapping =
-          map12
-          |> Enum.with_index()
-          |> Enum.reduce(%{}, fn {p_idx, g_idx}, acc ->
-            if p_idx == -1 do
-              acc
-            else
-              Map.put(acc, Map.fetch!(rev_p, p_idx), Map.fetch!(rev_g, g_idx))
-            end
-          end)
+          for {p_idx, g_idx} <- Enum.with_index(map12), p_idx != -1, into: %{} do
+            {elem(csr_p.vertices, p_idx), elem(csr_g.vertices, g_idx)}
+          end
 
         {:ok, mapping}
 
       {:error, :no_isomorphism} ->
         :no_isomorphism
 
-      {:error, _reason} ->
-        elixir_subgraph_isomorphism(graph, pattern)
+      {:error, _} = error ->
+        error
     end
   end
-
-  defp nif_count_subisomorphisms(graph, pattern) do
-    {_, csr_g} = Graph.to_csr(graph)
-    {_, csr_p} = Graph.to_csr(pattern)
-    _ = Grafi.NIF.validate_csr!(csr_g)
-    _ = Grafi.NIF.validate_csr!(csr_p)
-
-    case Grafi.NIF.nif_count_subisomorphisms_vf2(csr_g, csr_p) do
-      {:ok, n} -> n
-      {:error, _reason} -> elixir_count_subgraph_isomorphisms(graph, pattern)
-    end
-  end
-
-  defp reverse_index(idx), do: Map.new(idx, fn {v, i} -> {i, v} end)
 
   # ── Pure-Elixir VF2-style backtracking fallback ───────────────────────
   #
@@ -294,52 +409,59 @@ defmodule Grafi.Algo.Isomorphism do
   # neighbourhood" heuristic to keep the branching factor down. It also
   # falls back to the unmapped pool when no neighbour candidate exists.
   # Adequate for small graphs (≤ ~12 vertices).
+  #
+  # The search state that never changes lives in a context map:
+  #   pat_vs   : vertices of the pattern (the smaller graph)
+  #   host_vs  : vertices of the host (the larger or same-size graph)
+  #   pat_adj  : adjacency map for pat_vs
+  #   host_adj : adjacency map for host_vs
+  #   dir?     : edge mode
+  #   strict?  : true for full isomorphism (degrees must match exactly),
+  #              false for sub-isomorphism (host degree must dominate)
+  #   deadline : monotonic millisecond deadline, or :infinity
 
-  defp elixir_isomorphic?(g1, g2) do
-    if degree_seq(g1) != degree_seq(g2),
-      do: false,
-      else: find_one_iso(g1, g2) != nil
+  defp elixir_isomorphic?(g1, g2, deadline) do
+    degree_seq(g1) == degree_seq(g2) and find_one(g1, g2, true, deadline) != nil
   end
 
-  defp elixir_isomorphism(g1, g2) do
-    if degree_seq(g1) != degree_seq(g2) do
-      :no_isomorphism
+  defp elixir_isomorphism(g1, g2, deadline) do
+    with true <- degree_seq(g1) == degree_seq(g2),
+         mapping when mapping != nil <- find_one(g1, g2, true, deadline) do
+      {:ok, mapping}
     else
-      case find_one_iso(g1, g2) do
-        nil -> :no_isomorphism
-        mapping -> {:ok, mapping}
-      end
+      _ -> :no_isomorphism
     end
   end
 
-  defp elixir_subgraph_isomorphic?(graph, pattern) do
-    find_one_subiso(graph, pattern) != nil
+  defp find_one_subiso(graph, pattern, deadline), do: find_one(pattern, graph, false, deadline)
+
+  defp elixir_count_subgraph_isomorphisms(graph, pattern, deadline) do
+    backtrack_count(context(pattern, graph, false, deadline), %{}, MapSet.new())
   end
 
-  defp elixir_subgraph_isomorphism(graph, pattern) do
-    case find_one_subiso(graph, pattern) do
-      nil -> :no_isomorphism
-      mapping -> {:ok, mapping}
-    end
+  defp find_one(pattern, host, strict?, deadline) do
+    backtrack_one(context(pattern, host, strict?, deadline), %{}, MapSet.new())
   end
 
-  defp elixir_count_subgraph_isomorphisms(graph, pattern) do
-    pattern_vs = Graph.vertices(pattern)
-    host_vs = Graph.vertices(graph)
-    pattern_adj = adjacency(pattern, pattern_vs)
-    host_adj = adjacency(graph, host_vs)
+  defp context(pattern, host, strict?, deadline) do
+    pat_vs = Graph.vertices(pattern)
+    host_vs = Graph.vertices(host)
 
-    backtrack_count(
-      pattern_vs,
-      host_vs,
-      pattern_adj,
-      host_adj,
-      pattern.type == :directed,
-      pattern,
-      graph,
-      %{},
-      MapSet.new()
-    )
+    %{
+      pat_vs: pat_vs,
+      host_vs: host_vs,
+      pat_adj: adjacency(pattern, pat_vs),
+      host_adj: adjacency(host, host_vs),
+      dir?: pattern.type == :directed,
+      strict?: strict?,
+      deadline: deadline
+    }
+  end
+
+  defp check_deadline!(%{deadline: :infinity}), do: :ok
+
+  defp check_deadline!(%{deadline: deadline}) do
+    if System.monotonic_time(:millisecond) >= deadline, do: throw(@timeout_throw), else: :ok
   end
 
   # ── Internal: backtracking ───────────────────────────────────────────
@@ -354,36 +476,6 @@ defmodule Grafi.Algo.Isomorphism do
     |> Enum.sort()
   end
 
-  defp find_one_iso(g1, g2) do
-    vs1 = Graph.vertices(g1)
-    vs2 = Graph.vertices(g2)
-    adj1 = adjacency(g1, vs1)
-    adj2 = adjacency(g2, vs2)
-    directed? = g1.type == :directed
-    backtrack_one(vs1, vs2, adj1, adj2, directed?, g1, g2, %{}, MapSet.new(), true)
-  end
-
-  defp find_one_subiso(graph, pattern) do
-    pattern_vs = Graph.vertices(pattern)
-    host_vs = Graph.vertices(graph)
-    pattern_adj = adjacency(pattern, pattern_vs)
-    host_adj = adjacency(graph, host_vs)
-    directed? = pattern.type == :directed
-
-    backtrack_one(
-      pattern_vs,
-      host_vs,
-      pattern_adj,
-      host_adj,
-      directed?,
-      pattern,
-      graph,
-      %{},
-      MapSet.new(),
-      false
-    )
-  end
-
   # adjacency: %{v => %{out: MapSet, in: MapSet}}
   defp adjacency(g, vs) do
     Map.new(vs, fn v ->
@@ -395,143 +487,74 @@ defmodule Grafi.Algo.Isomorphism do
     end)
   end
 
-  # backtrack_one searches for a single witness.
-  #   pattern_vs  : list of vertices in the *smaller* graph
-  #   host_vs     : list of vertices in the *larger* (or same) graph
-  #   pat_adj     : adjacency map for pattern_vs
-  #   host_adj    : adjacency map for host_vs
-  #   directed?   : edge mode
-  #   pat_graph   : the pattern graph struct (for degree)
-  #   host_graph  : the host graph struct (for degree)
-  #   mapping     : pattern_vertex => host_vertex (so far)
-  #   used_hosts  : MapSet of host vertices already used
-  #   strict?     : true for full isomorphism (bijection enforced via vertex counts +
-  #                 degree-seq equality up the stack), false for sub-isomorphism
-  defp backtrack_one(
-         pat_vs,
-         _host_vs,
-         _pat_adj,
-         _host_adj,
-         _dir?,
-         _pg,
-         _hg,
-         mapping,
-         _used,
-         _strict?
-       )
-       when length(pat_vs) == map_size(mapping) do
-    mapping
-  end
+  # Searches for a single witness mapping (pattern vertex => host vertex), or
+  # returns nil.
+  defp backtrack_one(ctx, mapping, used) do
+    check_deadline!(ctx)
 
-  defp backtrack_one(pat_vs, host_vs, pat_adj, host_adj, dir?, pg, hg, mapping, used, strict?) do
-    case pick_next_pattern_vertex(pat_vs, mapping) do
+    case pick_next_pattern_vertex(ctx.pat_vs, mapping) do
       nil ->
         mapping
 
       v ->
-        candidates =
-          candidates_for(v, mapping, used, host_vs, host_adj, pat_adj, dir?, pg, hg, strict?)
-
-        Enum.find_value(candidates, fn h ->
-          if consistent?(v, h, mapping, pat_adj, host_adj, dir?) do
-            backtrack_one(
-              pat_vs,
-              host_vs,
-              pat_adj,
-              host_adj,
-              dir?,
-              pg,
-              hg,
-              Map.put(mapping, v, h),
-              MapSet.put(used, h),
-              strict?
-            )
-          else
-            nil
-          end
+        Enum.find_value(candidates_for(v, mapping, used, ctx), fn h ->
+          if consistent?(v, h, mapping, ctx),
+            do: backtrack_one(ctx, Map.put(mapping, v, h), MapSet.put(used, h)),
+            else: nil
         end)
     end
   end
 
-  defp backtrack_count(pat_vs, host_vs, pat_adj, host_adj, dir?, pg, hg, mapping, used)
-       when length(pat_vs) == map_size(mapping) do
-    _ = {pat_vs, host_vs, pat_adj, host_adj, dir?, pg, hg, mapping, used}
-    1
-  end
+  defp backtrack_count(ctx, mapping, used) do
+    check_deadline!(ctx)
 
-  defp backtrack_count(pat_vs, host_vs, pat_adj, host_adj, dir?, pg, hg, mapping, used) do
-    case pick_next_pattern_vertex(pat_vs, mapping) do
+    case pick_next_pattern_vertex(ctx.pat_vs, mapping) do
       nil ->
         1
 
       v ->
-        candidates =
-          candidates_for(v, mapping, used, host_vs, host_adj, pat_adj, dir?, pg, hg, false)
-
-        Enum.reduce(candidates, 0, fn h, acc ->
-          if consistent?(v, h, mapping, pat_adj, host_adj, dir?) do
-            acc +
-              backtrack_count(
-                pat_vs,
-                host_vs,
-                pat_adj,
-                host_adj,
-                dir?,
-                pg,
-                hg,
-                Map.put(mapping, v, h),
-                MapSet.put(used, h)
-              )
-          else
-            acc
-          end
+        Enum.reduce(candidates_for(v, mapping, used, ctx), 0, fn h, acc ->
+          if consistent?(v, h, mapping, ctx),
+            do: acc + backtrack_count(ctx, Map.put(mapping, v, h), MapSet.put(used, h)),
+            else: acc
         end)
     end
   end
 
-  # Next pattern vertex to map: prefer one adjacent to the already-mapped
-  # frontier (the classic VF2 "T1 ∪ T2" heuristic). Falls back to any
-  # unmapped pattern vertex.
+  # Next pattern vertex to map: the first unmapped one, or nil when every
+  # pattern vertex is mapped.
   defp pick_next_pattern_vertex(pat_vs, mapping) do
-    mapped = Map.keys(mapping) |> MapSet.new()
-    unmapped = Enum.reject(pat_vs, &MapSet.member?(mapped, &1))
-
-    case unmapped do
-      [] -> nil
-      _ -> hd(unmapped)
-    end
+    Enum.find(pat_vs, &(not Map.has_key?(mapping, &1)))
   end
 
-  defp candidates_for(v, mapping, used, host_vs, host_adj, pat_adj, _dir?, pg, hg, strict?) do
+  defp candidates_for(v, mapping, used, ctx) do
+    %{host_vs: host_vs, host_adj: host_adj, pat_adj: pat_adj, strict?: strict?} = ctx
     pat_deg_out = MapSet.size(pat_adj[v].out)
     pat_deg_in = MapSet.size(pat_adj[v].in)
 
-    pool = Enum.reject(host_vs, &MapSet.member?(used, &1))
-
     pool =
-      Enum.filter(pool, fn h ->
+      Enum.filter(host_vs, fn h ->
         ho_out = MapSet.size(host_adj[h].out)
         ho_in = MapSet.size(host_adj[h].in)
 
-        if strict? do
-          # Full isomorphism: degrees must match exactly.
-          ho_out == pat_deg_out and ho_in == pat_deg_in
-        else
-          # Sub-isomorphism: host must dominate pattern degree.
-          ho_out >= pat_deg_out and ho_in >= pat_deg_in
-        end
+        not MapSet.member?(used, h) and
+          if strict? do
+            # Full isomorphism: degrees must match exactly.
+            ho_out == pat_deg_out and ho_in == pat_deg_in
+          else
+            # Sub-isomorphism: host must dominate pattern degree.
+            ho_out >= pat_deg_out and ho_in >= pat_deg_in
+          end
       end)
 
-    # Tiny boost: if some neighbour of v is already mapped, restrict
-    # candidates to neighbours of that mapped host vertex. The
-    # consistency check would still reject inconsistent picks, but
-    # filtering early prunes the search.
+    # If some neighbour of v is already mapped, restrict candidates to
+    # neighbours of that mapped host vertex. The consistency check would
+    # still reject inconsistent picks, but filtering early prunes the search.
     mapped_neighbour_in_pattern =
       Enum.find(MapSet.union(pat_adj[v].out, pat_adj[v].in), &Map.has_key?(mapping, &1))
 
     case mapped_neighbour_in_pattern do
       nil ->
-        _ = {pg, hg}
         pool
 
       pu ->
@@ -541,32 +564,22 @@ defmodule Grafi.Algo.Isomorphism do
     end
   end
 
-  # consistent?/6 — for each already-mapped pattern neighbour u of v,
-  # mapping[u] must be a corresponding neighbour of h.
-  defp consistent?(v, h, mapping, pat_adj, host_adj, directed?) do
+  # For each already-mapped pattern neighbour u of v, mapping[u] must be a
+  # corresponding neighbour of h.
+  defp consistent?(v, h, mapping, %{pat_adj: pat_adj, host_adj: host_adj, dir?: dir?}) do
     pa = pat_adj[v]
     ha = host_adj[h]
 
-    if directed? do
-      Enum.all?(pa.out, fn u ->
-        case Map.fetch(mapping, u) do
-          {:ok, hu} -> MapSet.member?(ha.out, hu)
-          :error -> true
-        end
-      end) and
-        Enum.all?(pa.in, fn u ->
-          case Map.fetch(mapping, u) do
-            {:ok, hu} -> MapSet.member?(ha.in, hu)
-            :error -> true
-          end
-        end)
-    else
-      Enum.all?(pa.out, fn u ->
-        case Map.fetch(mapping, u) do
-          {:ok, hu} -> MapSet.member?(ha.out, hu)
-          :error -> true
-        end
-      end)
-    end
+    mapped_within?(pa.out, ha.out, mapping) and
+      (not dir? or mapped_within?(pa.in, ha.in, mapping))
+  end
+
+  defp mapped_within?(pattern_neighbours, host_neighbours, mapping) do
+    Enum.all?(pattern_neighbours, fn u ->
+      case Map.fetch(mapping, u) do
+        {:ok, hu} -> MapSet.member?(host_neighbours, hu)
+        :error -> true
+      end
+    end)
   end
 end

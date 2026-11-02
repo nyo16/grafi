@@ -127,23 +127,21 @@ defmodule Grafi.UnionFind do
     if rx == ry do
       uf
     else
+      # The match also proves `uf` is a struct, so plain map updates suffice
+      # (Elixir 1.19's type checker warns on `%__MODULE__{uf | ...}` here).
       %__MODULE__{parents: p, ranks: r} = uf
       rank_x = Map.fetch!(r, rx)
       rank_y = Map.fetch!(r, ry)
 
       cond do
         rank_x < rank_y ->
-          %__MODULE__{uf | parents: Map.put(p, rx, ry)}
+          %{uf | parents: Map.put(p, rx, ry)}
 
         rank_x > rank_y ->
-          %__MODULE__{uf | parents: Map.put(p, ry, rx)}
+          %{uf | parents: Map.put(p, ry, rx)}
 
         true ->
-          %__MODULE__{
-            uf
-            | parents: Map.put(p, ry, rx),
-              ranks: Map.put(r, rx, rank_x + 1)
-          }
+          %{uf | parents: Map.put(p, ry, rx), ranks: Map.put(r, rx, rank_x + 1)}
       end
     end
   end

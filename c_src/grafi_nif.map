@@ -1,0 +1,7 @@
+/* Linux linker version script: the NIF exports only nif_init. Everything
+ * else, including weak C++ template instantiations and a statically linked
+ * igraph, stays local. */
+{
+  global: nif_init;
+  local: *;
+};

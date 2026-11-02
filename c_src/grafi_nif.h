@@ -7,6 +7,18 @@
 #pragma once
 
 #include <igraph.h>
+
+// The Makefile checks these too; the guards catch builds that bypass it
+// (e.g. an unexpected include path) with a readable error.
+#if !defined(IGRAPH_VERSION_MAJOR) || IGRAPH_VERSION_MAJOR < 1
+#error "grafi requires igraph >= 1.0"
+#endif
+// The NIF installs igraph error handlers per thread (dirty schedulers).
+#if !defined(IGRAPH_THREAD_SAFE) || !IGRAPH_THREAD_SAFE
+#error "grafi requires igraph built with thread-local storage (IGRAPH_ENABLE_TLS)"
+#endif
+
+#include <chrono>
 #include <vector>
 #include <cstdint>
 #include <string>
@@ -15,10 +27,11 @@ namespace grafi {
 
 // ── Graph conversion ───────────────────────────────────────────────────
 //
-// Elixir sends graphs as CSR (Compressed Sparse Row):
-//   row_offsets: [int64]  — length n_vertices + 1
-//   col_indices: [int64]  — length n_edges
-//   weights:     [double] — length n_edges
+// Elixir sends graphs as CSR (Compressed Sparse Row). The three arrays arrive
+// as native-endian binaries of 8-byte elements (see Grafi.Graph.to_csr/1):
+//   row_offsets: int64  — length n_vertices + 1
+//   col_indices: int64  — length n_edges
+//   weights:     double — length n_edges
 //   n_vertices:  int64
 //   directed:    bool
 
@@ -33,9 +46,6 @@ struct CsrGraph {
 // Build an igraph_t from CSR data. Caller must destroy with igraph_destroy().
 // Throws std::runtime_error on igraph failure.
 igraph_t csr_to_igraph(const CsrGraph& csr);
-
-// Build an igraph weight vector. Caller must destroy with igraph_vector_destroy().
-igraph_vector_t csr_to_weights(const CsrGraph& csr);
 
 // Validate the structural invariants of a CSR map. Throws std::invalid_argument
 // on the first violation. Call immediately after decode_csr.
@@ -88,25 +98,37 @@ ShortestPathResult compute_dijkstra(const CsrGraph& g, int64_t source, int64_t t
 // implementation in `lib/grafi/algo/shortest_path.ex` today). igraph provides
 // `igraph_get_shortest_path_bellman_ford` which would be a straight port of
 // `compute_dijkstra` with negative-weight support and negative-cycle reporting.
-CentralityResult   compute_betweenness(const CsrGraph& g);
+CentralityResult   compute_betweenness(const CsrGraph& g, bool weighted, bool normalized);
 CentralityResult   compute_closeness(const CsrGraph& g);
 CommunityResult    compute_louvain(const CsrGraph& g);
 CommunityResult    compute_label_propagation(const CsrGraph& g);
-CommunityResult    compute_leiden(const CsrGraph& g, double resolution);
+CommunityResult    compute_leiden(const CsrGraph& g, double resolution,
+                                  igraph_leiden_objective_t objective);
 SccResult          compute_scc(const CsrGraph& g);
 bool               compute_is_acyclic(const CsrGraph& g);
-std::vector<int64_t> compute_topological_sort(const CsrGraph& g);
+bool               compute_topological_sort(const CsrGraph& g, std::vector<int64_t>& out);
+
+// Wall-clock budget for one VF2 search. `timeout_ms <= 0`, or above
+// 0xFFFFFFFF, disables it.
+// `timed_out` is set once the deadline passes; from then on the search is
+// pruned, so a negative answer or a count is incomplete and must be reported
+// as a timeout. A positive (iso == true) answer is still a valid witness.
+struct Vf2Budget {
+    std::chrono::steady_clock::time_point deadline{};
+    bool     enabled   = false;
+    bool     timed_out = false;
+    uint32_t tick      = 0;
+    explicit Vf2Budget(int64_t timeout_ms);
+};
 
 // VF2 (sub)graph isomorphism — wrappers around igraph's VF2 implementation.
-//
-// `compute_isomorphic_vf2` returns only the boolean iso flag (and an empty
-// mapping). `compute_isomorphism_vf2` additionally returns one witness mapping
-// when iso == true. Same convention for the sub-isomorphism variants:
-// `g1` is the *host* graph, `g2` is the *pattern*.
-bool                 compute_isomorphic_vf2(const CsrGraph& g1, const CsrGraph& g2);
-bool                 compute_subisomorphic_vf2(const CsrGraph& g1, const CsrGraph& g2);
-IsomorphismResult    compute_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2);
-IsomorphismResult    compute_subgraph_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2);
-int64_t              compute_count_subisomorphisms_vf2(const CsrGraph& g1, const CsrGraph& g2);
+// With `want_mapping == false` only the iso flag is computed. For the
+// sub-isomorphism variants `g1` is the *host* graph, `g2` is the *pattern*.
+IsomorphismResult    compute_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2,
+                                             bool want_mapping, Vf2Budget& budget);
+IsomorphismResult    compute_subgraph_isomorphism_vf2(const CsrGraph& g1, const CsrGraph& g2,
+                                                      bool want_mapping, Vf2Budget& budget);
+int64_t              compute_count_subisomorphisms_vf2(const CsrGraph& g1, const CsrGraph& g2,
+                                                       Vf2Budget& budget);
 
 } // namespace grafi

@@ -1,0 +1,148 @@
+defmodule Grafi.Algo.CentralityTest do
+  use ExUnit.Case, async: true
+
+  alias Grafi.Algo.Centrality
+  alias Grafi.Graph
+
+  defp undirected(edges), do: Graph.new(type: :undirected) |> Graph.add_edges(edges)
+
+  defp star(leaves), do: undirected(for l <- 1..leaves, do: {:c, l})
+
+  for engine <- [:nif, :elixir] do
+    @opts [engine: engine]
+
+    describe "betweenness/2 fixtures (#{engine} engine)" do
+      if engine == :nif, do: @describetag(:nif)
+
+      # Normalized undirected scores divide the per-pair count by
+      # (n - 1)(n - 2) / 2, the number of pairs not involving the vertex.
+
+      test "P3: the middle vertex lies on the one a–c path" do
+        # raw b = 1 pair; scale 2 / ((3 - 1)(3 - 2)) = 1.
+        assert Centrality.betweenness(undirected([{:a, :b}, {:b, :c}]), @opts) ==
+                 %{a: 0.0, b: 1.0, c: 0.0}
+      end
+
+      test "star with 4 leaves: centre 1.0, leaves 0.0" do
+        # raw centre = C(4, 2) = 6 leaf pairs; scale 2 / (4 · 3) = 1/6.
+        assert Centrality.betweenness(star(4), @opts) ==
+                 %{:c => 1.0, 1 => 0.0, 2 => 0.0, 3 => 0.0, 4 => 0.0}
+      end
+
+      test "K4: every pair is adjacent, so all scores are 0.0" do
+        k4 = undirected(for i <- 1..3, j <- (i + 1)..4, do: {i, j})
+        assert Centrality.betweenness(k4, @opts) == %{1 => 0.0, 2 => 0.0, 3 => 0.0, 4 => 0.0}
+      end
+
+      test "directed path a -> b -> c: b is 1.0 raw and 0.5 normalized" do
+        g = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}, {:b, :c}])
+
+        # Directed normalization: 1 / ((n - 1)(n - 2)) = 1/2.
+        assert Centrality.betweenness(g, @opts) == %{a: 0.0, b: 0.5, c: 0.0}
+
+        assert Centrality.betweenness(g, [normalized: false] ++ @opts) ==
+                 %{a: 0.0, b: 1.0, c: 0.0}
+      end
+
+      test "weighted: the heavy direct edge is bypassed through the middle vertex" do
+        g = undirected([{:a, :c, weight: 10.0}, {:a, :b, weight: 1.0}, {:b, :c, weight: 1.0}])
+
+        assert Centrality.betweenness(g, @opts) == %{a: 0.0, b: 0.0, c: 0.0}
+
+        assert Centrality.betweenness(g, [weighted: true] ++ @opts) ==
+                 %{a: 0.0, b: 1.0, c: 0.0}
+      end
+
+      test "weighted: two equal-length routes split the dependency" do
+        # a reaches d via b or via c, both of length 2.
+        g = undirected([{:a, :b, weight: 1.0}, {:b, :d, weight: 1.0}, {:a, :c}, {:c, :d}])
+
+        # raw b = c = 1/2; scale 2 / ((4 - 1)(4 - 2)) = 1/3.
+        result = Centrality.betweenness(g, [weighted: true] ++ @opts)
+        assert_in_delta result[:b], 1 / 6, 1.0e-12
+        assert_in_delta result[:c], 1 / 6, 1.0e-12
+      end
+    end
+
+    describe "pagerank/2 (#{engine} engine)" do
+      if engine == :nif, do: @describetag(:nif)
+
+      test "a dangling vertex redistributes its rank (NetworkX values for a -> b)" do
+        g = Graph.new(type: :directed) |> Graph.add_edge(:a, :b)
+
+        # With b's mass spread evenly: a = 0.075 + 0.425 b and a + b = 1,
+        # so a = 0.5 / 1.425.
+        ranks = Centrality.pagerank(g, @opts)
+        assert_in_delta ranks[:a], 0.5 / 1.425, 1.0e-6
+        assert_in_delta ranks[:b], 1 - 0.5 / 1.425, 1.0e-6
+      end
+
+      test "edge weights split a vertex's rank proportionally" do
+        g =
+          Graph.new(type: :directed)
+          |> Graph.add_edge(:a, :b, weight: 3.0)
+          |> Graph.add_edge(:a, :c, weight: 1.0)
+
+        # Nothing points at a, so a holds only the shared base term; b and c
+        # get that base plus 0.85 · a split 3:1.
+        ranks = Centrality.pagerank(g, @opts)
+        assert_in_delta ranks[:b] - ranks[:a], 0.85 * 0.75 * ranks[:a], 1.0e-6
+        assert_in_delta ranks[:c] - ranks[:a], 0.85 * 0.25 * ranks[:a], 1.0e-6
+      end
+
+      test "damping: 0.0 gives the uniform distribution" do
+        g = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :b}])
+        ranks = Centrality.pagerank(g, [damping: 0.0] ++ @opts)
+
+        for v <- [:a, :b, :c], do: assert_in_delta(ranks[v], 1 / 3, 1.0e-9)
+      end
+    end
+  end
+
+  describe "pagerank/2 Elixir-engine options" do
+    test "iterations: 1 returns a single power-iteration step" do
+      g = Graph.new(type: :directed) |> Graph.add_edge(:a, :b)
+
+      # From [0.5, 0.5]: base = 0.15/2 + 0.85 · 0.5 (dangling b) / 2 = 0.2875;
+      # b additionally receives 0.85 · 0.5 from a.
+      ranks = Centrality.pagerank(g, iterations: 1, engine: :elixir)
+      assert_in_delta ranks[:a], 0.2875, 1.0e-12
+      assert_in_delta ranks[:b], 0.7125, 1.0e-12
+    end
+
+    test "a looser tolerance stops earlier" do
+      g = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:a, :c}])
+
+      loose = Centrality.pagerank(g, tolerance: 0.1, engine: :elixir)
+      tight = Centrality.pagerank(g, tolerance: 1.0e-12, iterations: 1_000, engine: :elixir)
+
+      assert loose != tight
+      for v <- [:a, :b, :c], do: assert_in_delta(loose[v], tight[v], 0.1)
+    end
+  end
+
+  describe "pagerank/2 Elixir engine on undirected self-loops" do
+    test "a self-loop of weight 3 on a triangle counts twice, as in igraph" do
+      g = undirected([{:a, :b}, {:b, :c}, {:c, :a}, {:a, :a, weight: 3.0}])
+
+      # Hand power iteration with the loop adding 2 × 3 to a's outgoing
+      # weight gives a = 38/63, b = c = 25/126.
+      ranks = Centrality.pagerank(g, engine: :elixir, tolerance: 1.0e-12, iterations: 1_000)
+
+      for {v, expected} <- [a: 38 / 63, b: 25 / 126, c: 25 / 126],
+          do: assert_in_delta(ranks[v], expected, 1.0e-9)
+    end
+  end
+
+  describe "degree_centrality/1" do
+    test "star: centre is adjacent to every other vertex" do
+      assert Centrality.degree_centrality(star(4)) ==
+               %{:c => 1.0, 1 => 0.25, 2 => 0.25, 3 => 0.25, 4 => 0.25}
+    end
+
+    test "fewer than two vertices yields %{}" do
+      assert Centrality.degree_centrality(Graph.new()) == %{}
+      assert Centrality.degree_centrality(Graph.new() |> Graph.add_vertex(:a)) == %{}
+    end
+  end
+end
