@@ -32,12 +32,16 @@ defmodule Grafi.Serialize.Util do
   """
   @spec parse_number(String.t()) :: {:ok, float()} | {:error, :bad_number}
   def parse_number(s) when is_binary(s) do
-    # Float.parse/1 also accepts integer text and returns :error on
-    # overflow, so no Integer.parse fallback (whose `* 1.0` would raise).
+    # Float.parse/1 also accepts integer text, so no Integer.parse fallback
+    # (whose `* 1.0` would raise on overflow).
     case Float.parse(s) do
       {f, ""} -> {:ok, f}
       _ -> {:error, :bad_number}
     end
+  rescue
+    # Elixir < 1.20 raises (instead of returning :error) when the digits
+    # overflow a float, e.g. a 400-digit integer.
+    ArgumentError -> {:error, :bad_number}
   end
 
   @doc "Like `parse_number/1`, tagged for decoders: `{:error, {:invalid_weight, s}}`."
