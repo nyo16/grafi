@@ -54,12 +54,15 @@ defmodule Grafi.Algo.Cliques do
       adj = Neighborhood.sets(g, self_loops: :drop)
 
       # bron_kerbosch throws once `max` cliques are collected; catch unwinds
-      # the recursion and returns what we have. With the default :infinity the
-      # limit check is skipped entirely, so there is no overhead.
+      # the recursion and returns what we have. With the default :infinity
+      # the count never matches, so every clique is enumerated.
       try do
-        bron_kerbosch(MapSet.new(), MapSet.new(vs), MapSet.new(), adj, [], max)
+        {_count, cliques} =
+          bron_kerbosch(MapSet.new(), MapSet.new(vs), MapSet.new(), adj, {0, []}, max)
+
+        cliques
       catch
-        {:max_results, acc} -> acc
+        {:max_results, cliques} -> cliques
       end
     end
   end
@@ -93,11 +96,12 @@ defmodule Grafi.Algo.Cliques do
   # ── Internals ─────────────────────────────────────────────────────────
 
   # Bron–Kerbosch with pivot (Tomita-style choice: pivot maximizes
-  # |P ∩ N(u)| to minimize the branching factor).
-  defp bron_kerbosch(r, p, x, adj, acc, max) do
+  # |P ∩ N(u)| to minimize the branching factor). `acc` is
+  # `{count, cliques}`, so the `:max_results` check is O(1).
+  defp bron_kerbosch(r, p, x, adj, {count, cliques} = acc, max) do
     if MapSet.size(p) == 0 and MapSet.size(x) == 0 do
-      acc = [r | acc]
-      if max != :infinity and length(acc) >= max, do: throw({:max_results, acc})
+      acc = {count + 1, [r | cliques]}
+      if count + 1 == max, do: throw({:max_results, elem(acc, 1)})
       acc
     else
       do_bk(r, p, x, adj, acc, max)

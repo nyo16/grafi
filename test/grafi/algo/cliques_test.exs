@@ -201,5 +201,29 @@ defmodule Grafi.Algo.CliquesTest do
       assert length(capped) == 1
       assert Enum.all?(capped, &is_struct(&1, MapSet))
     end
+
+    # The cap is checked against a running count. The old check called
+    # length/1 on the result list after every clique, O(k²) for k cliques:
+    # 4x the cliques took 16x as long. n isolated vertices are n singleton
+    # cliques found in O(n log n). Best of 3.
+    @tag :slow
+    test "the cap check is O(1) per clique" do
+      # Only one input is alive at a time, so the timed runs don't pay for
+      # garbage-collecting the other.
+      best = fn n ->
+        g = Graph.add_vertices(Graph.new(type: :undirected), Enum.to_list(1..n))
+        assert length(Cliques.maximal_cliques(g, max_results: n)) == n
+
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+            elem(:timer.tc(Cliques, :maximal_cliques, [g, [max_results: n]]), 0)
+          end
+        )
+      end
+
+      {t_small, t_large} = {best.(20_000), best.(80_000)}
+      assert t_large < 8 * t_small, "4x the cliques took #{Float.round(t_large / t_small, 1)}x"
+    end
   end
 end
