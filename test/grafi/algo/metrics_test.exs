@@ -216,10 +216,11 @@ defmodule Grafi.Algo.MetricsTest do
     # centre's neighbours), quadratic on a star (16x). Best of 3.
     @tag :slow
     test "triangle metrics on a star scale linearly up to 20k leaves" do
-      star = fn n -> Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1)) end
-      {small, large} = {star.(5_000), star.(20_000)}
+      # One input alive at a time, so timed runs don't GC the other.
+      best = fn fun, n ->
+        g = Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1))
+        assert fun.(g) == 0
 
-      best = fn fun, g ->
         Enum.min(
           for _ <- 1..3 do
             :erlang.garbage_collect()
@@ -228,14 +229,12 @@ defmodule Grafi.Algo.MetricsTest do
         )
       end
 
-      assert Metrics.triangle_count(large) == 0
-
       for fun <- [
             &Metrics.triangle_count/1,
             &Metrics.transitivity/1,
             &Metrics.clustering_coefficient/1
           ] do
-        {t_small, t_large} = {best.(fun, small), best.(fun, large)}
+        {t_small, t_large} = {best.(fun, 5_000), best.(fun, 20_000)}
         assert t_large < 8 * t_small, "4x the leaves took #{Float.round(t_large / t_small, 1)}x"
       end
     end

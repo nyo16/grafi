@@ -150,10 +150,13 @@ defmodule Grafi.Algo.LinkPredictionTest do
     # every pair, O(pairs · leaves) (64x). Best of 3.
     @tag :slow
     test "scoring every non-adjacent pair of a star is linear in the pairs" do
-      star = fn n -> Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1)) end
-      {small, large} = {star.(100), star.(400)}
+      # One input alive at a time, so timed runs don't GC the other.
+      best = fn n ->
+        g = Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1))
+        scores = LinkPrediction.adamic_adar(g)
+        assert map_size(scores) == div(n * (n - 1), 2)
+        assert_in_delta scores[{1, 2}], 1 / :math.log(n), 1.0e-12
 
-      best = fn g ->
         Enum.min(
           for _ <- 1..3 do
             :erlang.garbage_collect()
@@ -162,11 +165,7 @@ defmodule Grafi.Algo.LinkPredictionTest do
         )
       end
 
-      scores = LinkPrediction.adamic_adar(large)
-      assert map_size(scores) == div(400 * 399, 2)
-      assert_in_delta scores[{1, 2}], 1 / :math.log(400), 1.0e-12
-
-      {t_small, t_large} = {best.(small), best.(large)}
+      {t_small, t_large} = {best.(100), best.(400)}
       assert t_large < 32 * t_small, "16x the pairs took #{Float.round(t_large / t_small, 1)}x"
     end
   end

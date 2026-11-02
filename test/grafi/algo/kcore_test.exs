@@ -164,10 +164,13 @@ defmodule Grafi.Algo.KCoreTest do
     # so a star went quadratic (16x; over 60 s at 100k leaves). Best of 3.
     @tag :slow
     test "core numbers of a star scale linearly up to 100k leaves" do
-      star = fn n -> Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1)) end
-      {small, large} = {star.(25_000), star.(100_000)}
+      # One input alive at a time, so timed runs don't GC the other.
+      best = fn n ->
+        g = Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1))
+        cores = KCore.core_numbers(g)
+        assert map_size(cores) == n + 1
+        assert Enum.all?(cores, fn {_v, c} -> c == 1 end)
 
-      best = fn g ->
         Enum.min(
           for _ <- 1..3 do
             :erlang.garbage_collect()
@@ -176,11 +179,7 @@ defmodule Grafi.Algo.KCoreTest do
         )
       end
 
-      cores = KCore.core_numbers(large)
-      assert map_size(cores) == 100_001
-      assert Enum.all?(cores, fn {_v, c} -> c == 1 end)
-
-      {t_small, t_large} = {best.(small), best.(large)}
+      {t_small, t_large} = {best.(25_000), best.(100_000)}
       assert t_large < 8 * t_small, "4x the leaves took #{Float.round(t_large / t_small, 1)}x"
     end
   end
