@@ -382,30 +382,36 @@ defmodule Grafi.Serialize.GraphMLTest do
       assert [%{weight: 1.0, label: nil}] = Graph.edges_between(g2, "c", "d")
     end
 
-    # Linear-time decoding: 4x the input should take about 4x as long, not
-    # about 16x (the old bodied-regex parsers were quadratic). A ratio rather
-    # than a wall-clock budget, so slow runners and older Elixir/OTP versions
-    # don't fail it; best of 3 to damp GC noise.
+    # Decoding scales near-linearly: the scan is linear and graph building
+    # n·log n (persistent maps), so 8x the input takes about 10-12x as long
+    # locally, while the old bodied-regex parsers were quadratic (about 64x).
+    # CI runners measure about 2x the local ratio, hence the 32x bound,
+    # halfway (in log terms) between the two. Best of 3, after a GC.
     @tag :slow
-    test "decoding time grows linearly up to 10k vertices / 50k edges" do
+    test "decoding time grows near-linearly up to 20k vertices / 100k edges" do
       small = large_graph(2_500, 12_500) |> GraphML.to_graphml()
-      large = large_graph(10_000, 50_000) |> GraphML.to_graphml()
+      large = large_graph(20_000, 100_000) |> GraphML.to_graphml()
 
       best = fn xml ->
-        Enum.min(for _ <- 1..3, do: elem(:timer.tc(GraphML, :from_graphml, [xml]), 0))
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+            elem(:timer.tc(GraphML, :from_graphml, [xml]), 0)
+          end
+        )
       end
 
       g2 = GraphML.from_graphml(large)
-      assert Graph.num_vertices(g2) == 10_000
-      assert Graph.num_edges(g2) == 50_000
+      assert Graph.num_vertices(g2) == 20_000
+      assert Graph.num_edges(g2) == 100_000
       assert Graph.label(g2, "v0") == "L0"
 
       {t_small, t_large} = {best.(small), best.(large)}
 
-      assert t_large < 8 * t_small,
-             "4x the input took #{Float.round(t_large / t_small, 1)}x as long"
+      assert t_large < 32 * t_small,
+             "8x the input took #{Float.round(t_large / t_small, 1)}x as long"
 
-      assert t_large < 10_000_000, "decoding took #{div(t_large, 1000)} ms"
+      assert t_large < 30_000_000, "decoding took #{div(t_large, 1000)} ms"
     end
   end
 
