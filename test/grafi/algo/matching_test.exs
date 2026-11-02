@@ -128,6 +128,42 @@ defmodule Grafi.Algo.MatchingTest do
       rs = Enum.map(matched_left, &Map.fetch!(m, &1))
       assert length(Enum.uniq(rs)) == length(rs)
     end
+
+    test "unknown options raise" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:l, :r)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:algo\]/, fn ->
+        Matching.hopcroft_karp(g, [:l], algo: :greedy)
+      end
+    end
+
+    property "finds a maximum matching: its size is the unit-capacity max flow" do
+      check all(
+              type <- member_of([:undirected, :directed]),
+              edges <- list_of({integer(0..9), integer(0..9), boolean()}, max_length: 40)
+            ) do
+        g =
+          Enum.reduce(edges, Graph.new(type: type), fn {l, r, forward?}, g ->
+            if forward?,
+              do: Graph.add_edge(g, {:l, l}, {:r, r}),
+              else: Graph.add_edge(g, {:r, r}, {:l, l})
+          end)
+
+        lefts = for i <- 0..9, do: {:l, i}
+        assert {:ok, %{matching: m, size: size}} = Matching.hopcroft_karp(g, lefts)
+
+        pairs = for {{:l, _} = l, r} <- m, do: {l, r}
+        assert length(pairs) == size
+        assert map_size(m) == 2 * size
+
+        for {l, r} <- pairs do
+          assert m[r] == l
+          assert Graph.has_edge?(g, l, r) or Graph.has_edge?(g, r, l)
+        end
+
+        assert size == unit_max_flow(edges)
+      end
+    end
   end
 
   # ── Hungarian ────────────────────────────────────────────────────────
@@ -268,6 +304,69 @@ defmodule Grafi.Algo.MatchingTest do
         assert c == best
       end
     end
+
+    test "unknown options and a non-boolean :maximize raise" do
+      assert_raise ArgumentError, ~r/unknown keys \[:maximise\]/, fn ->
+        Matching.hungarian([[1]], maximise: true)
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:maximise\]/, fn ->
+        Matching.hungarian([], maximise: true)
+      end
+
+      assert_raise ArgumentError, ~r/:maximize/, fn ->
+        Matching.hungarian([[1]], maximize: "yes")
+      end
+    end
+
+    # c[i][j] = i·j makes every row displace the previous ones, so each row
+    # needs many scans. 8x the size takes about 350x as long (O(n³) bounds
+    # it at 512x); the old element-wise `put_elem/3` updates took about
+    # 2000x (O(n⁴)). Best of 3, after a GC.
+    @tag :slow
+    test "solve time grows as O(n³)" do
+      best = fn n ->
+        m = for i <- 1..n, do: for(j <- 1..n, do: i * j)
+
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+            {t, {:ok, _}} = :timer.tc(fn -> Matching.hungarian(m) end)
+            max(t, 1_000)
+          end
+        )
+      end
+
+      {t_small, t_large} = {best.(60), best.(480)}
+
+      assert t_large < 1_000 * t_small,
+             "8x the size took #{Float.round(t_large / t_small, 1)}x as long"
+    end
+
+    property "reported cost is the optimum of rectangular matrices up to 7×7" do
+      check all(
+              n_rows <- integer(1..7),
+              n_cols <- integer(1..7),
+              rows <- list_of(list_of(integer(-20..50), length: n_cols), length: n_rows),
+              maximize <- boolean()
+            ) do
+        {:ok, %{assignment: a, cost: c, unmatched: u}} =
+          Matching.hungarian(rows, maximize: maximize)
+
+        matched = for {j, i} <- Enum.with_index(a), j != nil, do: {i, j}
+        assert length(matched) == min(n_rows, n_cols)
+        assert matched |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == length(matched)
+        assert u == for({nil, i} <- Enum.with_index(a), do: i)
+        assert c == Enum.sum(for {i, j} <- matched, do: rows |> Enum.at(i) |> Enum.at(j))
+
+        expected =
+          if maximize,
+            do: -best_assignment(Enum.map(rows, fn row -> Enum.map(row, &(-&1)) end)),
+            else: best_assignment(rows)
+
+        assert c == expected
+      end
+    end
   end
 
   # ── Weighted bipartite matching ──────────────────────────────────────
@@ -286,13 +385,13 @@ defmodule Grafi.Algo.MatchingTest do
         ])
 
       assert {:ok, %{matching: m, weight: 9.0}} =
-               Matching.weighted_bipartite_matching(g, [:l1, :l2])
+               Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: true)
 
       assert m[:l1] == :r1
       assert m[:l2] == :r2
     end
 
-    test "minimization flips the chosen pairs" do
+    test "minimises by default, like hungarian/2" do
       g =
         Graph.new(type: :undirected)
         |> Graph.add_edges([
@@ -303,6 +402,9 @@ defmodule Grafi.Algo.MatchingTest do
         ])
 
       assert {:ok, %{matching: m, weight: 3.0}} =
+               Matching.weighted_bipartite_matching(g, [:l1, :l2])
+
+      assert {:ok, %{matching: ^m, weight: 3.0}} =
                Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: false)
 
       assert m[:l1] == :r2
@@ -346,7 +448,7 @@ defmodule Grafi.Algo.MatchingTest do
         ])
 
       assert {:ok, %{matching: m, weight: 3.0}} =
-               Matching.weighted_bipartite_matching(g, [:l1, :l2, :l3])
+               Matching.weighted_bipartite_matching(g, [:l1, :l2, :l3], maximize: true)
 
       assert m[:l1] == :r1
       assert map_size(m) == 1
@@ -360,9 +462,69 @@ defmodule Grafi.Algo.MatchingTest do
       assert {:error, :not_bipartite} =
                Matching.weighted_bipartite_matching(g, [:a])
     end
+
+    test "unknown options raise" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:l, :r)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:max\]/, fn ->
+        Matching.weighted_bipartite_matching(g, [:l], max: true)
+      end
+    end
+
+    test "parallel edges: the lightest counts when minimising, the heaviest when maximising" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([
+          {:l1, :r1, weight: 5.0},
+          {:l1, :r1, weight: 1.0},
+          {:l2, :r2, weight: 2.0}
+        ])
+
+      assert {:ok, %{matching: %{l1: :r1, l2: :r2}, weight: 3.0}} =
+               Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: false)
+
+      assert {:ok, %{matching: %{l1: :r1, l2: :r2}, weight: 7.0}} =
+               Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: true)
+    end
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────
+
+  # The size of a maximum matching, as the max flow of the unit network
+  # s -> {:l, i} -> {:r, j} -> t.
+  defp unit_max_flow(edges) do
+    pairs = edges |> Enum.map(fn {l, r, _} -> {{:l, l}, {:r, r}} end) |> Enum.uniq()
+    ls = pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    rs = pairs |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+    g =
+      Graph.new()
+      |> Graph.add_vertices([:s, :t])
+      |> Graph.add_edges(for {l, r} <- pairs, do: {l, r, weight: 1})
+      |> Graph.add_edges(for l <- ls, do: {:s, l, weight: 1})
+      |> Graph.add_edges(for r <- rs, do: {r, :t, weight: 1})
+
+    {:ok, %{flow: flow}} = Grafi.Algo.MaxFlow.dinic(g, :s, :t)
+    flow
+  end
+
+  # Minimum-cost assignment of min(rows, cols) pairs, by dynamic programming
+  # over the sets of used columns (transposing so rows <= cols).
+  defp best_assignment(rows) do
+    rows = if length(rows) > length(hd(rows)), do: Enum.zip_with(rows, & &1), else: rows
+
+    rows
+    |> Enum.reduce(%{0 => 0}, fn row, dp ->
+      for {mask, cost} <- dp,
+          {c, j} <- Enum.with_index(row),
+          Bitwise.band(mask, Bitwise.bsl(1, j)) == 0,
+          reduce: %{} do
+        acc -> Map.update(acc, Bitwise.bor(mask, Bitwise.bsl(1, j)), cost + c, &min(&1, cost + c))
+      end
+    end)
+    |> Map.values()
+    |> Enum.min()
+  end
 
   defp permutations([]), do: [[]]
 

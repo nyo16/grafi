@@ -312,14 +312,10 @@ defmodule Grafi do
 
   @doc """
   Maximum s–t flow. Dispatches to Dinic's algorithm by default; pass
-  `algo: :edmonds_karp` for the simpler BFS-based variant.
+  `algo: :edmonds_karp` for the simpler BFS-based variant. See
+  `Grafi.Algo.MaxFlow.max_flow/4`.
   """
-  def max_flow(g, source, sink, opts \\ []) do
-    case Keyword.get(opts, :algo, :dinic) do
-      :dinic -> Grafi.Algo.MaxFlow.dinic(g, source, sink, opts)
-      :edmonds_karp -> Grafi.Algo.MaxFlow.edmonds_karp(g, source, sink, opts)
-    end
-  end
+  defdelegate max_flow(g, source, sink, opts \\ []), to: Grafi.Algo.MaxFlow
 
   defdelegate min_cut(g, source, sink, opts \\ []), to: Grafi.Algo.MaxFlow
 

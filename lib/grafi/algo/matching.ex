@@ -18,13 +18,13 @@ defmodule Grafi.Algo.Matching do
 
   ## Bipartition responsibility
 
-  Hopcroft–Karp requires the caller to supply the *left* side of the
-  bipartition explicitly. If `Grafi.Algo.Bipartite.bipartite?/1` is
-  available, the graph is sanity-checked against it; otherwise, callers
-  are responsible for ensuring bipartiteness.
+  `hopcroft_karp/3` and `weighted_bipartite_matching/3` take the *left*
+  side of the bipartition from the caller, and return
+  `{:error, :not_bipartite}` when `Grafi.Algo.Bipartite.bipartite?/1`
+  rejects the graph.
   """
 
-  alias Grafi.Graph
+  alias Grafi.{Args, Graph}
 
   # Sentinel "infinity" used to pad rectangular cost matrices in
   # `hungarian/2` and to represent missing edges in
@@ -63,13 +63,15 @@ defmodule Grafi.Algo.Matching do
   @spec hopcroft_karp(Graph.t(), [any()] | MapSet.t(), keyword()) ::
           {:ok, %{matching: %{any() => any()}, size: non_neg_integer()}}
           | {:error, :not_bipartite}
-  def hopcroft_karp(%Graph{} = g, left_side, _opts \\ []) do
+  def hopcroft_karp(%Graph{} = g, left_side, opts \\ []) do
+    Keyword.validate!(opts, [])
+
     left_set =
       if is_struct(left_side, MapSet),
         do: left_side,
         else: MapSet.new(left_side)
 
-    with :ok <- maybe_check_bipartite(g) do
+    with :ok <- check_bipartite(g) do
       lefts = left_set |> Enum.filter(&Graph.has_vertex?(g, &1))
 
       adj =
@@ -86,134 +88,109 @@ defmodule Grafi.Algo.Matching do
           {l, Enum.reject(neigh, &MapSet.member?(left_set, &1))}
         end)
 
-      {pair_l, pair_r} = run_hk(lefts, adj)
+      {pair_l, pair_r} = do_hk(lefts, adj, %{}, %{})
 
-      matching =
-        pair_l
-        |> Enum.reduce(%{}, fn {l, r}, acc -> Map.put(acc, l, r) end)
-        |> then(fn m ->
-          Enum.reduce(pair_r, m, fn {r, l}, acc -> Map.put(acc, r, l) end)
-        end)
-
-      {:ok, %{matching: matching, size: map_size(pair_l)}}
+      {:ok, %{matching: Map.merge(pair_l, pair_r), size: map_size(pair_l)}}
     end
   end
 
-  defp maybe_check_bipartite(g) do
-    if Code.ensure_loaded?(Grafi.Algo.Bipartite) and
-         function_exported?(Grafi.Algo.Bipartite, :bipartite?, 1) do
-      if Grafi.Algo.Bipartite.bipartite?(g),
-        do: :ok,
-        else: {:error, :not_bipartite}
-    else
-      :ok
-    end
+  defp check_bipartite(g) do
+    if Grafi.Algo.Bipartite.bipartite?(g), do: :ok, else: {:error, :not_bipartite}
   end
 
-  # Main HK loop: alternate layered BFS + DFS augmentation until BFS can
-  # no longer reach an unmatched right vertex.
-  defp run_hk(lefts, adj) do
-    do_hk(lefts, adj, %{}, %{})
-  end
-
-  defp do_hk(lefts, adj, pair_l, pair_r) do
-    case hk_bfs(lefts, adj, pair_l, pair_r) do
+  # Main HK loop over the still-free left vertices. Each phase layers the
+  # graph by BFS from them, up to the first layer `limit` that touches a
+  # free right vertex, then augments along vertex-disjoint shortest
+  # augmenting paths by DFS. Stops when the BFS reaches no free right
+  # vertex.
+  defp do_hk(free, adj, pair_l, pair_r) do
+    case hk_bfs(free, adj, pair_r) do
       :done ->
         {pair_l, pair_r}
 
-      {:ok, dist} ->
-        {pair_l, pair_r, _dist} =
-          Enum.reduce(lefts, {pair_l, pair_r, dist}, fn l, {pl, pr, d} ->
-            if Map.has_key?(pl, l) do
-              {pl, pr, d}
-            else
-              case hk_dfs(l, adj, pl, pr, d) do
-                {:ok, pl2, pr2, d2} -> {pl2, pr2, d2}
-                {:fail, d2} -> {pl, pr, d2}
-              end
+      {:ok, dist, limit} ->
+        {still_free, pair_l, pair_r, _dist} =
+          Enum.reduce(free, {[], pair_l, pair_r, dist}, fn l, {fr, pl, pr, d} ->
+            case hk_dfs(l, 0, adj, pl, pr, d, limit) do
+              {:ok, pl2, pr2, d2} -> {fr, pl2, pr2, d2}
+              {:fail, d2} -> {[l | fr], pl, pr, d2}
             end
           end)
 
-        do_hk(lefts, adj, pair_l, pair_r)
+        do_hk(:lists.reverse(still_free), adj, pair_l, pair_r)
     end
   end
 
-  # Layered BFS from all currently unmatched left vertices. Returns
-  # `{:ok, dist}` if an augmenting path was discovered (so DFS should
-  # follow), or `:done` if no unmatched right vertex is reachable (the
-  # current matching is maximum).
-  defp hk_bfs(lefts, adj, pair_l, pair_r) do
-    {dist, queue} =
-      Enum.reduce(lefts, {%{}, :queue.new()}, fn l, {d, q} ->
-        if Map.has_key?(pair_l, l) do
-          {Map.put(d, l, :inf), q}
-        else
-          {Map.put(d, l, 0), :queue.in(l, q)}
-        end
-      end)
-
-    case hk_bfs_loop(queue, dist, adj, pair_r, false) do
-      {false, _dist} -> :done
-      {true, dist} -> {:ok, dist}
-    end
+  # Layered BFS from the free left vertices (layer 0). `dist` maps each
+  # reached left vertex to its layer. Halts as soon as a layer-`limit`
+  # vertex has a free right neighbour and returns `{:ok, dist, limit}`:
+  # every shortest augmenting path ends there, so deeper layers are never
+  # needed. Returns `:done` if no free right vertex is reachable (the
+  # matching is maximum).
+  defp hk_bfs(free, adj, pair_r) do
+    dist = Map.new(free, &{&1, 0})
+    hk_bfs_loop(:queue.from_list(free), dist, adj, pair_r)
   end
 
-  defp hk_bfs_loop(queue, dist, adj, pair_r, found) do
+  defp hk_bfs_loop(queue, dist, adj, pair_r) do
     case :queue.out(queue) do
       {:empty, _} ->
-        {found, dist}
+        :done
 
       {{:value, u}, rest} ->
         du = Map.fetch!(dist, u)
 
-        {dist, queue, found} =
-          Enum.reduce(Map.get(adj, u, []), {dist, rest, found}, fn v, {d, q, f} ->
-            case Map.get(pair_r, v) do
-              nil ->
-                # Unmatched right vertex reached: augmenting path exists.
-                {d, q, true}
-
-              next_l ->
-                if Map.get(d, next_l, :inf) == :inf do
-                  {Map.put(d, next_l, du + 1), :queue.in(next_l, q), f}
-                else
-                  {d, q, f}
-                end
-            end
-          end)
-
-        hk_bfs_loop(queue, dist, adj, pair_r, found)
+        case hk_expand(Map.get(adj, u, []), du + 1, dist, rest, pair_r) do
+          :free -> {:ok, dist, du}
+          {dist, queue} -> hk_bfs_loop(queue, dist, adj, pair_r)
+        end
     end
   end
 
-  # DFS along the layered graph from a left vertex `u`. Steps from `u`
-  # to a right neighbour `v`, then (if v is matched) recurses on
-  # `pair_r[v]` only if it sits in the next BFS layer.
-  defp hk_dfs(u, adj, pair_l, pair_r, dist) do
-    do_hk_dfs(Map.get(adj, u, []), u, adj, pair_l, pair_r, dist)
-  end
+  defp hk_expand([], _next, dist, queue, _pair_r), do: {dist, queue}
 
-  defp do_hk_dfs([], u, _adj, _pair_l, _pair_r, dist) do
-    {:fail, Map.put(dist, u, :inf)}
-  end
-
-  defp do_hk_dfs([v | rest], u, adj, pair_l, pair_r, dist) do
+  defp hk_expand([v | rest], next, dist, queue, pair_r) do
     case Map.get(pair_r, v) do
       nil ->
+        :free
+
+      l when is_map_key(dist, l) ->
+        hk_expand(rest, next, dist, queue, pair_r)
+
+      l ->
+        hk_expand(rest, next, Map.put(dist, l, next), :queue.in(l, queue), pair_r)
+    end
+  end
+
+  # DFS from the left vertex `u` (on layer `du`) along the layered graph:
+  # to a free right neighbour if `u` is on the last layer, else through a
+  # matched right neighbour `v` to `pair_r[v]` on layer `du + 1`. A vertex
+  # with no augmenting path is dropped from `dist`, so no later DFS in the
+  # phase revisits it.
+  defp hk_dfs(u, du, adj, pair_l, pair_r, dist, limit) do
+    do_hk_dfs(Map.get(adj, u, []), u, du, adj, pair_l, pair_r, dist, limit)
+  end
+
+  defp do_hk_dfs([], u, _du, _adj, _pair_l, _pair_r, dist, _limit) do
+    {:fail, Map.delete(dist, u)}
+  end
+
+  defp do_hk_dfs([v | rest], u, du, adj, pair_l, pair_r, dist, limit) do
+    case Map.get(pair_r, v) do
+      nil when du == limit ->
         {:ok, Map.put(pair_l, u, v), Map.put(pair_r, v, u), dist}
 
-      next_l ->
-        if Map.get(dist, next_l, :inf) == Map.fetch!(dist, u) + 1 do
-          case hk_dfs(next_l, adj, pair_l, pair_r, dist) do
-            {:ok, pl, pr, d2} ->
-              {:ok, Map.put(pl, u, v), Map.put(pr, v, u), d2}
+      next_l when next_l != nil and du < limit and :erlang.map_get(next_l, dist) == du + 1 ->
+        case hk_dfs(next_l, du + 1, adj, pair_l, pair_r, dist, limit) do
+          {:ok, pl, pr, d2} ->
+            {:ok, Map.put(pl, u, v), Map.put(pr, v, u), d2}
 
-            {:fail, d2} ->
-              do_hk_dfs(rest, u, adj, pair_l, pair_r, d2)
-          end
-        else
-          do_hk_dfs(rest, u, adj, pair_l, pair_r, dist)
+          {:fail, d2} ->
+            do_hk_dfs(rest, u, du, adj, pair_l, pair_r, d2, limit)
         end
+
+      _ ->
+        do_hk_dfs(rest, u, du, adj, pair_l, pair_r, dist, limit)
     end
   end
 
@@ -254,12 +231,15 @@ defmodule Grafi.Algo.Matching do
   """
   @spec hungarian([[number()]], keyword()) ::
           {:ok, %{assignment: [non_neg_integer() | nil], cost: number(), unmatched: [integer()]}}
-  def hungarian(cost_matrix, opts \\ [])
+  def hungarian(cost_matrix, opts \\ []) when is_list(cost_matrix) do
+    opts = Keyword.validate!(opts, maximize: false)
+    maximize? = Args.boolean!(opts, :maximize, false)
+    solve_assignment(cost_matrix, maximize?)
+  end
 
-  def hungarian([], _opts), do: {:ok, %{assignment: [], cost: 0, unmatched: []}}
+  defp solve_assignment([], _maximize?), do: {:ok, %{assignment: [], cost: 0, unmatched: []}}
 
-  def hungarian(cost_matrix, opts) when is_list(cost_matrix) do
-    maximize? = Keyword.get(opts, :maximize, false)
+  defp solve_assignment(cost_matrix, maximize?) do
     n_rows = length(cost_matrix)
     n_cols = cost_matrix |> hd() |> length()
     n = max(n_rows, n_cols)
@@ -325,7 +305,7 @@ defmodule Grafi.Algo.Matching do
 
   # ── Jonker–Volgenant inner solver ────────────────────────────────────
   #
-  # All arrays are 1-indexed tuples of size `n + 1` (index 0 is a
+  # `u`, `v` and `p` are 1-indexed tuples of size `n + 1` (index 0 is a
   # sentinel "row 0 / col 0" slot used by the algorithm). Cost matrix
   # `c` is 0-indexed (size n×n).
   #
@@ -336,15 +316,27 @@ defmodule Grafi.Algo.Matching do
   #   v[j] - column potential (col 1..n)
   #   p[j] - row currently assigned to column j (0 means unassigned)
   #   way[j] - in the alternating tree, the column we came from to reach j
+  #
+  # `put_elem/3` copies the whole tuple, so the reference's in-place
+  # updates of `minv`, `way`, `u` and `v` would cost O(n) each, O(n²) per
+  # scan and O(n⁴) overall. Instead, while one row is being inserted:
+  #
+  #   * the columns not yet in the alternating tree are a list of
+  #     `{j, minv[j] + d, way[j]}`, rebuilt by each scan in one pass, where
+  #     `d` is the sum of the deltas so far. Storing `minv + d` makes the
+  #     reference's "minv[j] -= delta for every free column" a no-op;
+  #   * the columns in the tree are a list of `{j, way[j], d_when_added}`;
+  #   * `u` and `v` change only once, when the row is done: a tree column
+  #     added when the delta sum was `d_j` has v[j] -= d - d_j and
+  #     u[p[j]] += d - d_j. A scan only reads u[p[j0]] for the column j0
+  #     just added and v[j] for free columns, which are not updated yet.
+  #
+  # A scan is O(n) and a row needs at most n scans, so the solver is O(n³).
 
   defp jv_solve(n, c) do
-    # Pre-fill all tuples to size n+1 with zeros / sentinels.
-    init = List.duplicate(0, n + 1) |> List.to_tuple()
-    u = init
-    v = init
-    p = init
+    init = :erlang.make_tuple(n + 1, 0)
 
-    Enum.reduce(1..n, %{u: u, v: v, p: p}, fn i, %{u: u, v: v, p: p} ->
+    Enum.reduce(1..n, %{u: init, v: init, p: init}, fn i, %{u: u, v: v, p: p} ->
       jv_assign_row(i, n, c, u, v, p)
     end)
   end
@@ -354,117 +346,68 @@ defmodule Grafi.Algo.Matching do
     # p[0] = i: column 0 is the "phantom" matched to row i so the search
     # can start from j0 = 0.
     p = put_elem(p, 0, i)
+    free = for j <- 1..n, do: {j, @inf, 0}
 
-    # minv[j] = min reduced cost reachable to column j so far.
-    # way[j] = previous column on the alternating tree path to column j.
-    # used[j] = whether column j has been pulled into the tree.
-    minv = List.duplicate(@inf, n + 1) |> List.to_tuple()
-    way = List.duplicate(0, n + 1) |> List.to_tuple()
-    used = List.duplicate(false, n + 1) |> List.to_tuple()
+    {tree, j_end, way_end, d} = jv_grow(0, 0, free, [], 0, c, u, v, p)
 
-    {u, v, p, way, j_end} = jv_loop(0, n, c, u, v, p, way, minv, used)
+    shifts = for {j, _way, d_j} <- tree, do: {j, d - d_j}
+    v = jv_add(v, :erlang.make_tuple(n + 1, 0, for({j, s} <- shifts, do: {j + 1, -s})))
+    u = jv_add(u, :erlang.make_tuple(n + 1, 0, for({j, s} <- shifts, do: {elem(p, j) + 1, s})))
 
     # Augment along `way` from j_end back to 0.
-    p = jv_augment(j_end, p, way)
+    way = Map.new(tree, fn {j, w, _d_j} -> {j, w} end)
+    p = jv_augment(j_end, way_end, p, way)
     %{u: u, v: v, p: p}
   end
 
-  # Outer loop: each iteration picks the column j0 currently being
-  # processed (initially 0 = phantom), expands all not-yet-used columns,
-  # updates potentials by delta, and either terminates (if j1 points to
-  # an unassigned column) or continues with j0 := j1.
-  defp jv_loop(j0, n, c, u, v, p, way, minv, used) do
-    used = put_elem(used, j0, true)
+  # One iteration: add column j0 (reached from `way_j0`) to the tree, scan
+  # row p[j0] against the free columns, and either stop at the closest
+  # free column j1 if it is unassigned, or continue from it.
+  defp jv_grow(j0, way_j0, free, tree, d, c, u, v, p) do
+    tree = [{j0, way_j0, d} | tree]
     i0 = elem(p, j0)
 
-    {minv, way, delta, j1} =
-      jv_scan(1, n, i0, j0, c, u, v, used, minv, way, @inf, 0)
-
-    {u, v} = jv_update_potentials(0, n, used, p, u, v, delta)
-    minv = jv_decrement_minv(0, n, used, minv, delta)
+    {free, d, j1, way_j1} =
+      jv_scan(free, j0, elem(c, i0 - 1), elem(u, i0), v, d, [], :none, 0, 0)
 
     if elem(p, j1) == 0 do
-      {u, v, p, way, j1}
+      {tree, j1, way_j1, d}
     else
-      jv_loop(j1, n, c, u, v, p, way, minv, used)
+      jv_grow(j1, way_j1, free, tree, d, c, u, v, p)
     end
   end
 
-  # For each unused column j, compute reduced cost from row i0 and
-  # update minv[j] / way[j]; track the smallest minv and its column.
-  defp jv_scan(j, n, _i0, _j0, _c, _u, _v, _used, minv, way, delta, j1) when j > n,
-    do: {minv, way, delta, j1}
+  # Drops j0 from the free list, lowers each free column's minv to its
+  # reduced cost from row i0 (recording way[j] = j0), and finds the free
+  # column j1 with the smallest minv (the first one on ties, as in the
+  # reference). Returns the new list and `d + delta`, which is j1's stored
+  # value. `:none` compares greater than every number.
+  defp jv_scan([], _j0, _row, _ui0, _v, _d, acc, best, j1, way_j1),
+    do: {:lists.reverse(acc), best, j1, way_j1}
 
-  defp jv_scan(j, n, i0, j0, c, u, v, used, minv, way, delta, j1) do
-    if elem(used, j) do
-      jv_scan(j + 1, n, i0, j0, c, u, v, used, minv, way, delta, j1)
-    else
-      cij = c |> elem(i0 - 1) |> elem(j - 1)
-      cur = cij - elem(u, i0) - elem(v, j)
+  defp jv_scan([{j0, _, _} | rest], j0, row, ui0, v, d, acc, best, j1, way_j1),
+    do: jv_scan(rest, j0, row, ui0, v, d, acc, best, j1, way_j1)
 
-      {minv, way} =
-        if cur < elem(minv, j) do
-          {put_elem(minv, j, cur), put_elem(way, j, j0)}
-        else
-          {minv, way}
-        end
+  defp jv_scan([{j, stored, way_j} | rest], j0, row, ui0, v, d, acc, best, j1, way_j1) do
+    cur = elem(row, j - 1) - ui0 - elem(v, j) + d
+    {stored, way_j} = if cur < stored, do: {cur, j0}, else: {stored, way_j}
+    acc = [{j, stored, way_j} | acc]
 
-      mj2 = elem(minv, j)
-
-      {delta, j1} =
-        if mj2 < delta do
-          {mj2, j}
-        else
-          {delta, j1}
-        end
-
-      jv_scan(j + 1, n, i0, j0, c, u, v, used, minv, way, delta, j1)
-    end
+    if stored < best,
+      do: jv_scan(rest, j0, row, ui0, v, d, acc, stored, j, way_j),
+      else: jv_scan(rest, j0, row, ui0, v, d, acc, best, j1, way_j1)
   end
 
-  # Potential update: for every column j (0..n):
-  #   if used[j]:   u[p[j]] += delta;   v[j] -= delta
-  #   else:         (handled by jv_decrement_minv on minv)
-  defp jv_update_potentials(j, n, _used, _p, u, v, _delta) when j > n, do: {u, v}
-
-  defp jv_update_potentials(j, n, used, p, u, v, delta) do
-    {u, v} =
-      if elem(used, j) do
-        i = elem(p, j)
-        u = put_elem(u, i, elem(u, i) + delta)
-        v = put_elem(v, j, elem(v, j) - delta)
-        {u, v}
-      else
-        {u, v}
-      end
-
-    jv_update_potentials(j + 1, n, used, p, u, v, delta)
+  # Element-wise sum of two equal-size tuples.
+  defp jv_add(a, b) do
+    for(i <- 0..(tuple_size(a) - 1), do: elem(a, i) + elem(b, i)) |> List.to_tuple()
   end
 
-  # For unused columns, decrement minv by delta (so future reduced-cost
-  # comparisons remain valid).
-  defp jv_decrement_minv(j, n, _used, minv, _delta) when j > n, do: minv
+  defp jv_augment(0, _way_j, p, _way), do: p
 
-  defp jv_decrement_minv(j, n, used, minv, delta) do
-    minv =
-      if elem(used, j) do
-        minv
-      else
-        put_elem(minv, j, elem(minv, j) - delta)
-      end
-
-    jv_decrement_minv(j + 1, n, used, minv, delta)
-  end
-
-  defp jv_augment(j1, p, way) do
-    if j1 == 0 do
-      p
-    else
-      j_prev = elem(way, j1)
-      i_prev = elem(p, j_prev)
-      p = put_elem(p, j1, i_prev)
-      jv_augment(j_prev, p, way)
-    end
+  defp jv_augment(j1, j_prev, p, way) do
+    p = put_elem(p, j1, elem(p, j_prev))
+    jv_augment(j_prev, Map.fetch!(way, j_prev), p, way)
   end
 
   # ── Weighted bipartite matching on a graph ───────────────────────────
@@ -490,31 +433,39 @@ defmodule Grafi.Algo.Matching do
 
   ## Options
 
-    * `:maximize` — defaults to `true` (matchings on weighted graphs
-      typically maximise total weight).
+    * `:maximize` — if `true`, maximise the total weight. Defaults to
+      `false` (minimise, as in `hungarian/2`). Between parallel edges, the
+      lightest one counts when minimising and the heaviest when
+      maximising.
 
   ## Examples
 
       iex> g = Grafi.Graph.new(type: :undirected)
       ...>     |> Grafi.Graph.add_edges([{:l1, :r1, weight: 5.0},
       ...>                               {:l1, :r2, weight: 1.0},
+      ...>                               {:l2, :r1, weight: 2.0},
       ...>                               {:l2, :r2, weight: 4.0}])
-      iex> {:ok, %{matching: m}} = Grafi.Algo.Matching.weighted_bipartite_matching(g, [:l1, :l2])
-      iex> {Map.get(m, :l1), Map.get(m, :l2)}
+      iex> {:ok, %{matching: min}} = Grafi.Algo.Matching.weighted_bipartite_matching(g, [:l1, :l2])
+      iex> {min[:l1], min[:l2]}
+      {:r2, :r1}
+      iex> {:ok, %{matching: max}} =
+      ...>   Grafi.Algo.Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: true)
+      iex> {max[:l1], max[:l2]}
       {:r1, :r2}
   """
   @spec weighted_bipartite_matching(Graph.t(), [any()] | MapSet.t(), keyword()) ::
           {:ok, %{matching: %{any() => any()}, weight: number()}}
           | {:error, :not_bipartite}
   def weighted_bipartite_matching(%Graph{} = g, left_side, opts \\ []) do
-    maximize? = Keyword.get(opts, :maximize, true)
+    opts = Keyword.validate!(opts, maximize: false)
+    maximize? = Args.boolean!(opts, :maximize, false)
 
     left_set =
       if is_struct(left_side, MapSet),
         do: left_side,
         else: MapSet.new(left_side)
 
-    with :ok <- maybe_check_bipartite(g) do
+    with :ok <- check_bipartite(g) do
       lefts =
         left_set
         |> Enum.filter(&Graph.has_vertex?(g, &1))
@@ -532,14 +483,14 @@ defmodule Grafi.Algo.Matching do
       else
         cost_matrix =
           Enum.map(lefts, fn l ->
-            neigh_weights = right_weights(g, l, left_set)
+            neigh_weights = right_weights(g, l, left_set, maximize?)
 
             Enum.map(rights, fn r ->
               Map.get(neigh_weights, r, sentinel)
             end)
           end)
 
-        {:ok, %{assignment: assignment}} = hungarian(cost_matrix, maximize: maximize?)
+        {:ok, %{assignment: assignment}} = solve_assignment(cost_matrix, maximize?)
 
         # Tuples for O(1) indexed access inside the reduce below.
         lefts_t = List.to_tuple(lefts)
@@ -570,25 +521,17 @@ defmodule Grafi.Algo.Matching do
     end
   end
 
-  defp right_weights(g, l, left_set) do
-    out_w =
-      g.out_edges
-      |> Map.get(l, %{})
-      |> Enum.reject(fn {to, _} -> MapSet.member?(left_set, to) end)
-      |> Enum.map(fn {to, edges} ->
-        {to, edges |> Enum.map(& &1.weight) |> Enum.max(fn -> 0.0 end)}
-      end)
-      |> Map.new()
+  # Weight of the edge from `l` to each right neighbour: the heaviest
+  # parallel edge when maximising, the lightest when minimising.
+  defp right_weights(g, l, left_set, maximize?) do
+    pick = if maximize?, do: &max/2, else: &min/2
 
-    in_w =
-      g.in_edges
-      |> Map.get(l, %{})
-      |> Enum.reject(fn {from, _} -> MapSet.member?(left_set, from) end)
-      |> Enum.map(fn {from, edges} ->
-        {from, edges |> Enum.map(& &1.weight) |> Enum.max(fn -> 0.0 end)}
-      end)
-      |> Map.new()
-
-    Map.merge(out_w, in_w, fn _k, a, b -> max(a, b) end)
+    for adjacent <- [g.out_edges, g.in_edges],
+        {r, edges} <- Map.get(adjacent, l, %{}),
+        not MapSet.member?(left_set, r),
+        e <- edges,
+        reduce: %{} do
+      acc -> Map.update(acc, r, e.weight, &pick.(&1, e.weight))
+    end
   end
 end
