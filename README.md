@@ -92,30 +92,33 @@ Grafi works without any native code. The NIF adds speed on large graphs and
 is required for community detection (Louvain, Leiden, label propagation).
 `mix compile` picks one of three paths:
 
-1. **Precompiled NIF** (from the first Hex release, once the licence review
-   in [RELEASING.md](https://github.com/nyo16/grafi/blob/master/RELEASING.md) is signed off): downloaded and
-   checksum-verified for x86_64/aarch64 Linux (glibc >= 2.28: RHEL 8+,
-   Debian 11+, Ubuntu 20.04+) and macOS (11+ on Apple Silicon, 10.15+ on
-   Intel) on OTP 26-29. It has igraph built in; on Linux it needs only the
-   system C++ runtime (`libstdc++.so.6`, present on standard distros; slim
-   or distroless images may need it installed, e.g. `libstdc++6`).
-   **It is GPL-3.0-or-later** — see [Third-party licenses](#third-party-licenses).
-2. **Built from source** on other targets, for `git:`/`path:` deps, or when
-   you force it with `config :elixir_make, :force_build, grafi: true`. This
-   needs igraph >= 1.0 (built with thread safety, the default), `make` and a
-   C++17 compiler.
-3. **Pure Elixir** when no igraph is found. The build prints
+1. **Built from source** (the default) against an igraph >= 1.0 installed
+   on the machine (built with thread safety, the default). This needs
+   `make` and a C++17 compiler; the NIF links your igraph dynamically.
+2. **Pure Elixir** when no igraph is found. The build prints
    `grafi: igraph >= 1.0 not found; building without NIF (pure Elixir)` and
    succeeds. This still runs `make`, so `make` must be installed even then;
    a cross build (Nerves, a `MIX_TARGET` other than `host`) only uses an
    igraph given with `IGRAPH_DIR` and otherwise falls back to pure Elixir.
+3. **Precompiled NIF, opt-in** (from the first Hex release): igraph built
+   in, nothing to install. **It is GPL-3.0-or-later** (see
+   [Third-party licenses](#third-party-licenses)), so you get it only by
+   asking for it in your app's `config/config.exs`:
 
-To ship **no GPL code** (no precompiled artefact, no igraph), force the
-source build in your app's `config/config.exs` and don't install igraph:
+   ```elixir
+   config :grafi, precompiled_nif: true
+   ```
 
-```elixir
-config :elixir_make, :force_build, grafi: true
-```
+   It is downloaded and checksum-verified for x86_64/aarch64 Linux (glibc
+   >= 2.28: RHEL 8+, Debian 11+, Ubuntu 20.04+) and macOS (11+ on Apple
+   Silicon, 10.15+ on Intel) on OTP 26-29. On Linux it needs only the
+   system C++ runtime (`libstdc++.so.6`, present on standard distros; slim
+   or distroless images may need it installed, e.g. `libstdc++6`). On other
+   targets, and for `git:` deps, Grafi builds from source as in 1. Recompile
+   Grafi after changing the setting (`mix deps.compile grafi --force`).
+
+Without the opt-in, Grafi ships **no GPL code**: the Hex package is
+Apache-2.0 source, and igraph is whatever you install yourself.
 
 Windows is not supported: there is no precompiled artefact, and elixir_make
 runs `nmake /F Makefile.win`, which Grafi doesn't ship, so `mix compile`
@@ -339,12 +342,12 @@ GPL-2.0-or-later and is not included in the Hex package:
 
 - **Built from source** (igraph installed on your machine): the NIF links
   your igraph dynamically.
-- **Precompiled artefacts** (downloaded by default from the GitHub releases
-  page on supported platforms) statically link igraph 1.0.1. They combine
-  Apache-2.0 and GPL code, so each artefact is distributed under the
-  **GPL-3.0-or-later** (pending legal review). If you distribute an
-  application that includes one (e.g. a `mix release`), that licence applies
-  to it; see above for building without any GPL code.
+- **Precompiled artefacts** (opt-in with `config :grafi, precompiled_nif:
+  true`; downloaded from the GitHub releases page) statically link igraph
+  1.0.1. They combine Apache-2.0 and GPL code, so each artefact is
+  distributed under the **GPL-3.0-or-later**. If you opt in and distribute
+  an application that includes one (e.g. a `mix release`), that licence
+  applies to it.
 
 [NOTICE](NOTICE) has the details and the corresponding-source pointers; each
 GitHub release also carries the igraph source and the licence texts.

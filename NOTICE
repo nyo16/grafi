@@ -18,21 +18,21 @@ in the Grafi source package.
   and dynamically linked against it on your machine. Without igraph, no NIF is
   built and Grafi runs in pure Elixir.
 
-* Precompiled NIF artefacts (grafi-nif-*.tar.gz on the GitHub releases page,
-  downloaded by default when Grafi is installed from Hex on a supported
-  platform) statically link igraph 1.0.1. Each artefact combines Apache-2.0
-  code (Grafi's NIF, the fine headers) with GPL code (igraph). Because the
-  Apache License 2.0 is compatible with GPL version 3 but not version 2, each
-  artefact is distributed under the GNU General Public License, version 3 or
-  later (GPL-3.0-or-later); see LICENSES/GPL-3.0-or-later.txt. Every
-  artefact also contains the GPL-3.0 and Apache-2.0 texts and igraph's
-  licence files (grafi_nif.licenses/igraph). [Pending legal review; see
-  RELEASING.md.]
+* Precompiled NIF artefacts (grafi-nif-*.tar.gz on the GitHub releases page)
+  are downloaded only when an application opts in with
+  `config :grafi, precompiled_nif: true`; by default Grafi builds from source
+  or runs in pure Elixir, and ships no GPL code. The artefacts statically link
+  igraph 1.0.1. Each artefact combines Apache-2.0 code (Grafi's NIF, the fine
+  headers) with GPL code (igraph). Because the Apache License 2.0 is
+  compatible with GPL version 3 but not version 2, each artefact is
+  distributed under the GNU General Public License, version 3 or later
+  (GPL-3.0-or-later); see LICENSES/GPL-3.0-or-later.txt. Every artefact also
+  contains the GPL-3.0 and Apache-2.0 texts and igraph's licence files
+  (grafi_nif.licenses/igraph).
 
-  If you distribute software that includes a precompiled artefact (for
-  example a `mix release`), the GPL-3.0-or-later applies to that artefact.
-  To ship no GPL code, build without igraph (see the README, "The igraph NIF
-  (optional)").
+  If you opt in and distribute software that includes a precompiled artefact
+  (for example a `mix release`), the GPL-3.0-or-later applies to that
+  artefact.
 
   The igraph build used for the artefacts leaves out GLPK, GraphML, OpenMP
   and Infomap, which Grafi does not use. It includes igraph's other vendored

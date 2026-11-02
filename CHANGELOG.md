@@ -205,12 +205,14 @@ All notable changes to Grafi are documented here, following
   - a post-release job downloads the published artefact on all four
     targets, on OTP 26 and 29 on Linux.
 
-  Uploads stay disabled until the licence review signs off (see
-  `RELEASING.md`). Precompiled artefacts statically link igraph and are
-  distributed under **GPL-3.0-or-later** (Apache-2.0 + GPL; pending
-  legal review); the source package stays Apache-2.0. See `NOTICE` and
-  the README "Third-party licenses" section, including how to build
-  without any GPL code.
+  **The precompiled NIF is opt-in** (`config :grafi, precompiled_nif:
+  true`): artefacts statically link igraph and are distributed under
+  **GPL-3.0-or-later** (Apache-2.0 + GPL), so by default Grafi builds
+  from source against a local igraph, or runs in pure Elixir, and ships
+  no GPL code. The source package stays Apache-2.0. Uploads stay
+  disabled until `RELEASE_LICENSE_APPROVED` is set (see
+  `RELEASING.md`). See `NOTICE` and the README "Third-party licenses"
+  section.
 - Cross builds (Nerves, any `MIX_TARGET` other than `host`, or a `CXX`
   for another OS) use only an igraph given with `IGRAPH_DIR`, never the
   host's.
