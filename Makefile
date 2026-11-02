@@ -7,9 +7,11 @@
 #
 # Environment:
 #   IGRAPH_DIR=/prefix   use only this igraph install (include/, lib/, and
-#                        lib/pkgconfig for the version when present)
+#                        lib/pkgconfig for the version when present); the
+#                        only igraph a cross build (MIX_TARGET other than
+#                        host, or a CXX for another OS) will use
 #   IGRAPH_STATIC=1      link libigraph.a and its dependencies (release builds;
-#                        needs igraph.pc)
+#                        needs igraph.pc); 0 or unset links dynamically
 #   GRAFI_REQUIRE_NIF=1  fail instead of skipping when igraph is unusable
 #   FINE_INCLUDE_DIR     fine's C++ headers; set by mix.exs (make_env)
 #   ERTS_INCLUDE_DIR     erl_nif.h; set by elixir_make
@@ -28,15 +30,30 @@ HASH    := \#
 
 ERTS_INCLUDE_DIR ?= $(shell erl -noshell -eval 'io:format("~s/erts-~s/include", [code:root_dir(), erlang:system_info(version)])' -s erlang halt)
 
+# IGRAPH_STATIC=1/true/yes turns static linking on; unset, 0 or anything
+# else leaves it off.
+STATIC := $(filter 1 true yes,$(IGRAPH_STATIC))
+
 # The OS being built for: cc_precompiler names the target when it
-# (cross-)compiles for one; otherwise the host.
+# (cross-)compiles for one; otherwise ask the compiler (cross toolchains
+# such as Nerves set CXX), and fall back to the host.
+HOST_OS := $(shell uname -s)
+CXX_MACHINE := $(shell $(CXX) -dumpmachine 2>/dev/null)
 ifneq ($(findstring darwin,$(CC_PRECOMPILER_CURRENT_TARGET)),)
   TARGET_OS := Darwin
 else ifneq ($(CC_PRECOMPILER_CURRENT_TARGET),)
   TARGET_OS := Linux
+else ifneq ($(findstring darwin,$(CXX_MACHINE)),)
+  TARGET_OS := Darwin
+else ifneq ($(CXX_MACHINE),)
+  TARGET_OS := Linux
 else
-  TARGET_OS := $(shell uname -s)
+  TARGET_OS := $(HOST_OS)
 endif
+
+# A native build may use the host's igraph (pkg-config, Homebrew,
+# /usr/local); a cross build only an explicit IGRAPH_DIR.
+NATIVE := $(and $(filter $(TARGET_OS),$(HOST_OS)),$(filter host,$(or $(MIX_TARGET),host)))
 
 # ── igraph detection ──────────────────────────────────────────────────
 # With IGRAPH_DIR, pkg-config may only look inside that prefix. A relative
@@ -44,8 +61,12 @@ endif
 ifdef IGRAPH_DIR
   override IGRAPH_DIR := $(abspath $(IGRAPH_DIR))
   PC := PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(IGRAPH_DIR)/lib/pkgconfig pkg-config
-else
+else ifneq ($(NATIVE),)
   PC := pkg-config
+else
+  # Cross build without IGRAPH_DIR: the host's pkg-config describes the
+  # wrong architecture.
+  PC := false
 endif
 
 IGRAPH_PC := $(shell $(PC) --exists igraph 2>/dev/null && echo 1)
@@ -54,7 +75,7 @@ ifeq ($(IGRAPH_PC),1)
   IGRAPH_VERSION := $(shell $(PC) --modversion igraph)
   IGRAPH_CFLAGS  := $(shell $(PC) --cflags igraph)
   IGRAPH_LIBDIR  := $(shell $(PC) --variable=libdir igraph)
-  ifdef IGRAPH_STATIC
+  ifneq ($(STATIC),)
     # The archive itself, never the shared library, plus its private deps.
     IGRAPH_LIBFILE := $(wildcard $(IGRAPH_LIBDIR)/libigraph.a)
     IGRAPH_LIBS    := $(IGRAPH_LIBDIR)/libigraph.a $(filter-out -ligraph -L%,$(shell $(PC) --static --libs igraph))
@@ -69,17 +90,20 @@ else
   # native macOS builds).
   ifdef IGRAPH_DIR
     IGRAPH_PREFIX := $(IGRAPH_DIR)
-  else ifeq ($(TARGET_OS)$(CC_PRECOMPILER_CURRENT_TARGET),Darwin)
-    IGRAPH_PREFIX := $(or $(shell brew --prefix igraph 2>/dev/null),/usr/local)
-  else
+  else ifeq ($(TARGET_OS):$(NATIVE),Darwin:host)
+    IGRAPH_PREFIX := $(or $(shell brew --prefix --installed igraph 2>/dev/null),/usr/local)
+  else ifneq ($(NATIVE),)
     IGRAPH_PREFIX := /usr/local
+  else
+    # Cross build without IGRAPH_DIR: never link the host's igraph.
+    IGRAPH_PREFIX := /nonexistent-igraph-for-cross-builds
   endif
   IGRAPH_VERSION := $(shell sed -n 's/^$(HASH)define IGRAPH_VERSION "\([^"]*\)".*/\1/p' $(IGRAPH_PREFIX)/include/igraph/igraph_version.h 2>/dev/null)
   IGRAPH_CFLAGS  := -I$(IGRAPH_PREFIX)/include/igraph
   IGRAPH_LIBFILE := $(firstword $(wildcard $(IGRAPH_PREFIX)/lib/libigraph.* $(IGRAPH_PREFIX)/lib64/libigraph.*))
   IGRAPH_LIBDIR  := $(patsubst %/,%,$(dir $(IGRAPH_LIBFILE)))
   IGRAPH_LIBS    := -L$(IGRAPH_LIBDIR) -ligraph
-  ifdef IGRAPH_STATIC
+  ifneq ($(STATIC),)
     IGRAPH_NEEDS_PC := 1
   endif
 endif
@@ -97,7 +121,7 @@ else ifneq ($(shell test "$(IGRAPH_MAJOR)" -ge 1 2>/dev/null && echo 1),1)
 else ifeq ($(IGRAPH_NEEDS_PC),1)
   IGRAPH_PROBLEM := IGRAPH_STATIC=1 needs igraph.pc to find igraph's private libraries
 else ifeq ($(IGRAPH_LIBFILE),)
-  IGRAPH_PROBLEM := igraph $(IGRAPH_VERSION) headers found, but no $(if $(IGRAPH_STATIC),libigraph.a,libigraph) next to them
+  IGRAPH_PROBLEM := igraph $(IGRAPH_VERSION) headers found, but no $(if $(STATIC),libigraph.a,libigraph) next to them
 else ifneq ($(IGRAPH_TLS),1)
   IGRAPH_PROBLEM := igraph $(IGRAPH_VERSION) was built without thread safety (IGRAPH_ENABLE_TLS), which the NIF needs
 endif
@@ -124,7 +148,7 @@ endif
 # A shared libigraph needs an rpath so the NIF finds it without
 # LD_LIBRARY_PATH. (Homebrew's dylibs carry absolute install names, so on
 # macOS this rarely matters.)
-ifeq ($(IGRAPH_STATIC),)
+ifeq ($(STATIC),)
   LDFLAGS_EXTRA += $(if $(IGRAPH_LIBDIR),-Wl$(comma)-rpath$(comma)$(IGRAPH_LIBDIR))
 endif
 
@@ -135,7 +159,7 @@ HEADERS = c_src/grafi_nif.h c_src/grafi_nif.map \
 # Rebuild when the igraph install, the link mode or the ERTS headers change,
 # not only when the sources do. The stamp is rewritten only when its content
 # changes.
-STAMP_CONTENT = $(IGRAPH_VERSION) $(IGRAPH_LIBDIR) static=$(IGRAPH_STATIC) erts=$(ERTS_INCLUDE_DIR)
+STAMP_CONTENT = $(IGRAPH_VERSION) $(IGRAPH_LIBDIR) static=$(STATIC) target=$(TARGET_OS) erts=$(ERTS_INCLUDE_DIR)
 
 .PHONY: all clean FORCE
 .DELETE_ON_ERROR:
@@ -150,7 +174,7 @@ $(STAMP): FORCE
 
 $(NIF_SO): $(SOURCES) $(HEADERS) $(STAMP)
 	@test -n "$(FINE_INCLUDE_DIR)" || { echo "grafi: FINE_INCLUDE_DIR is not set; build through mix" >&2; exit 1; }
-	@echo "grafi: using igraph $(IGRAPH_VERSION) from $(IGRAPH_LIBDIR)$(if $(IGRAPH_STATIC), (static))"
+	@echo "grafi: using igraph $(IGRAPH_VERSION) from $(IGRAPH_LIBDIR)$(if $(STATIC), (static))"
 	$(CXX) $(CXXFLAGS) -o $@ $(SOURCES) $(IGRAPH_LIBS) $(LDFLAGS_EXTRA)
 	@rm -f $(SKIPPED)
 

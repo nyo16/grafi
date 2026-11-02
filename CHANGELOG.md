@@ -150,15 +150,16 @@ All notable changes to Grafi are documented here, following
     >= 2.28: RHEL 8+, Debian 11+, Ubuntu 20.04+), and macOS (11+ on
     Apple Silicon, 10.15+ on Intel);
   - each artefact is checksum-verified on download, checked to export
-    only `nif_init` and to meet its platform floor, and smoke-tested
-    in a consumer app without igraph;
+    only `nif_init`, to meet its platform floor and to carry the
+    licence texts, and smoke-tested in a consumer app without igraph;
   - releases carry `checksum.exs` (generated from the build outputs),
     build provenance attestations, `NOTICE`, the igraph source and the
-    licence texts, and are published only from a `v*` tag matching
-    `@version`, through a protected environment, without ever
-    replacing assets;
-  - a post-release job downloads the published artefact on OTP 26, 28
-    and 29.
+    licence texts (GPL-3.0, Apache-2.0, igraph and its vendored code),
+    and are published only from a `v*` tag matching a non-`-dev`
+    `@version`, through a protected environment, in one draft → upload
+    → publish step (immutable-release safe; never reuses a release);
+  - a post-release job downloads the published artefact on all four
+    targets, on OTP 26 and 29 on Linux.
 
   Uploads stay disabled until the licence review signs off (see
   `RELEASING.md`). Precompiled artefacts statically link igraph and are
@@ -166,6 +167,9 @@ All notable changes to Grafi are documented here, following
   legal review); the source package stays Apache-2.0. See `NOTICE` and
   the README "Third-party licenses" section, including how to build
   without any GPL code.
+- Cross builds (Nerves, any `MIX_TARGET` other than `host`, or a `CXX`
+  for another OS) use only an igraph given with `IGRAPH_DIR`, never the
+  host's.
 - igraph is optional at build time. Without a usable igraph (>= 1.0,
   thread-safe, headers and library) the build prints a notice and Grafi
   runs in pure Elixir; `GRAFI_REQUIRE_NIF=1` makes that a build error,
