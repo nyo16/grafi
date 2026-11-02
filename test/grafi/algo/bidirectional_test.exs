@@ -74,9 +74,17 @@ defmodule Grafi.Algo.BidirectionalTest do
       assert w == classic_w
     end
 
-    test ":no_path when disconnected" do
+    test "{:error, :no_path} when disconnected" do
       g = Graph.new() |> Graph.add_vertices([:a, :b])
-      assert :no_path = Bidirectional.dijkstra(g, :a, :b)
+      assert {:error, :no_path} = Bidirectional.dijkstra(g, :a, :b)
+    end
+
+    test "unknown options raise ArgumentError" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:engine\]/, fn ->
+        Bidirectional.dijkstra(g, :a, :b, engine: :elixir)
+      end
     end
 
     test "{:error, :no_such_vertex} when source missing" do
@@ -146,8 +154,8 @@ defmodule Grafi.Algo.BidirectionalTest do
             assert valid_path?(g, path)
             assert_in_delta path_weight(g, path), bidi_w, 1.0e-9
 
-          :no_path ->
-            assert :no_path = Bidirectional.dijkstra(g, src, tgt)
+          {:error, :no_path} ->
+            assert {:error, :no_path} = Bidirectional.dijkstra(g, src, tgt)
         end
       end
     end
@@ -178,8 +186,8 @@ defmodule Grafi.Algo.BidirectionalTest do
             assert {:ok, {_path, bidi_w}} = Bidirectional.dijkstra(g, src, tgt)
             assert_in_delta bidi_w, classic_w, 1.0e-9
 
-          :no_path ->
-            assert :no_path = Bidirectional.dijkstra(g, src, tgt)
+          {:error, :no_path} ->
+            assert {:error, :no_path} = Bidirectional.dijkstra(g, src, tgt)
         end
       end
     end

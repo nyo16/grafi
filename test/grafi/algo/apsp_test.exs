@@ -177,7 +177,7 @@ defmodule Grafi.Algo.APSPTest do
         |> Grafi.add_vertex(:c)
 
       {:ok, _d, p} = APSP.floyd_warshall_with_paths(g)
-      assert APSP.reconstruct_path(p, :a, :c) == :no_path
+      assert APSP.reconstruct_path(p, :a, :c) == {:error, :no_path}
     end
 
     test "matches Grafi.shortest_path/3 on positive-weight graph" do
@@ -193,17 +193,19 @@ defmodule Grafi.Algo.APSPTest do
             fw_dist = path_weight(g, fw_path)
             assert_in_delta dist, fw_dist, 1.0e-9
 
-          :no_path ->
+          {:error, :no_path} ->
             refute Map.has_key?(d[u], v)
-            assert APSP.reconstruct_path(p, u, v) == :no_path
+            assert APSP.reconstruct_path(p, u, v) == {:error, :no_path}
         end
       end
     end
 
-    test "missing 'from' vertex returns :no_path" do
+    test "a vertex missing from the matrix returns {:error, :no_such_vertex}" do
       g = triangle()
       {:ok, _d, p} = APSP.floyd_warshall_with_paths(g)
-      assert APSP.reconstruct_path(p, :ghost, :a) == :no_path
+      assert APSP.reconstruct_path(p, :ghost, :a) == {:error, :no_such_vertex}
+      assert APSP.reconstruct_path(p, :a, :ghost) == {:error, :no_such_vertex}
+      assert APSP.reconstruct_path(p, :ghost, :ghost) == {:error, :no_such_vertex}
     end
   end
 

@@ -68,12 +68,12 @@ defmodule Grafi.EdgeCasesTest do
       assert MapSet.new([:c, :d]) in comp_sets
     end
 
-    test "shortest_path returns :no_path across components" do
+    test "shortest_path returns {:error, :no_path} across components" do
       g =
         Grafi.new()
         |> Grafi.add_edges([{:a, :b}, {:c, :d}])
 
-      assert Grafi.shortest_path(g, :a, :d) == :no_path
+      assert Grafi.shortest_path(g, :a, :d) == {:error, :no_path}
     end
   end
 
@@ -117,6 +117,7 @@ defmodule Grafi.EdgeCasesTest do
     test "A* missing endpoints returns {:error, :no_such_vertex}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
       assert Grafi.a_star(g, :missing, :b, fn _ -> 0 end) == {:error, :no_such_vertex}
+      assert Grafi.a_star(g, :a, :missing, fn _ -> 0 end) == {:error, :no_such_vertex}
     end
   end
 
