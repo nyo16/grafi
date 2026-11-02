@@ -13,8 +13,10 @@ defmodule Grafi.Test.Generators do
 
   @atom_pool ~w(a b c d e f g h alpha beta gamma delta)a
 
-  # Text that tends to break serializers: whitespace, quotes, escapes,
-  # markup, separators, non-ASCII, and Pajek/Mermaid/DOT syntax.
+  # Text that tends to break serializers: whitespace (leading, trailing,
+  # non-ASCII), quotes, escapes, markup, separators, non-ASCII and combining
+  # marks, MatrixMarket id prefixes, and Pajek/Mermaid/DOT syntax. No
+  # XML-illegal control characters (the XML encoders raise on them).
   @special_strings [
     "",
     " ",
@@ -37,7 +39,19 @@ defmodule Grafi.Test.Generators do
     "a,b",
     "*Arcs",
     "ünïcödé",
-    "😀"
+    "😀",
+    "  padded  ",
+    "x\t",
+    "a \u0301",
+    "\u00A0nbsp",
+    "int:5",
+    "atom:a",
+    "float:1.0",
+    "str:x",
+    "%%{init: {}}%%",
+    "<img src=x onerror=y>",
+    "trail\\",
+    "&#0;"
   ]
 
   @doc "The id types `graph/1` can use."
@@ -63,15 +77,17 @@ defmodule Grafi.Test.Generators do
   end
 
   @doc """
-  An edge weight: 1.0, zero, negative or fractional. Always a float (the
-  decoders read weights back as floats).
+  An edge weight: 1.0, zero, negative, fractional or extreme (exponent
+  notation, subnormal). Always a float (the decoders read weights back as
+  floats).
   """
   def weight do
     one_of([
       constant(1.0),
       constant(0.0),
       map(integer(-10..10), &(&1 * 1.0)),
-      float(min: -1.0e6, max: 1.0e6)
+      float(min: -1.0e6, max: 1.0e6),
+      member_of([1.0e300, -1.0e-300, 5.0e-324, 1.0e20, -2.5e-7])
     ])
   end
 

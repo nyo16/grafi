@@ -9,19 +9,18 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
   | Format | Lossless subset (`from_x(to_x(g))` equivalent to `g`) |
   |---|---|
   | JSON | integer or string ids; type, vertices, edges, weights, vertex and edge labels |
-  | GraphML, GEXF | string ids (other ids come back as their text); type, vertices, edges, weights, vertex and edge labels |
+  | GraphML, GEXF | string ids (other ids come back as their text); type, vertices, edges, weights, vertex and edge labels, including leading/trailing whitespace and combining marks. Invalid UTF-8 and XML-illegal control characters raise `ArgumentError` |
   | Pajek | string ids (other ids come back as their text); type, vertices, edges, weights. No labels: the vertex label is the id |
-  | Edge list | whitespace-free string ids; edges with weights. Type comes from the `:directed` option; isolated vertices and labels are not represented |
-  | Adjacency list | whitespace-free string ids, directed; vertices and the edge *set* (parallel edges collapse by default). No weights or labels |
-  | MatrixMarket | any id type; type, vertices, and the summed weight of each vertex pair (parallel edges add up). No labels |
-  | DOT, Mermaid | write-only: encoding never raises, and every Mermaid statement stays on its own line |
+  | Edge list | whitespace-free string ids; edges with weights. Type comes from the `:directed` option; isolated vertices and labels are not represented. Ids that can't round-trip raise `ArgumentError` |
+  | Adjacency list | whitespace-free string ids, directed; vertices and the edge *set*, or with `collapse_multi_edges: false` the edge multiset; any separator. No weights or labels |
+  | MatrixMarket | integer (including bignum), atom and string ids, including strings with reserved prefixes (`int:`), whitespace and `%`; type, vertices, and the summed weight of each vertex pair (parallel edges add up). No labels |
+  | DOT, Mermaid | write-only; their structure is checked in `encoder_structure_property_test.exs` |
   """
   use ExUnit.Case, async: true
   use ExUnitProperties
 
   alias Grafi.Graph
-  alias Grafi.Serialize.{AdjacencyList, DOT, EdgeList, GEXF, GraphML, JSON, MatrixMarket, Mermaid}
-  alias Grafi.Serialize.{Pajek, Util}
+  alias Grafi.Serialize.{AdjacencyList, EdgeList, GEXF, GraphML, JSON, MatrixMarket, Pajek, Util}
   alias Grafi.Test.Generators
 
   # ── Equivalence helpers ─────────────────────────────────────────────
@@ -113,18 +112,27 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
   end
 
   property "the adjacency list round-trips directed graphs as vertex and edge sets" do
-    check all(g <- Generators.graph(type: :directed, id_type: :simple_string, weights: false)) do
-      decoded = AdjacencyList.from_adjacency_list(AdjacencyList.to_adjacency_list(g))
+    check all(
+            g <- Generators.graph(type: :directed, id_type: :simple_string, weights: false),
+            collapse? <- boolean(),
+            sep <- member_of([nil, ",", " | "])
+          ) do
+      sep_opts = if sep, do: [separator: sep], else: []
+      text = AdjacencyList.to_adjacency_list(g, [collapse_multi_edges: collapse?] ++ sep_opts)
+      decoded = AdjacencyList.from_adjacency_list(text, sep_opts)
 
       assert %Graph{} = decoded
       assert vertices(decoded) == vertices(g)
 
-      assert Enum.uniq(edges(decoded, fn ends, _ -> ends end)) ==
-               Enum.uniq(edges(g, fn ends, _ -> ends end))
+      # Collapsed: the edge set; otherwise every parallel edge survives.
+      shape = if collapse?, do: &Enum.uniq/1, else: & &1
+
+      assert shape.(edges(decoded, fn ends, _ -> ends end)) ==
+               shape.(edges(g, fn ends, _ -> ends end))
     end
   end
 
-  property "MatrixMarket round-trips ids of any type and summed pair weights" do
+  property "MatrixMarket round-trips integer, atom and string ids and summed pair weights" do
     check all(g <- Generators.graph()) do
       decoded = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
 
@@ -149,24 +157,17 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
     end
   end
 
-  # ── Write-only formats ──────────────────────────────────────────────
+  # ── Unrepresentable input ───────────────────────────────────────────
 
-  property "DOT encodes any graph, whatever its labels" do
-    check all(g <- Generators.graph(vertex_labels: true, edge_labels: true)) do
-      assert is_binary(DOT.to_dot(g))
-    end
-  end
-
-  property "Mermaid keeps every vertex and edge statement on its own line" do
-    check all(g <- Generators.graph(vertex_labels: true, edge_labels: true)) do
-      # Edge labels come from the edges themselves; vertex labels via the option.
-      lines =
-        g
-        |> Mermaid.to_mermaid(vertex_label: &(Graph.label(g, &1) || inspect(&1)))
-        |> String.split(["\r\n", "\n", "\r"])
-        |> Enum.reject(&(&1 == ""))
-
-      assert length(lines) == 1 + Graph.num_vertices(g) + Graph.num_edges(g)
+  property "GraphML and GEXF refuse ids that are not valid UTF-8 instead of truncating them" do
+    check all(
+            prefix <- string(:alphanumeric, max_length: 4),
+            bad <- member_of([<<0xE9>>, <<0xFF, 0xFE>>, <<0xC3>>]),
+            suffix <- string(:alphanumeric, max_length: 4)
+          ) do
+      g = Graph.add_edge(Graph.new(), prefix <> bad <> suffix, "ok")
+      assert_raise ArgumentError, fn -> GraphML.to_graphml(g) end
+      assert_raise ArgumentError, fn -> GEXF.to_gexf(g) end
     end
   end
 end
