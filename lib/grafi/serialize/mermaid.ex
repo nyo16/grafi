@@ -19,6 +19,9 @@ defmodule Grafi.Serialize.Mermaid do
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.Util
+
+  @escaped ["\r\n", "\r", "\n", "`", "|", "\""]
 
   @type direction :: :td | :lr | :bt | :rl
   @type graph_type :: :flowchart | :graph
@@ -39,6 +42,10 @@ defmodule Grafi.Serialize.Mermaid do
     * `:vertex_label` — `(vertex -> String.t())` callback used to produce
       the visible text in a `v_n[label]` node. Defaults to a sensible
       rendering of atoms, strings, and integers.
+
+  In node and edge labels, newlines (`\\n`, `\\r`, `\\r\\n`) become `#10;`,
+  backticks `#96;`, `|` `#124;` and `"` `#quot;`, so a label cannot end its
+  node, its line, or an enclosing Markdown code fence.
 
   ## Examples
 
@@ -137,13 +144,13 @@ defmodule Grafi.Serialize.Mermaid do
   defp default_label(v) when is_integer(v), do: Integer.to_string(v)
   defp default_label(v), do: inspect(v)
 
-  # Mermaid node text inside `[...]`. Square brackets and pipes are
-  # syntactic delimiters; quotes wrap special-character labels. We just
-  # always quote, which is the safest cross-version choice.
+  # Mermaid node text inside `[...]`. Characters that would end the label,
+  # the line or an enclosing Markdown code fence (see `Grafi.Kino`) become
+  # Mermaid entity codes; labels with any special character or space are
+  # wrapped in quotes, which is the safest cross-version choice.
   defp escape_label(s) when is_binary(s) do
-    if String.contains?(s, ["[", "]", "|", "\"", "(", ")", "{", "}", "<", ">"]) or
-         String.contains?(s, " ") do
-      "\"" <> String.replace(s, "\"", "#quot;") <> "\""
+    if String.contains?(s, ["[", "]", "(", ")", "{", "}", "<", ">", " " | @escaped]) do
+      "\"" <> escape_text(s) <> "\""
     else
       s
     end
@@ -151,18 +158,23 @@ defmodule Grafi.Serialize.Mermaid do
 
   defp escape_label(other), do: escape_label(to_string(other))
 
-  # Edge labels live between `|...|`. Sanitise pipes/newlines.
-  defp escape_edge_label(s) do
-    s
-    |> String.replace("|", "\\|")
-    |> String.replace("\n", " ")
-  end
+  # Edge labels live between `|...|`.
+  defp escape_edge_label(s), do: escape_text(s)
 
-  defp format_weight(w) when is_float(w) do
-    if w == Float.round(w),
-      do: :erlang.float_to_binary(w, [:compact, decimals: 1]),
-      else: to_string(w)
-  end
+  # One pass; `"\r\n"` is matched before its parts (longest match wins).
+  defp escape_text(s), do: String.replace(s, @escaped, &entity/1)
 
-  defp format_weight(w), do: to_string(w)
+  defp entity("\r\n"), do: "#10;"
+  defp entity("\r"), do: "#10;"
+  defp entity("\n"), do: "#10;"
+  defp entity("`"), do: "#96;"
+  defp entity("|"), do: "#124;"
+  defp entity("\""), do: "#quot;"
+
+  # Compact display for whole floats (`80.0`), `Util.format_weight/1`
+  # otherwise, which raises for a non-number.
+  defp format_weight(w) when is_float(w) and w == trunc(w),
+    do: :erlang.float_to_binary(w, [:compact, decimals: 1])
+
+  defp format_weight(w), do: Util.format_weight(w)
 end
