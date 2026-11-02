@@ -18,13 +18,13 @@ defmodule Grafi.Algo.Matching do
 
   ## Bipartition responsibility
 
-  Hopcroft–Karp requires the caller to supply the *left* side of the
-  bipartition explicitly. If `Grafi.Algo.Bipartite.bipartite?/1` is
-  available, the graph is sanity-checked against it; otherwise, callers
-  are responsible for ensuring bipartiteness.
+  `hopcroft_karp/3` and `weighted_bipartite_matching/3` take the *left*
+  side of the bipartition from the caller, and return
+  `{:error, :not_bipartite}` when `Grafi.Algo.Bipartite.bipartite?/1`
+  rejects the graph.
   """
 
-  alias Grafi.Graph
+  alias Grafi.{Args, Graph}
 
   # Sentinel "infinity" used to pad rectangular cost matrices in
   # `hungarian/2` and to represent missing edges in
@@ -63,13 +63,15 @@ defmodule Grafi.Algo.Matching do
   @spec hopcroft_karp(Graph.t(), [any()] | MapSet.t(), keyword()) ::
           {:ok, %{matching: %{any() => any()}, size: non_neg_integer()}}
           | {:error, :not_bipartite}
-  def hopcroft_karp(%Graph{} = g, left_side, _opts \\ []) do
+  def hopcroft_karp(%Graph{} = g, left_side, opts \\ []) do
+    Keyword.validate!(opts, [])
+
     left_set =
       if is_struct(left_side, MapSet),
         do: left_side,
         else: MapSet.new(left_side)
 
-    with :ok <- maybe_check_bipartite(g) do
+    with :ok <- check_bipartite(g) do
       lefts = left_set |> Enum.filter(&Graph.has_vertex?(g, &1))
 
       adj =
@@ -88,26 +90,12 @@ defmodule Grafi.Algo.Matching do
 
       {pair_l, pair_r} = do_hk(lefts, adj, %{}, %{})
 
-      matching =
-        pair_l
-        |> Enum.reduce(%{}, fn {l, r}, acc -> Map.put(acc, l, r) end)
-        |> then(fn m ->
-          Enum.reduce(pair_r, m, fn {r, l}, acc -> Map.put(acc, r, l) end)
-        end)
-
-      {:ok, %{matching: matching, size: map_size(pair_l)}}
+      {:ok, %{matching: Map.merge(pair_l, pair_r), size: map_size(pair_l)}}
     end
   end
 
-  defp maybe_check_bipartite(g) do
-    if Code.ensure_loaded?(Grafi.Algo.Bipartite) and
-         function_exported?(Grafi.Algo.Bipartite, :bipartite?, 1) do
-      if Grafi.Algo.Bipartite.bipartite?(g),
-        do: :ok,
-        else: {:error, :not_bipartite}
-    else
-      :ok
-    end
+  defp check_bipartite(g) do
+    if Grafi.Algo.Bipartite.bipartite?(g), do: :ok, else: {:error, :not_bipartite}
   end
 
   # Main HK loop over the still-free left vertices. Each phase layers the
@@ -243,12 +231,15 @@ defmodule Grafi.Algo.Matching do
   """
   @spec hungarian([[number()]], keyword()) ::
           {:ok, %{assignment: [non_neg_integer() | nil], cost: number(), unmatched: [integer()]}}
-  def hungarian(cost_matrix, opts \\ [])
+  def hungarian(cost_matrix, opts \\ []) when is_list(cost_matrix) do
+    opts = Keyword.validate!(opts, maximize: false)
+    maximize? = Args.boolean!(opts, :maximize, false)
+    solve_assignment(cost_matrix, maximize?)
+  end
 
-  def hungarian([], _opts), do: {:ok, %{assignment: [], cost: 0, unmatched: []}}
+  defp solve_assignment([], _maximize?), do: {:ok, %{assignment: [], cost: 0, unmatched: []}}
 
-  def hungarian(cost_matrix, opts) when is_list(cost_matrix) do
-    maximize? = Keyword.get(opts, :maximize, false)
+  defp solve_assignment(cost_matrix, maximize?) do
     n_rows = length(cost_matrix)
     n_cols = cost_matrix |> hd() |> length()
     n = max(n_rows, n_cols)
@@ -442,31 +433,39 @@ defmodule Grafi.Algo.Matching do
 
   ## Options
 
-    * `:maximize` — defaults to `true` (matchings on weighted graphs
-      typically maximise total weight).
+    * `:maximize` — if `true`, maximise the total weight. Defaults to
+      `false` (minimise, as in `hungarian/2`). Between parallel edges, the
+      lightest one counts when minimising and the heaviest when
+      maximising.
 
   ## Examples
 
       iex> g = Grafi.Graph.new(type: :undirected)
       ...>     |> Grafi.Graph.add_edges([{:l1, :r1, weight: 5.0},
       ...>                               {:l1, :r2, weight: 1.0},
+      ...>                               {:l2, :r1, weight: 2.0},
       ...>                               {:l2, :r2, weight: 4.0}])
-      iex> {:ok, %{matching: m}} = Grafi.Algo.Matching.weighted_bipartite_matching(g, [:l1, :l2])
-      iex> {Map.get(m, :l1), Map.get(m, :l2)}
+      iex> {:ok, %{matching: min}} = Grafi.Algo.Matching.weighted_bipartite_matching(g, [:l1, :l2])
+      iex> {min[:l1], min[:l2]}
+      {:r2, :r1}
+      iex> {:ok, %{matching: max}} =
+      ...>   Grafi.Algo.Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: true)
+      iex> {max[:l1], max[:l2]}
       {:r1, :r2}
   """
   @spec weighted_bipartite_matching(Graph.t(), [any()] | MapSet.t(), keyword()) ::
           {:ok, %{matching: %{any() => any()}, weight: number()}}
           | {:error, :not_bipartite}
   def weighted_bipartite_matching(%Graph{} = g, left_side, opts \\ []) do
-    maximize? = Keyword.get(opts, :maximize, true)
+    opts = Keyword.validate!(opts, maximize: false)
+    maximize? = Args.boolean!(opts, :maximize, false)
 
     left_set =
       if is_struct(left_side, MapSet),
         do: left_side,
         else: MapSet.new(left_side)
 
-    with :ok <- maybe_check_bipartite(g) do
+    with :ok <- check_bipartite(g) do
       lefts =
         left_set
         |> Enum.filter(&Graph.has_vertex?(g, &1))
@@ -484,14 +483,14 @@ defmodule Grafi.Algo.Matching do
       else
         cost_matrix =
           Enum.map(lefts, fn l ->
-            neigh_weights = right_weights(g, l, left_set)
+            neigh_weights = right_weights(g, l, left_set, maximize?)
 
             Enum.map(rights, fn r ->
               Map.get(neigh_weights, r, sentinel)
             end)
           end)
 
-        {:ok, %{assignment: assignment}} = hungarian(cost_matrix, maximize: maximize?)
+        {:ok, %{assignment: assignment}} = solve_assignment(cost_matrix, maximize?)
 
         # Tuples for O(1) indexed access inside the reduce below.
         lefts_t = List.to_tuple(lefts)
@@ -522,25 +521,17 @@ defmodule Grafi.Algo.Matching do
     end
   end
 
-  defp right_weights(g, l, left_set) do
-    out_w =
-      g.out_edges
-      |> Map.get(l, %{})
-      |> Enum.reject(fn {to, _} -> MapSet.member?(left_set, to) end)
-      |> Enum.map(fn {to, edges} ->
-        {to, edges |> Enum.map(& &1.weight) |> Enum.max(fn -> 0.0 end)}
-      end)
-      |> Map.new()
+  # Weight of the edge from `l` to each right neighbour: the heaviest
+  # parallel edge when maximising, the lightest when minimising.
+  defp right_weights(g, l, left_set, maximize?) do
+    pick = if maximize?, do: &max/2, else: &min/2
 
-    in_w =
-      g.in_edges
-      |> Map.get(l, %{})
-      |> Enum.reject(fn {from, _} -> MapSet.member?(left_set, from) end)
-      |> Enum.map(fn {from, edges} ->
-        {from, edges |> Enum.map(& &1.weight) |> Enum.max(fn -> 0.0 end)}
-      end)
-      |> Map.new()
-
-    Map.merge(out_w, in_w, fn _k, a, b -> max(a, b) end)
+    for adjacent <- [g.out_edges, g.in_edges],
+        {r, edges} <- Map.get(adjacent, l, %{}),
+        not MapSet.member?(left_set, r),
+        e <- edges,
+        reduce: %{} do
+      acc -> Map.update(acc, r, e.weight, &pick.(&1, e.weight))
+    end
   end
 end

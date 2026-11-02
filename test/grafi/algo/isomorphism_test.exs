@@ -105,7 +105,7 @@ defmodule Grafi.Algo.IsomorphismTest do
       test "raises on mismatched directedness" do
         a = Graph.new(type: :directed) |> Graph.add_edges([{:a, :b}])
         b = Graph.new(type: :undirected) |> Graph.add_edges([{:a, :b}])
-        assert_raise ArgumentError, fn -> Isomorphism.isomorphic?(a, b, @opts) end
+        assert_raise ArgumentError, ~r/same type/, fn -> Isomorphism.isomorphic?(a, b, @opts) end
       end
 
       test "directed: cycle vs relabelled cycle" do
@@ -260,6 +260,28 @@ defmodule Grafi.Algo.IsomorphismTest do
                  Graph.new(type: :undirected),
                  @opts
                ) == 1
+      end
+    end
+  end
+
+  describe "options" do
+    test "unknown options raise in every function, before any early return" do
+      empty = Graph.new(type: :undirected)
+
+      calls = [
+        &Isomorphism.isomorphic?/3,
+        &Isomorphism.subgraph_isomorphic?/3,
+        &Isomorphism.isomorphism/3,
+        &Isomorphism.subgraph_isomorphism/3,
+        &Isomorphism.count_subgraph_isomorphisms/3,
+        &Grafi.isomorphic?/3,
+        &Grafi.subgraph_isomorphic?/3
+      ]
+
+      for call <- calls, {g, h} <- [{empty, empty}, {triangle(), k(4)}] do
+        assert_raise ArgumentError, ~r/unknown keys \[:induced\]/, fn ->
+          call.(g, h, engine: :elixir, induced: true)
+        end
       end
     end
   end

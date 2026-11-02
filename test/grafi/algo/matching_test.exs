@@ -129,6 +129,14 @@ defmodule Grafi.Algo.MatchingTest do
       assert length(Enum.uniq(rs)) == length(rs)
     end
 
+    test "unknown options raise" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:l, :r)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:algo\]/, fn ->
+        Matching.hopcroft_karp(g, [:l], algo: :greedy)
+      end
+    end
+
     property "finds a maximum matching: its size is the unit-capacity max flow" do
       check all(
               type <- member_of([:undirected, :directed]),
@@ -297,6 +305,20 @@ defmodule Grafi.Algo.MatchingTest do
       end
     end
 
+    test "unknown options and a non-boolean :maximize raise" do
+      assert_raise ArgumentError, ~r/unknown keys \[:maximise\]/, fn ->
+        Matching.hungarian([[1]], maximise: true)
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:maximise\]/, fn ->
+        Matching.hungarian([], maximise: true)
+      end
+
+      assert_raise ArgumentError, ~r/:maximize/, fn ->
+        Matching.hungarian([[1]], maximize: "yes")
+      end
+    end
+
     # c[i][j] = i·j makes every row displace the previous ones, so each row
     # needs many scans. 8x the size takes about 350x as long (O(n³) bounds
     # it at 512x); the old element-wise `put_elem/3` updates took about
@@ -363,13 +385,13 @@ defmodule Grafi.Algo.MatchingTest do
         ])
 
       assert {:ok, %{matching: m, weight: 9.0}} =
-               Matching.weighted_bipartite_matching(g, [:l1, :l2])
+               Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: true)
 
       assert m[:l1] == :r1
       assert m[:l2] == :r2
     end
 
-    test "minimization flips the chosen pairs" do
+    test "minimises by default, like hungarian/2" do
       g =
         Graph.new(type: :undirected)
         |> Graph.add_edges([
@@ -380,6 +402,9 @@ defmodule Grafi.Algo.MatchingTest do
         ])
 
       assert {:ok, %{matching: m, weight: 3.0}} =
+               Matching.weighted_bipartite_matching(g, [:l1, :l2])
+
+      assert {:ok, %{matching: ^m, weight: 3.0}} =
                Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: false)
 
       assert m[:l1] == :r2
@@ -423,7 +448,7 @@ defmodule Grafi.Algo.MatchingTest do
         ])
 
       assert {:ok, %{matching: m, weight: 3.0}} =
-               Matching.weighted_bipartite_matching(g, [:l1, :l2, :l3])
+               Matching.weighted_bipartite_matching(g, [:l1, :l2, :l3], maximize: true)
 
       assert m[:l1] == :r1
       assert map_size(m) == 1
@@ -436,6 +461,30 @@ defmodule Grafi.Algo.MatchingTest do
 
       assert {:error, :not_bipartite} =
                Matching.weighted_bipartite_matching(g, [:a])
+    end
+
+    test "unknown options raise" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:l, :r)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:max\]/, fn ->
+        Matching.weighted_bipartite_matching(g, [:l], max: true)
+      end
+    end
+
+    test "parallel edges: the lightest counts when minimising, the heaviest when maximising" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([
+          {:l1, :r1, weight: 5.0},
+          {:l1, :r1, weight: 1.0},
+          {:l2, :r2, weight: 2.0}
+        ])
+
+      assert {:ok, %{matching: %{l1: :r1, l2: :r2}, weight: 3.0}} =
+               Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: false)
+
+      assert {:ok, %{matching: %{l1: :r1, l2: :r2}, weight: 7.0}} =
+               Matching.weighted_bipartite_matching(g, [:l1, :l2], maximize: true)
     end
   end
 

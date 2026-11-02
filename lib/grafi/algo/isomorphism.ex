@@ -54,8 +54,8 @@ defmodule Grafi.Algo.Isomorphism do
   `{:error, :nif_not_available}` and `{:error, {:igraph, message}}`.
 
   Every function raises `ArgumentError` if the graphs differ in
-  directedness, for an invalid `:engine` or `:timeout`, or for an invalid
-  `vf2_timeout` when no `:timeout` is given.
+  directedness, for an unknown option, an invalid `:engine` or `:timeout`,
+  or for an invalid `vf2_timeout` when no `:timeout` is given.
 
   ## Caveats
 
@@ -94,6 +94,9 @@ defmodule Grafi.Algo.Isomorphism do
   # round budget, see `refine/3`.
   @profile_depth 3
   @refine_rounds_per_bit 2
+  # Every public function's options; `:timeout` has no default, since its
+  # absence selects the `vf2_timeout` config.
+  @options [:timeout, engine: :auto]
 
   # ── Public API ────────────────────────────────────────────────────────
 
@@ -124,6 +127,7 @@ defmodule Grafi.Algo.Isomorphism do
   """
   @spec isomorphic?(Graph.t(), Graph.t(), keyword()) :: boolean()
   def isomorphic?(%Graph{} = g1, %Graph{} = g2, opts \\ []) do
+    opts = Keyword.validate!(opts, @options)
     timeout = validate!(g1, g2, opts)
 
     cond do
@@ -165,6 +169,7 @@ defmodule Grafi.Algo.Isomorphism do
   """
   @spec subgraph_isomorphic?(Graph.t(), Graph.t(), keyword()) :: boolean()
   def subgraph_isomorphic?(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
+    opts = Keyword.validate!(opts, @options)
     timeout = validate!(graph, pattern, opts)
 
     cond do
@@ -200,6 +205,7 @@ defmodule Grafi.Algo.Isomorphism do
   @spec isomorphism(Graph.t(), Graph.t(), keyword()) ::
           {:ok, mapping()} | :no_isomorphism | error()
   def isomorphism(%Graph{} = g1, %Graph{} = g2, opts \\ []) do
+    opts = Keyword.validate!(opts, @options)
     timeout = validate!(g1, g2, opts)
 
     cond do
@@ -233,6 +239,7 @@ defmodule Grafi.Algo.Isomorphism do
   @spec subgraph_isomorphism(Graph.t(), Graph.t(), keyword()) ::
           {:ok, mapping()} | :no_isomorphism | error()
   def subgraph_isomorphism(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
+    opts = Keyword.validate!(opts, @options)
     timeout = validate!(graph, pattern, opts)
 
     cond do
@@ -273,6 +280,7 @@ defmodule Grafi.Algo.Isomorphism do
   @spec count_subgraph_isomorphisms(Graph.t(), Graph.t(), keyword()) ::
           non_neg_integer() | error()
   def count_subgraph_isomorphisms(%Graph{} = graph, %Graph{} = pattern, opts \\ []) do
+    opts = Keyword.validate!(opts, @options)
     timeout = validate!(graph, pattern, opts)
 
     cond do

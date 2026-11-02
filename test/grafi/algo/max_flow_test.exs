@@ -234,6 +234,18 @@ defmodule Grafi.Algo.MaxFlowTest do
       assert {:ok, %{cut_value: 23}} = MaxFlow.min_cut(g, :s, :t, algo: :dinic)
     end
 
+    test "unknown options and an unknown :algo raise, even for a missing vertex" do
+      g = clrs_network()
+
+      assert_raise ArgumentError, ~r/unknown keys \[:method\]/, fn ->
+        MaxFlow.min_cut(g, :s, :t, method: :dinic)
+      end
+
+      assert_raise ArgumentError, ~r/expected :algo to be :dinic or :edmonds_karp/, fn ->
+        MaxFlow.min_cut(g, :s, :missing, algo: :push_relabel)
+      end
+    end
+
     test "disconnected: cut value 0, no cut edges" do
       g = Graph.new() |> Graph.add_vertices([:s, :t])
 
@@ -251,6 +263,45 @@ defmodule Grafi.Algo.MaxFlowTest do
                MaxFlow.min_cut(g, :a, :a)
 
       assert MapSet.member?(src, :a)
+    end
+  end
+
+  describe "max_flow/4" do
+    test "defaults to Dinic; :algo picks the backend" do
+      g = clrs_network()
+      assert MaxFlow.max_flow(g, :s, :t) == MaxFlow.dinic(g, :s, :t)
+      assert MaxFlow.max_flow(g, :s, :t, algo: :dinic) == MaxFlow.dinic(g, :s, :t)
+
+      assert MaxFlow.max_flow(g, :s, :t, algo: :edmonds_karp) ==
+               MaxFlow.edmonds_karp(g, :s, :t)
+
+      assert {:ok, %{flow: 23}} = Grafi.max_flow(g, :s, :t, algo: :edmonds_karp)
+    end
+
+    test "returns the backends' errors" do
+      assert MaxFlow.max_flow(clrs_network(), :s, :missing) == {:error, :no_such_vertex}
+    end
+
+    test "an unknown :algo raises ArgumentError, before any early return" do
+      for call <- [&MaxFlow.max_flow/4, &Grafi.max_flow/4], sink <- [:t, :missing] do
+        assert_raise ArgumentError, ~r/expected :algo to be :dinic or :edmonds_karp/, fn ->
+          call.(clrs_network(), :s, sink, algo: :push_relabel)
+        end
+      end
+    end
+
+    test "unknown options raise in every max-flow function" do
+      g = clrs_network()
+
+      for call <- [&MaxFlow.max_flow/4, &MaxFlow.dinic/4, &MaxFlow.edmonds_karp/4] do
+        assert_raise ArgumentError, ~r/unknown keys \[:capacity\]/, fn ->
+          call.(g, :s, :t, capacity: :weight)
+        end
+      end
+
+      assert_raise ArgumentError, ~r/unknown keys \[:algo\]/, fn ->
+        MaxFlow.dinic(g, :s, :t, algo: :dinic)
+      end
     end
   end
 
