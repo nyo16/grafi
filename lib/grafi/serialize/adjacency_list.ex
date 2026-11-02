@@ -10,6 +10,15 @@ defmodule Grafi.Serialize.AdjacencyList do
   both functions. Lines beginning with `#` are comments.
   Isolated vertices appear as a single-token line (just the vertex id).
 
+  ## Simple ids only
+
+  Vertex ids are written as plain tokens, without quoting or escaping, so
+  the encoder raises `ArgumentError` for an id whose text could not be read
+  back as the same single token: an empty id, one starting with `#`, one
+  containing a line break, leading or trailing whitespace, or the
+  separator (any whitespace under the default separator). Use GraphML or
+  JSON for arbitrary ids.
+
   ## Limitations
 
   This format carries neither edge weights nor edge/vertex labels. For
@@ -22,7 +31,7 @@ defmodule Grafi.Serialize.AdjacencyList do
   """
 
   alias Grafi.Graph
-  alias Grafi.Serialize.Util
+  alias Grafi.Serialize.{LineIds, Util}
 
   @doc """
   Renders a graph as an adjacency-list string.
@@ -33,6 +42,9 @@ defmodule Grafi.Serialize.AdjacencyList do
       appears once per line; when `false`, repeated edges between the same
       pair produce repeated neighbor tokens.
 
+  Raises `ArgumentError` for a vertex id that this format cannot carry
+  (see "Simple ids only" above).
+
   ## Examples
 
       iex> g = Grafi.Graph.new() |> Grafi.Graph.add_edge(:a, :b)
@@ -42,6 +54,7 @@ defmodule Grafi.Serialize.AdjacencyList do
   @spec to_adjacency_list(Graph.t(), keyword()) :: String.t()
   def to_adjacency_list(%Graph{} = g, opts \\ []) do
     sep = Keyword.get(opts, :separator, " ")
+    token = &LineIds.vertex_token!(&1, sep, "an adjacency list")
     collapse? = Keyword.get(opts, :collapse_multi_edges, true)
 
     Graph.vertices(g)
@@ -53,7 +66,7 @@ defmodule Grafi.Serialize.AdjacencyList do
           for {to, edges} <- Map.get(g.out_edges, v, %{}), _e <- edges, do: to
         end
 
-      [Util.vertex_to_string(v) | Enum.map(neighbors, &Util.vertex_to_string/1)]
+      [token.(v) | Enum.map(neighbors, token)]
       |> Enum.join(sep)
     end)
     |> Enum.join("\n")
@@ -77,7 +90,8 @@ defmodule Grafi.Serialize.AdjacencyList do
       `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
   Returns the graph on success or `{:error, reason}`, e.g.
-  `{:malformed_line, line}` for an empty token under a custom separator.
+  `{:malformed_line, line}` for an empty token under a custom separator
+  (the `line` cut to its first 200 bytes).
 
   ## Examples
 
@@ -99,16 +113,12 @@ defmodule Grafi.Serialize.AdjacencyList do
     atoms? = Keyword.get(opts, :vertices_as_atoms, false)
     split = Util.field_splitter(Keyword.get(opts, :separator))
 
-    text
-    |> String.split(["\n", "\r\n"])
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
-    |> Enum.reduce_while(Graph.new(type: type), fn line, g ->
+    Util.reduce_lines(text, Graph.new(type: type), "#", fn line, g ->
       # A non-empty line always splits into at least one token.
       [source | neighbors] = tokens = split.(line)
 
       if "" in tokens,
-        do: {:halt, {:error, {:malformed_line, line}}},
+        do: {:halt, {:error, {:malformed_line, Util.excerpt(line)}}},
         else: {:cont, add_line(g, source, neighbors, atoms?)}
     end)
   end

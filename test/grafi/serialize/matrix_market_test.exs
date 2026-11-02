@@ -2,7 +2,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
   use ExUnit.Case, async: true
 
   alias Grafi.Graph
-  alias Grafi.Serialize.MatrixMarket
+  alias Grafi.Serialize.{MatrixMarket, Util}
 
   doctest Grafi.Serialize.MatrixMarket
 
@@ -140,9 +140,34 @@ defmodule Grafi.Serialize.MatrixMarketTest do
     end
 
     test "an invalid :max_vertices raises" do
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, ~r/:max_vertices/, fn ->
         MatrixMarket.from_matrix_market(@header <> "3 3 0\n", max_vertices: -1)
       end
+    end
+
+    test "the default :max_vertices is 1_000_000" do
+      assert {:error, {:too_many_vertices, 1_000_001}} =
+               MatrixMarket.from_matrix_market(@header <> "1000001 1000001 0\n")
+    end
+
+    test "a non-square matrix gets max(rows, cols) vertices" do
+      g = MatrixMarket.from_matrix_market(@header <> "2 3 0\n")
+      assert Enum.sort(Graph.vertices(g)) == [1, 2, 3]
+    end
+
+    test "overlong size and index tokens are rejected, not parsed as bignums" do
+      long_two = String.duplicate("0", 30) <> "2"
+
+      assert {:error, :bad_size_line} =
+               MatrixMarket.from_matrix_market(@header <> "#{long_two} 2 0\n")
+
+      assert {:error, :bad_size_line} =
+               MatrixMarket.from_matrix_market(
+                 @header <> String.duplicate("9", 1_000_000) <> " 1 0\n"
+               )
+
+      assert {:error, {:malformed_entry, _}} =
+               MatrixMarket.from_matrix_market(@header <> "2 2 1\n#{long_two} 1 1.0\n")
     end
 
     test ":max_bytes rejects oversized input" do
@@ -232,8 +257,10 @@ defmodule Grafi.Serialize.MatrixMarketTest do
     test "an overflowing value is an invalid weight, not an exception message" do
       big = String.duplicate("9", 400)
 
-      assert {:error, {:invalid_weight, ^big}} =
+      assert {:error, {:invalid_weight, token}} =
                MatrixMarket.from_matrix_market(@header <> "2 2 1\n1 2 #{big}\n")
+
+      assert token == Util.excerpt(big)
 
       assert {:error, {:invalid_weight, "1e400"}} =
                MatrixMarket.from_matrix_market(@header <> "2 2 1\n1 2 1e400\n")
@@ -244,6 +271,61 @@ defmodule Grafi.Serialize.MatrixMarketTest do
 
       assert {:error, {:malformed_entry, "1 2 1.0 4.0"}} =
                MatrixMarket.from_matrix_market(input)
+    end
+
+    test "an error carries a bounded excerpt of the line, not the whole line" do
+      line = "1 2 " <> String.duplicate("x ", 500_000)
+
+      assert {:error, {:malformed_entry, excerpt}} =
+               MatrixMarket.from_matrix_market(@header <> "2 2 1\n" <> line)
+
+      assert byte_size(excerpt) < 300
+      assert String.starts_with?(line, String.trim_trailing(excerpt, "."))
+      assert :binary.referenced_byte_size(excerpt) == byte_size(excerpt)
+    end
+
+    test "a vertex comment whose id another row already has" do
+      # Row 2 has no comment, so its id is the integer 2.
+      assert {:error, {:bad_vertex_comment, 1}} =
+               MatrixMarket.from_matrix_market(@header <> "%GRAFI_VERTEX 1 int:2\n2 2 0\n")
+
+      assert {:error, {:bad_vertex_comment, 2}} =
+               MatrixMarket.from_matrix_market(
+                 @header <> "%GRAFI_VERTEX 1 a\n%GRAFI_VERTEX 2 a\n2 2 0\n"
+               )
+
+      assert {:error, {:bad_vertex_comment, 2}} =
+               MatrixMarket.from_matrix_market(
+                 @header <> "%GRAFI_VERTEX 1 int:5\n%GRAFI_VERTEX 2 int:5\n2 2 0\n"
+               )
+
+      assert {:error, {:bad_vertex_comment, 1}} =
+               MatrixMarket.from_matrix_market(
+                 @header <> "%GRAFI_VERTEX 1 a\n%GRAFI_VERTEX 1 b\n1 1 0\n"
+               )
+    end
+
+    test "comment ids that swap integer rows are not a collision" do
+      input = @header <> "%GRAFI_VERTEX 1 int:2\n%GRAFI_VERTEX 2 int:1\n2 2 1\n1 2 1.0\n"
+      g = MatrixMarket.from_matrix_market(input)
+      assert Graph.has_edge?(g, 2, 1)
+      refute Graph.has_edge?(g, 1, 2)
+    end
+
+    @tag :slow
+    test "64 MiB of blank lines decode in bounded memory" do
+      for input <- [
+            String.duplicate("\n", 64 * 1024 * 1024),
+            String.duplicate("\r\n", 32 * 1024 * 1024)
+          ] do
+        assert {:done, {:error, :missing_header}} =
+                 with_heap_cap(fn -> MatrixMarket.from_matrix_market(input) end)
+      end
+
+      input = @header <> "2 2 1\n" <> String.duplicate("\n", 64 * 1024 * 1024 - 64) <> "1 2\n"
+
+      assert {:done, %Graph{}} =
+               with_heap_cap(fn -> MatrixMarket.from_matrix_market(input) end)
     end
   end
 
@@ -271,11 +353,108 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       g = Graph.new() |> Graph.add_edge(7, 2.5, weight: 1.0)
       text = MatrixMarket.to_matrix_market(g)
 
-      assert text =~ "int:7"
-      assert text =~ "float:2.5"
-
       g2 = MatrixMarket.from_matrix_market(text)
       assert Graph.has_edge?(g2, 7, 2.5)
+      assert Enum.sort(Graph.vertices(g2)) === [2.5, 7]
+    end
+
+    test "a float id with a 400-digit mantissa does not raise" do
+      digits = String.duplicate("9", 400)
+
+      input = """
+      %%MatrixMarket matrix coordinate real general
+      %GRAFI_VERTEX 1 float:#{digits}
+      1 1 0
+      """
+
+      assert [v] = Graph.vertices(MatrixMarket.from_matrix_market(input))
+      assert v == digits
+    end
+
+    test "an overlong int id reads back as a string" do
+      digits = String.duplicate("9", 1_000)
+
+      input = """
+      %%MatrixMarket matrix coordinate real general
+      %GRAFI_VERTEX 1 int:#{digits}
+      1 1 0
+      """
+
+      assert Graph.vertices(MatrixMarket.from_matrix_market(input)) == [digits]
+    end
+
+    test "string ids with a reserved prefix, whitespace or % round-trip as strings" do
+      ids = [
+        "int:5",
+        "atom:erlang",
+        "atom:a",
+        "float:1.0",
+        "str:x",
+        "str:",
+        "",
+        "\u00A0nbsp\u00A0",
+        "\vtab\f",
+        "em\u2003space ",
+        "100%",
+        "%41",
+        "a%-1b",
+        <<"caf", 0xE9>>
+      ]
+
+      g = Enum.reduce(ids, Graph.new(), &Graph.add_vertex(&2, &1))
+      g2 = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+
+      assert Enum.sort(Graph.vertices(g2)) == Enum.sort(ids)
+    end
+
+    test "string ids next to the typed ids they look like stay distinct" do
+      g = Graph.new() |> Graph.add_edge("int:5", 5) |> Graph.add_edge(:erlang, "atom:erlang")
+      g2 = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+
+      assert Graph.has_edge?(g2, "int:5", 5)
+      assert Graph.has_edge?(g2, :erlang, "atom:erlang")
+    end
+
+    test "plain string ids in the existing percent-encoded form still decode" do
+      input = """
+      %%MatrixMarket matrix coordinate real general
+      %GRAFI_VERTEX 1 a%20b%25
+      1 1 0
+      """
+
+      assert Graph.vertices(MatrixMarket.from_matrix_market(input)) == ["a b%"]
+    end
+
+    test "a percent sign without two hex digits is kept literally" do
+      input = """
+      %%MatrixMarket matrix coordinate real general
+      %GRAFI_VERTEX 1 a%-1b%4
+      1 1 0
+      """
+
+      assert Graph.vertices(MatrixMarket.from_matrix_market(input)) == ["a%-1b%4"]
+    end
+
+    test "other ids are written as their inspect text and read back as strings" do
+      g = Graph.add_vertex(Graph.new(), {:a, 1})
+      g2 = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+      assert Graph.vertices(g2) == ["{:a, 1}"]
+    end
+
+    test "decoded ids do not keep the input alive" do
+      input = """
+      %%MatrixMarket matrix coordinate real general
+      %GRAFI_VERTEX 1 alpha
+      %GRAFI_VERTEX 2 int:abc
+      %GRAFI_VERTEX 3 float:#{String.duplicate("x", 100)}
+      %GRAFI_VERTEX 4 int:#{String.duplicate("y", 100)}
+      #{String.duplicate("% padding\n", 100)}
+      4 4 0
+      """
+
+      for v <- Graph.vertices(MatrixMarket.from_matrix_market(input)) do
+        assert :binary.referenced_byte_size(v) == byte_size(v)
+      end
     end
 
     test "an atom id unknown to the VM decodes to its string" do
@@ -344,6 +523,21 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       assert Graph.num_edges(g2) == 1
       [e] = Graph.edges_between(g2, "a", "b")
       assert e.weight == 3.0
+    end
+  end
+
+  # Runs `fun` in a process whose heap may not exceed 32 MB (the input is a
+  # shared binary, so it does not count): materialising the lines of a
+  # 64 MiB input as a list gets the process killed.
+  defp with_heap_cap(fun) do
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.flag(:max_heap_size, %{size: 4_000_000, kill: true, error_logger: false})
+        exit({:done, fun.()})
+      end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, reason} -> reason
     end
   end
 end

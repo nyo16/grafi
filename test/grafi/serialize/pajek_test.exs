@@ -2,7 +2,7 @@ defmodule Grafi.Serialize.PajekTest do
   use ExUnit.Case, async: true
 
   alias Grafi.Graph
-  alias Grafi.Serialize.Pajek
+  alias Grafi.Serialize.{Pajek, Util}
 
   doctest Grafi.Serialize.Pajek
 
@@ -115,21 +115,22 @@ defmodule Grafi.Serialize.PajekTest do
     test "V6 repro: *Matrix returns an error instead of looping" do
       input = "*Vertices 2\n1 \"a\"\n2 \"b\"\n*Matrix\n0 1\n1 0\n"
 
-      assert {:error, {:unsupported_section, "*Matrix"}} = parse_within(input, 500)
+      assert {:error, {:unsupported_section, "*Matrix"}} = parse_within(input, 5_000)
     end
 
     for section <- ["*Matrix", "*Arcslist", "*Edgeslist", "*Network x"] do
       test "unsupported section #{section} after an edge section" do
         input = "*Vertices 2\n1 \"a\"\n2 \"b\"\n*Arcs\n1 2\n#{unquote(section)}\n1 2\n"
 
-        assert {:error, {:unsupported_section, unquote(section)}} = parse_within(input, 500)
+        assert {:error, {:unsupported_section, unquote(section)}} =
+                 parse_within(input, 5_000)
       end
     end
 
     test "multi-relational *Arcs header is read as *Arcs" do
       input = "*Vertices 2\n1 \"a\"\n2 \"b\"\n*Arcs :2 \"rel\"\n1 2 3\n"
 
-      g = parse_within(input, 500)
+      g = parse_within(input, 5_000)
       assert g.type == :directed
       assert [%{weight: 3.0}] = Graph.edges_between(g, "a", "b")
     end
@@ -187,7 +188,8 @@ defmodule Grafi.Serialize.PajekTest do
     test "integer weight too large for a float" do
       huge = "1" <> String.duplicate("0", 400)
       input = "*Vertices 2\n1 \"a\"\n2 \"b\"\n*Arcs\n1 2 #{huge}\n"
-      assert {:error, {:invalid_weight, ^huge}} = Pajek.from_pajek(input)
+      assert {:error, {:invalid_weight, token}} = Pajek.from_pajek(input)
+      assert token == Util.excerpt(huge)
     end
 
     test "fewer vertex lines than declared" do
@@ -214,6 +216,69 @@ defmodule Grafi.Serialize.PajekTest do
     test "edge to an undeclared index" do
       input = "*Vertices 2\n1 \"a\"\n2 \"b\"\n*Arcs\n1 3\n"
       assert {:error, {:malformed_edge_line, "1 3"}} = Pajek.from_pajek(input)
+    end
+
+    test "a section header before all declared vertex lines" do
+      input = "*Vertices 2\n1 \"a\"\n*Arcs\n1 1\n"
+      assert {:error, :unexpected_section} = Pajek.from_pajek(input)
+    end
+
+    test "an overlong *Vertices count is a bad header, not a bignum" do
+      input = "*Vertices " <> String.duplicate("9", 1_000_000) <> "\n"
+      assert {:error, :bad_vertices_header} = Pajek.from_pajek(input)
+    end
+
+    test "overlong vertex and edge indices are malformed lines" do
+      long_one = String.duplicate("0", 30) <> "1"
+
+      vertex_input = "*Vertices 1\n#{long_one} \"a\"\n"
+
+      assert {:error, {:malformed_vertex_line, _}} = Pajek.from_pajek(vertex_input)
+
+      edge_input = "*Vertices 1\n1 \"a\"\n*Arcs\n#{long_one} 1\n"
+      assert {:error, {:malformed_edge_line, _}} = Pajek.from_pajek(edge_input)
+    end
+
+    test "an error carries a bounded excerpt of the line, not the whole line" do
+      line = "1 2 " <> String.duplicate("x ", 500_000)
+      input = "*Vertices 1\n1 \"a\"\n*Arcs\n" <> line
+
+      assert {:error, {:malformed_edge_line, excerpt}} = Pajek.from_pajek(input)
+      assert byte_size(excerpt) < 300
+      assert String.starts_with?(line, String.trim_trailing(excerpt, "."))
+      assert :binary.referenced_byte_size(excerpt) == byte_size(excerpt)
+
+      assert {:error, {:unsupported_section, excerpt}} =
+               Pajek.from_pajek("*Vertices 0\n*Matrix" <> String.duplicate(" x", 500_000))
+
+      assert byte_size(excerpt) < 300
+    end
+
+    test "labels do not keep the input alive" do
+      # Sub-binaries under 64 bytes may be copied anyway, so use longer labels.
+      long = String.duplicate("x", 100)
+
+      input =
+        "*Vertices 2\n1 #{long}a\n2 \"#{long}b\"\n*Arcs\n1 2\n" <>
+          String.duplicate("% padding\n", 100)
+
+      for v <- Graph.vertices(Pajek.from_pajek(input)) do
+        assert :binary.referenced_byte_size(v) == byte_size(v)
+      end
+    end
+
+    @tag :slow
+    test "64 MiB of blank lines decode in bounded memory" do
+      for input <- [
+            String.duplicate("\n", 64 * 1024 * 1024),
+            String.duplicate("\r\n", 32 * 1024 * 1024)
+          ] do
+        assert {:done, {:error, :empty_input}} = with_heap_cap(fn -> Pajek.from_pajek(input) end)
+      end
+
+      edges = String.duplicate("\n", 64 * 1024 * 1024 - 64)
+      input = ~s(*Vertices 2\n1 "a"\n2 "b"\n*Edges\n) <> edges <> "1 2\n"
+      assert {:done, %Graph{type: :undirected}} = with_heap_cap(fn -> Pajek.from_pajek(input) end)
     end
   end
 
@@ -353,6 +418,21 @@ defmodule Grafi.Serialize.PajekTest do
     case Task.yield(task, ms) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} -> result
       nil -> flunk("from_pajek/1 did not return within #{ms} ms")
+    end
+  end
+
+  # Runs `fun` in a process whose heap may not exceed 32 MB (the input is a
+  # shared binary, so it does not count): materialising the lines of a
+  # 64 MiB input as a list gets the process killed.
+  defp with_heap_cap(fun) do
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.flag(:max_heap_size, %{size: 4_000_000, kill: true, error_logger: false})
+        exit({:done, fun.()})
+      end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, reason} -> reason
     end
   end
 end

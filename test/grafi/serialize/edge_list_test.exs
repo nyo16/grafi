@@ -2,7 +2,7 @@ defmodule Grafi.Serialize.EdgeListTest do
   use ExUnit.Case, async: true
 
   alias Grafi.Graph
-  alias Grafi.Serialize.EdgeList
+  alias Grafi.Serialize.{EdgeList, Util}
 
   doctest Grafi.Serialize.EdgeList
 
@@ -39,8 +39,35 @@ defmodule Grafi.Serialize.EdgeListTest do
     test "custom separator" do
       g = Graph.new() |> Graph.add_edge(:a, :b)
       text = EdgeList.to_edge_list(g, separator: "\t")
-
       assert text =~ "a\tb"
+    end
+
+    test "an id with a line break raises instead of injecting an edge" do
+      g = Graph.add_edge(Graph.new(), "x\nadmin root", "y")
+
+      assert_raise ArgumentError, fn -> EdgeList.to_edge_list(g) end
+      assert_raise ArgumentError, fn -> EdgeList.to_edge_list(g, separator: ",") end
+      assert_raise ArgumentError, fn -> EdgeList.to_edge_list(Graph.add_edge(g, "a\rb", "c")) end
+    end
+
+    test "ids that would not read back as one token raise" do
+      for id <- ["", "#x", "a b", "a\tb", " a", "a\u00A0", {:a, 1}] do
+        g = Graph.add_edge(Graph.new(), id, "y")
+        assert_raise ArgumentError, fn -> EdgeList.to_edge_list(g) end
+      end
+
+      for id <- ["a,b", " a", "a ", "", "#x"] do
+        g = Graph.add_edge(Graph.new(), "y", id)
+        assert_raise ArgumentError, fn -> EdgeList.to_edge_list(g, separator: ",") end
+      end
+    end
+
+    test "a :comment with a line break raises" do
+      g = Graph.add_edge(Graph.new(), :a, :b)
+
+      assert_raise ArgumentError, ~r/:comment/, fn ->
+        EdgeList.to_edge_list(g, comment: "x\nadmin root")
+      end
     end
   end
 
@@ -100,7 +127,9 @@ defmodule Grafi.Serialize.EdgeListTest do
     test "an out-of-range weight is an error, not an exception" do
       huge = String.duplicate("9", 400)
 
-      assert EdgeList.from_edge_list("a b " <> huge) == {:error, {:invalid_weight, huge}}
+      assert EdgeList.from_edge_list("a b " <> huge) ==
+               {:error, {:invalid_weight, Util.excerpt(huge)}}
+
       assert EdgeList.from_edge_list("a b 1e400") == {:error, {:invalid_weight, "1e400"}}
     end
 
@@ -149,6 +178,36 @@ defmodule Grafi.Serialize.EdgeListTest do
       assert EdgeList.from_edge_list("a b", max_bytes: 2) == {:error, {:too_large, 3, 2}}
       assert %Graph{} = EdgeList.from_edge_list("a b", max_bytes: 3)
       assert %Graph{} = EdgeList.from_edge_list("a b", max_bytes: :infinity)
+    end
+
+    test "an error carries a bounded excerpt of the line, not the whole line" do
+      line = String.duplicate("a", 1_000_000)
+
+      assert {:error, {:malformed_line, excerpt}} = EdgeList.from_edge_list("a b\n" <> line)
+      assert byte_size(excerpt) < 300
+      assert String.starts_with?(line, String.trim_trailing(excerpt, "."))
+      assert :binary.referenced_byte_size(excerpt) == byte_size(excerpt)
+    end
+
+    test "decoded ids do not keep the input alive" do
+      # Sub-binaries under 64 bytes may be copied anyway, so use longer ids.
+      long = String.duplicate("x", 100)
+      input = "#{long}a #{long}b\n" <> String.duplicate("# padding\n", 100)
+
+      for v <- Graph.vertices(EdgeList.from_edge_list(input)) do
+        assert :binary.referenced_byte_size(v) == byte_size(v)
+      end
+    end
+
+    @tag :slow
+    test "64 MiB of blank lines decode in bounded memory" do
+      for input <- [
+            String.duplicate("\n", 64 * 1024 * 1024),
+            String.duplicate("\r\n", 32 * 1024 * 1024)
+          ] do
+        assert {:done, %Graph{} = g} = with_heap_cap(fn -> EdgeList.from_edge_list(input) end)
+        assert Graph.num_vertices(g) == 0
+      end
     end
   end
 
@@ -222,6 +281,21 @@ defmodule Grafi.Serialize.EdgeListTest do
 
       assert [%{weight: 1.0}] = Graph.edges_between(g2, "a", "b")
       assert [%{weight: 3.0}] = Graph.edges_between(g2, "b", "c")
+    end
+  end
+
+  # Runs `fun` in a process whose heap may not exceed 32 MB (the input is a
+  # shared binary, so it does not count): materialising the lines of a
+  # 64 MiB input as a list gets the process killed.
+  defp with_heap_cap(fun) do
+    {pid, ref} =
+      spawn_monitor(fn ->
+        Process.flag(:max_heap_size, %{size: 4_000_000, kill: true, error_logger: false})
+        exit({:done, fun.()})
+      end)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, reason} -> reason
     end
   end
 end
