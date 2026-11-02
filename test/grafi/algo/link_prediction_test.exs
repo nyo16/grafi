@@ -141,6 +141,21 @@ defmodule Grafi.Algo.LinkPredictionTest do
         end
       end
     end
+
+    property "explicit candidates score exactly as the default candidate set" do
+      check all(g <- Grafi.Test.Generators.graph(id_type: :integer, max_vertices: 8, max_edges: 20)) do
+        for fun <- [
+              &LinkPrediction.jaccard/2,
+              &LinkPrediction.adamic_adar/2,
+              &LinkPrediction.resource_allocation/2,
+              &LinkPrediction.preferential_attachment/2
+            ] do
+          all = fun.(g, nil)
+          some = all |> Map.keys() |> Enum.take_every(2)
+          assert fun.(g, some) == Map.take(all, some)
+        end
+      end
+    end
   end
 
   describe "scaling" do

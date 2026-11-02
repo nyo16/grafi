@@ -31,7 +31,7 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec jaccard(Graph.t(), [pair()] | nil) :: scores()
   def jaccard(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn n_u, n_v, _sets ->
+    score_pairs(g, candidates, :endpoints, fn n_u, n_v, _sets ->
       union = MapSet.union(n_u, n_v) |> MapSet.size()
 
       if union == 0,
@@ -52,7 +52,7 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec adamic_adar(Graph.t(), [pair()] | nil) :: scores()
   def adamic_adar(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn n_u, n_v, sets ->
+    score_pairs(g, candidates, :with_neighbors, fn n_u, n_v, sets ->
       MapSet.intersection(n_u, n_v)
       |> Enum.reduce(0.0, fn z, acc ->
         d = degree(sets, z)
@@ -72,7 +72,7 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec resource_allocation(Graph.t(), [pair()] | nil) :: scores()
   def resource_allocation(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn n_u, n_v, sets ->
+    score_pairs(g, candidates, :with_neighbors, fn n_u, n_v, sets ->
       MapSet.intersection(n_u, n_v)
       |> Enum.reduce(0.0, fn z, acc ->
         d = degree(sets, z)
@@ -89,7 +89,7 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec preferential_attachment(Graph.t(), [pair()] | nil) :: scores()
   def preferential_attachment(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn n_u, n_v, _sets ->
+    score_pairs(g, candidates, :endpoints, fn n_u, n_v, _sets ->
       MapSet.size(n_u) * MapSet.size(n_v) * 1.0
     end)
   end
@@ -112,13 +112,38 @@ defmodule Grafi.Algo.LinkPrediction do
 
   # Neighbour sets (self-loops dropped) are built once per call, so each
   # pair costs one set operation instead of two neighbourhood rebuilds plus
-  # one per common neighbour. A vertex not in the graph has no neighbours.
-  defp score_pairs(g, candidates, score_fun) do
+  # one per common neighbour. Without candidates every vertex is scored, so
+  # every set is built; with candidates only the endpoints' sets are, plus
+  # their neighbours' when the score needs common-neighbour degrees
+  # (`:with_neighbors`). A vertex not in the graph has no neighbours.
+  defp score_pairs(g, nil, _scope, score_fun) do
     sets = Neighborhood.sets(g, self_loops: :drop)
-    pairs = candidates || default_candidates(sets)
+    score_with(sets, default_candidates(sets), score_fun)
+  end
 
+  defp score_pairs(g, candidates, scope, score_fun) do
+    sets = add_sets(%{}, g, Enum.flat_map(candidates, fn {u, v} -> [u, v] end))
+
+    sets =
+      case scope do
+        :endpoints -> sets
+        :with_neighbors -> add_sets(sets, g, Enum.flat_map(sets, fn {_v, ns} -> ns end))
+      end
+
+    score_with(sets, candidates, score_fun)
+  end
+
+  defp score_with(sets, pairs, score_fun) do
     Map.new(pairs, fn {u, v} ->
       {{u, v}, score_fun.(neighbors(sets, u), neighbors(sets, v), sets)}
+    end)
+  end
+
+  defp add_sets(sets, g, vertices) do
+    Enum.reduce(vertices, sets, fn v, acc ->
+      if Map.has_key?(acc, v),
+        do: acc,
+        else: Map.put(acc, v, MapSet.new(Neighborhood.neighbors(g, v, self_loops: :drop)))
     end)
   end
 
