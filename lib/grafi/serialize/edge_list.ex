@@ -12,11 +12,20 @@ defmodule Grafi.Serialize.EdgeList do
   ignored on decode. The format does not carry edge labels or vertex
   labels — for those, prefer GraphML or JSON.
 
+  ## Simple ids only
+
+  Vertex ids are written as plain tokens, without quoting or escaping, so
+  the encoder raises `ArgumentError` for an id whose text could not be read
+  back as the same single token: an empty id, one starting with `#`, one
+  containing a line break, leading or trailing whitespace, or the
+  separator (any whitespace under the default separator). Use GraphML or
+  JSON for arbitrary ids.
+
   Reference: <https://en.wikipedia.org/wiki/Edge_list>
   """
 
   alias Grafi.Graph
-  alias Grafi.Serialize.Util
+  alias Grafi.Serialize.{LineIds, Util}
 
   @doc """
   Renders a graph as an edge list string.
@@ -25,8 +34,11 @@ defmodule Grafi.Serialize.EdgeList do
     * `:weighted` — include a weight column (default `true` if any edge
       weight differs from `1.0`, otherwise `false`).
     * `:separator` — column separator (default `" "`).
-    * `:comment` — optional comment line written at the top, prefixed
-      with `# `.
+    * `:comment` — optional single-line comment written at the top,
+      prefixed with `# `. A line break in it raises `ArgumentError`.
+
+  Raises `ArgumentError` for a vertex id that this format cannot carry
+  (see "Simple ids only" above).
 
   Isolated vertices (no edges) are not preserved by this format.
 
@@ -39,6 +51,7 @@ defmodule Grafi.Serialize.EdgeList do
   @spec to_edge_list(Graph.t(), keyword()) :: String.t()
   def to_edge_list(%Graph{} = g, opts \\ []) do
     sep = Keyword.get(opts, :separator, " ")
+    token = &LineIds.vertex_token!(&1, sep, "an edge list")
     edges = Graph.edges(g)
 
     weighted =
@@ -49,12 +62,12 @@ defmodule Grafi.Serialize.EdgeList do
     header =
       case Keyword.get(opts, :comment) do
         nil -> []
-        c when is_binary(c) -> ["# " <> c]
+        c when is_binary(c) -> ["# " <> LineIds.comment!(c)]
       end
 
     edge_lines =
       Enum.map(edges, fn e ->
-        base = [Util.vertex_to_string(e.from), sep, Util.vertex_to_string(e.to)]
+        base = [token.(e.from), sep, token.(e.to)]
         if weighted, do: base ++ [sep, Util.format_weight(e.weight)], else: base
       end)
 
@@ -90,7 +103,8 @@ defmodule Grafi.Serialize.EdgeList do
 
   Returns the graph on success or `{:error, reason}`: `{:malformed_line,
   line}` for a line with the wrong number of fields, and `{:invalid_weight,
-  token}` for a weight that is not a finite number.
+  token}` for a weight that is not a finite number. The `line` and `token`
+  in an error are cut to their first 200 bytes.
 
   ## Examples
 
@@ -114,11 +128,7 @@ defmodule Grafi.Serialize.EdgeList do
     atoms? = Keyword.get(opts, :vertices_as_atoms, false)
     split = Util.field_splitter(Keyword.get(opts, :separator))
 
-    text
-    |> String.split(["\n", "\r\n"])
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
-    |> Enum.reduce_while(Graph.new(type: type), fn line, g ->
+    Util.reduce_lines(text, Graph.new(type: type), "#", fn line, g ->
       case parse_line(line, split.(line), weighted, default_w) do
         {:ok, from, to, w} ->
           from = Util.cast_vertex(from, atoms?)
@@ -133,7 +143,7 @@ defmodule Grafi.Serialize.EdgeList do
 
   defp parse_line(line, fields, weighted, default_w) do
     if "" in fields,
-      do: {:error, {:malformed_line, line}},
+      do: {:error, {:malformed_line, Util.excerpt(line)}},
       else: parse_fields(line, fields, weighted, default_w)
   end
 
@@ -147,5 +157,6 @@ defmodule Grafi.Serialize.EdgeList do
   # Tolerate extra columns when weighted: false was forced.
   defp parse_fields(_line, [a, b | _], false, default_w), do: {:ok, a, b, default_w}
 
-  defp parse_fields(line, _fields, _weighted, _default_w), do: {:error, {:malformed_line, line}}
+  defp parse_fields(line, _fields, _weighted, _default_w),
+    do: {:error, {:malformed_line, Util.excerpt(line)}}
 end
