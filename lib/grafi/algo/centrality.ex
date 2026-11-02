@@ -9,6 +9,7 @@ defmodule Grafi.Algo.Centrality do
   `Grafi.NIFError` if the NIF fails or `engine: :nif` is unavailable.
   """
 
+  alias Grafi.Algo.Distances
   alias Grafi.Algo.MinHeap
   alias Grafi.Args
   alias Grafi.Graph
@@ -362,7 +363,7 @@ defmodule Grafi.Algo.Centrality do
       else:
         Graph.vertices(g)
         |> Map.new(fn v ->
-          dists = Grafi.Algo.ShortestPath.dijkstra_all(g, v)
+          dists = Distances.single_source(g, v, weighted: true, source: :include)
           total = dists |> Map.values() |> Enum.sum()
           {v, if(total > 0, do: (map_size(dists) - 1) / total, else: 0.0)}
         end)
@@ -552,16 +553,11 @@ defmodule Grafi.Algo.Centrality do
     vs = Graph.vertices(g)
 
     Map.new(vs, fn v ->
-      dists = single_source_distances(g, v, weighted)
+      dists = Distances.single_source(g, v, weighted: weighted, source: :exclude)
 
+      # A zero-weight edge gives a zero distance, which contributes nothing.
       score =
-        Enum.reduce(dists, 0.0, fn {u, d}, acc ->
-          cond do
-            u == v -> acc
-            d == 0 -> acc
-            true -> acc + 1.0 / d
-          end
-        end)
+        Enum.reduce(dists, 0.0, fn {_u, d}, acc -> if d == 0, do: acc, else: acc + 1.0 / d end)
 
       {v, score}
     end)
@@ -590,35 +586,5 @@ defmodule Grafi.Algo.Centrality do
 
   defp any_non_unit_weight?(%Graph{} = g) do
     Graph.edges(g) |> Enum.any?(&(&1.weight != 1.0))
-  end
-
-  defp single_source_distances(g, source, weighted?) do
-    if weighted? do
-      Grafi.Algo.ShortestPath.dijkstra_all(g, source)
-    else
-      bfs_distances(g, source)
-    end
-  end
-
-  defp bfs_distances(g, source) do
-    do_bfs_dist(:queue.from_list([source]), %{source => 0}, g)
-  end
-
-  defp do_bfs_dist(q, dist, g) do
-    case :queue.out(q) do
-      {:empty, _} ->
-        dist
-
-      {{:value, v}, rest} ->
-        {dist, q2} =
-          Graph.out_neighbors(g, v)
-          |> Enum.reduce({dist, rest}, fn n, {d, q_acc} ->
-            if Map.has_key?(d, n),
-              do: {d, q_acc},
-              else: {Map.put(d, n, d[v] + 1), :queue.in(n, q_acc)}
-          end)
-
-        do_bfs_dist(q2, dist, g)
-    end
   end
 end

@@ -19,6 +19,7 @@ defmodule Grafi.Algo.Cliques do
   purposes of clique-finding).
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   @doc """
@@ -50,7 +51,7 @@ defmodule Grafi.Algo.Cliques do
     if vs == [] do
       []
     else
-      adj = build_adj(g, vs)
+      adj = Neighborhood.sets(g, self_loops: :drop)
 
       # bron_kerbosch throws once `max` cliques are collected; catch unwinds
       # the recursion and returns what we have. With the default :infinity the
@@ -90,18 +91,6 @@ defmodule Grafi.Algo.Cliques do
   def count_cliques(%Graph{} = g), do: g |> maximal_cliques() |> length()
 
   # ── Internals ─────────────────────────────────────────────────────────
-
-  defp build_adj(g, vs) do
-    Map.new(vs, fn v ->
-      ns =
-        g
-        |> Graph.neighbors(v)
-        |> Enum.reject(&(&1 == v))
-        |> MapSet.new()
-
-      {v, ns}
-    end)
-  end
 
   # Bron–Kerbosch with pivot (Tomita-style choice: pivot maximizes
   # |P ∩ N(u)| to minimize the branching factor).

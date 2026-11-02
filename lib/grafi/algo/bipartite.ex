@@ -11,6 +11,7 @@ defmodule Grafi.Algo.Bipartite do
   the undirected triangle and reported as not bipartite.
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   # ── Bipartiteness ─────────────────────────────────────────────────────
@@ -183,8 +184,8 @@ defmodule Grafi.Algo.Bipartite do
     end
   end
 
-  defp undirected_neighbors(%Graph{type: :undirected} = g, v), do: Graph.out_neighbors(g, v)
-  defp undirected_neighbors(%Graph{} = g, v), do: Graph.neighbors(g, v)
+  # A self-loop makes `v` its own neighbour, so it is reported as an odd cycle.
+  defp undirected_neighbors(g, v), do: Neighborhood.neighbors(g, v, self_loops: :keep)
 
   # Given a sorted list of "side" neighbors of one other-side vertex w,
   # add 1 to the count for every unordered pair {u, v} drawn from the list.

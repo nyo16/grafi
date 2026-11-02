@@ -18,7 +18,8 @@ defmodule Grafi.Algo.Metrics do
   considered.
   """
 
-  alias Grafi.Algo.ShortestPath
+  alias Grafi.Algo.Distances
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   # ── Triangle counts ──────────────────────────────────────────────────
@@ -80,11 +81,7 @@ defmodule Grafi.Algo.Metrics do
     div(pairs, 2)
   end
 
-  defp undirected_neighbors(%Graph{} = g, v) do
-    Graph.neighbors(g, v)
-    |> Enum.reject(&(&1 == v))
-    |> Enum.uniq()
-  end
+  defp undirected_neighbors(%Graph{} = g, v), do: Neighborhood.neighbors(g, v, self_loops: :drop)
 
   # ── Clustering coefficient ───────────────────────────────────────────
 
@@ -345,42 +342,10 @@ defmodule Grafi.Algo.Metrics do
   # ── Internal helpers ─────────────────────────────────────────────────
 
   defp single_source_distances(g, v, opts) do
-    cond do
-      not Graph.has_vertex?(g, v) ->
-        %{}
-
-      Keyword.get(opts, :weighted, false) ->
-        ShortestPath.dijkstra_all(g, v) |> Map.delete(v)
-
-      true ->
-        bfs_distances(g, v)
-    end
-  end
-
-  defp bfs_distances(g, source) do
-    # Reuses the BFS stream from Traversal, but tracks depth via a parallel
-    # accumulator. Cheaper than rebuilding: just walks the BFS order keeping
-    # `dist[v] = dist[parent] + 1`.
-    do_bfs_dist(:queue.from_list([source]), %{source => 0}, g)
-    |> Map.delete(source)
-  end
-
-  defp do_bfs_dist(q, dist, g) do
-    case :queue.out(q) do
-      {:empty, _} ->
-        dist
-
-      {{:value, v}, rest} ->
-        {dist, q2} =
-          Graph.out_neighbors(g, v)
-          |> Enum.reduce({dist, rest}, fn n, {d, q_acc} ->
-            if Map.has_key?(d, n),
-              do: {d, q_acc},
-              else: {Map.put(d, n, d[v] + 1), :queue.in(n, q_acc)}
-          end)
-
-        do_bfs_dist(q2, dist, g)
-    end
+    Distances.single_source(g, v,
+      weighted: Keyword.get(opts, :weighted, false),
+      source: :exclude
+    )
   end
 
   defp aggregate_extrema(ecc, fun, default) do

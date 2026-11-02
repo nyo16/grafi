@@ -22,6 +22,7 @@ defmodule Grafi.Algo.Community do
   The pure-Elixir fallback returns the result map directly.
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Args
   alias Grafi.Graph
   alias Grafi.NIF
@@ -114,7 +115,7 @@ defmodule Grafi.Algo.Community do
         vs
         |> Enum.shuffle()
         |> Enum.reduce(lab, fn v, l ->
-          neighbors = Graph.neighbors(g, v)
+          neighbors = Neighborhood.neighbors(g, v, self_loops: :keep)
 
           if neighbors == [] do
             l

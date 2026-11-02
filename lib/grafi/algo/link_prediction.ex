@@ -15,6 +15,7 @@ defmodule Grafi.Algo.LinkPrediction do
   the canonical order matches `Enum.sort([u, v])`.
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   @type pair :: {any(), any()}
@@ -133,15 +134,7 @@ defmodule Grafi.Algo.LinkPrediction do
     Graph.has_edge?(g, u, v) or Graph.has_edge?(g, v, u)
   end
 
-  defp neighbor_set(g, v) do
-    if Graph.has_vertex?(g, v),
-      do: Graph.neighbors(g, v) |> Enum.reject(&(&1 == v)) |> MapSet.new(),
-      else: MapSet.new()
-  end
+  defp neighbor_set(g, v), do: MapSet.new(Neighborhood.neighbors(g, v, self_loops: :drop))
 
-  defp undirected_degree(g, v) do
-    if Graph.has_vertex?(g, v),
-      do: Graph.neighbors(g, v) |> Enum.reject(&(&1 == v)) |> length(),
-      else: 0
-  end
+  defp undirected_degree(g, v), do: length(Neighborhood.neighbors(g, v, self_loops: :drop))
 end

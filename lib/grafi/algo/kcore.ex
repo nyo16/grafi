@@ -13,6 +13,7 @@ defmodule Grafi.Algo.KCore do
   defined as the number of distinct neighbors (in ∪ out).
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   @doc """
@@ -34,7 +35,7 @@ defmodule Grafi.Algo.KCore do
     if vs == [] do
       %{}
     else
-      neigh = build_neighbors(g, vs)
+      neigh = Neighborhood.sets(g, self_loops: :drop)
       degree = Map.new(neigh, fn {v, ns} -> {v, MapSet.size(ns)} end)
       peel(neigh, degree)
     end
@@ -81,20 +82,6 @@ defmodule Grafi.Algo.KCore do
   end
 
   # ── Internals ─────────────────────────────────────────────────────────
-
-  # Build an undirected adjacency: %{vertex => MapSet.t(neighbors)}.
-  # Self-loops are dropped (a self-loop doesn't change peeling outcomes).
-  defp build_neighbors(g, vs) do
-    Map.new(vs, fn v ->
-      ns =
-        g
-        |> Graph.neighbors(v)
-        |> Enum.reject(&(&1 == v))
-        |> MapSet.new()
-
-      {v, ns}
-    end)
-  end
 
   # Batagelj-Zaversnik peeling with bucket-by-degree.
   defp peel(neigh, degree) do
