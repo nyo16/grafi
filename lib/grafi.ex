@@ -171,7 +171,10 @@ defmodule Grafi do
     do: Grafi.Algo.Centrality.closeness(g, opts)
 
   @doc """
-  Returns true if the graph contains at least one directed cycle.
+  Returns true if the graph contains at least one cycle: a directed cycle in
+  a directed graph; in an undirected graph, any cycle other than walking a
+  single edge back (so a self-loop, a parallel pair or a triangle counts,
+  a lone edge does not). See `Grafi.Algo.Cycles.has_cycle?/1`.
 
   ## Examples
 
@@ -188,7 +191,7 @@ defmodule Grafi do
   def has_cycle?(g),
     do: Grafi.Algo.Cycles.has_cycle?(g)
 
-  @doc "Find one cycle in the graph, if any."
+  @doc "Finds one cycle as a closed walk: `{:ok, [v0, ..., v0]}` or `{:error, :no_cycle}`."
   def find_cycle(g),
     do: Grafi.Algo.Cycles.find_cycle(g)
 
@@ -196,11 +199,14 @@ defmodule Grafi do
   def scc(g, opts \\ []),
     do: Grafi.Algo.Cycles.strongly_connected_components(g, opts)
 
-  @doc "Connected components."
+  @doc "Connected components (weak for directed graphs), in canonical order."
   def components(g),
     do: Grafi.Algo.Cycles.connected_components(g)
 
-  @doc "Condensation DAG (contract each SCC into one vertex)."
+  @doc """
+  Condensation DAG: each SCC becomes one integer vertex (its index in `scc/1`
+  order), labelled with its sorted member list.
+  """
   def condensation(g),
     do: Grafi.Algo.Cycles.condensation(g)
 
@@ -215,7 +221,8 @@ defmodule Grafi do
   @doc """
   BFS stream from a start vertex. Lazy; safe to pipe into `Enum.take/2`.
   Sibling order at a given depth is map-iteration order, so don't rely on
-  it; depth order is guaranteed.
+  it; depth order is guaranteed. Raises `ArgumentError` if `start` is not in
+  the graph.
 
   ## Examples
 
@@ -230,7 +237,7 @@ defmodule Grafi do
   def bfs(g, start),
     do: Grafi.Algo.Traversal.bfs(g, start)
 
-  @doc "DFS stream from a start vertex."
+  @doc "DFS stream from a start vertex. Raises `ArgumentError` if `start` is not in the graph."
   def dfs(g, start),
     do: Grafi.Algo.Traversal.dfs(g, start)
 

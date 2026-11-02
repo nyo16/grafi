@@ -16,9 +16,9 @@ defmodule Grafi.AlgoTest do
   end
 
   test "BFS order", %{g: g} do
-    order = Grafi.bfs(g, :a) |> Enum.to_list()
-    assert hd(order) == :a
-    assert length(order) == 4
+    # Siblings (:b, :c) come in map order; depth order is fixed.
+    assert [:a, s1, s2, :d] = Grafi.bfs(g, :a) |> Enum.to_list()
+    assert Enum.sort([s1, s2]) == [:b, :c]
   end
 
   test "DFS visits all", %{g: g} do
@@ -59,8 +59,10 @@ defmodule Grafi.AlgoTest do
 
   test "find_cycle" do
     g = Grafi.new() |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
-    assert {:ok, cycle} = Grafi.find_cycle(g)
-    assert length(cycle) >= 3
+    assert {:ok, [first | _] = cycle} = Grafi.find_cycle(g)
+    assert List.last(cycle) == first
+    assert length(cycle) == 4
+    assert Enum.all?(Enum.zip(cycle, tl(cycle)), fn {u, v} -> Grafi.Graph.has_edge?(g, u, v) end)
   end
 
   test "SCC" do
@@ -80,8 +82,11 @@ defmodule Grafi.AlgoTest do
       |> Grafi.add_edges([{:a, :b}, {:b, :a}, {:b, :c}])
 
     cg = Grafi.condensation(g)
-    # The cycle {:a, :b} should be contracted
-    assert Grafi.Graph.num_vertices(cg) == 2
+    # The cycle {:a, :b} is contracted to vertex 0, {:c} is vertex 1.
+    assert Enum.sort(Grafi.Graph.vertices(cg)) == [0, 1]
+    assert Grafi.Graph.label(cg, 0) == [:a, :b]
+    assert Grafi.Graph.label(cg, 1) == [:c]
+    assert Enum.map(Grafi.Graph.edges(cg), &{&1.from, &1.to}) == [{0, 1}]
   end
 
   test "Bellman-Ford" do
