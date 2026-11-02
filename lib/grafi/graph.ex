@@ -169,7 +169,8 @@ defmodule Grafi.Graph do
   degrees count distinct neighbors, not multi-edges.
 
   ## Options
-    * `:weight` — numeric weight (default `1.0`)
+    * `:weight` — numeric weight (default `1.0`); anything else raises
+      `ArgumentError`
     * `:label` — arbitrary label
 
   ## Examples
@@ -182,6 +183,10 @@ defmodule Grafi.Graph do
   @spec add_edge(t(), vertex_id(), vertex_id(), keyword()) :: t()
   def add_edge(%__MODULE__{} = g, v1, v2, opts \\ []) do
     weight = Keyword.get(opts, :weight, 1.0)
+
+    if not is_number(weight),
+      do: raise(ArgumentError, "expected :weight to be a number, got: #{inspect(weight)}")
+
     label = Keyword.get(opts, :label)
     edge = %Edge{from: v1, to: v2, weight: weight, label: label}
 
