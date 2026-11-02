@@ -18,10 +18,20 @@ defmodule Grafi.Serialize.DOT do
       identifier (letters, digits and `_`, not starting with a digit and not
       a DOT keyword) is quoted like a vertex ID.
 
-  Vertex IDs are quoted with embedded `"` and backslashes escaped; tabs and
-  newlines are kept inside the quotes. Other control characters in IDs,
-  labels or the name raise `ArgumentError`, because DOT cannot represent
-  them.
+  Vertex IDs are quoted with embedded `"` and backslashes escaped; tabs,
+  newlines and carriage returns are kept inside the quotes. Other control
+  characters in IDs, labels or the name raise `ArgumentError`, because DOT
+  cannot represent them.
+
+  Every backslash is doubled, so no text can end or escape its quotes:
+  Graphviz's lexer (since at least 2.38) reads `\\\\` as one unit inside a
+  quoted string, so a doubled backslash before a closing `"` cannot turn
+  it into `\\"`. This holds for IDs and labels ending in any number of
+  backslashes.
+
+  Weights are written bare when they are plain DOT numerals (`2.5`, `-3`);
+  weights in exponent notation (`1.0e20`) are quoted, since DOT numerals
+  have no exponent.
   """
   @spec to_dot(Graph.t(), keyword()) :: String.t()
   def to_dot(%Graph{} = g, opts \\ []) do
@@ -39,8 +49,7 @@ defmodule Grafi.Serialize.DOT do
     edge_lines =
       Graph.edges(g)
       |> Enum.map(fn e ->
-        weight_attr =
-          if e.weight != 1.0, do: "weight=#{Util.format_weight(e.weight)}", else: nil
+        weight_attr = if e.weight != 1.0, do: "weight=#{dot_weight(e.weight)}", else: nil
 
         label_attr = if e.label, do: "label=#{quote_string(to_string(e.label))}", else: nil
         attrs = [weight_attr, label_attr] |> Enum.reject(&is_nil/1) |> Enum.join(", ")
@@ -102,6 +111,13 @@ defmodule Grafi.Serialize.DOT do
 
   defp simple_id_rest?(_), do: false
 
+  # `Util.format_weight/1` writes integers as digits and floats either as
+  # digits with a `.` or in exponent notation, which DOT only accepts quoted.
+  defp dot_weight(w) do
+    s = Util.format_weight(w)
+    if String.contains?(s, "e"), do: quote_string(s), else: s
+  end
+
   defp quote_string(s) when is_binary(s) do
     reject_control_chars!(s)
     escaped = s |> String.replace("\\", "\\\\") |> String.replace("\"", "\\\"")
@@ -109,7 +125,7 @@ defmodule Grafi.Serialize.DOT do
   end
 
   defp reject_control_chars!(s) do
-    if String.contains?(s, control_chars()) do
+    if control_char?(s) do
       raise ArgumentError,
             "DOT identifiers/labels cannot contain control characters: #{inspect(s)}"
     end
@@ -117,7 +133,8 @@ defmodule Grafi.Serialize.DOT do
     :ok
   end
 
-  defp control_chars do
-    for c <- 0..31, c not in [?\t, ?\n, ?\r], do: <<c>>
-  end
+  # C0 controls other than tab, newline and carriage return.
+  defp control_char?(<<>>), do: false
+  defp control_char?(<<c, _::binary>>) when c < 32 and c not in [?\t, ?\n, ?\r], do: true
+  defp control_char?(<<_, rest::binary>>), do: control_char?(rest)
 end

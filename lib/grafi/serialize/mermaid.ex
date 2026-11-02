@@ -21,8 +21,11 @@ defmodule Grafi.Serialize.Mermaid do
   alias Grafi.Graph
   alias Grafi.Serialize.Util
 
-  # `#` is escaped too, so label text like `#quot;` stays literal.
-  @escaped ["\r\n", "\r", "\n", "`", "|", "\"", "#"]
+  # `#` is escaped too, so label text like `#quot;` stays literal. `%`
+  # stops `%%` comments and `%%{init: ...}%%` directives, which Mermaid
+  # detects anywhere in the text; `<`, `>`, `&` and `'` keep HTML out of
+  # labels rendered with `htmlLabels`.
+  @escaped ["\r\n", "\r", "\n", "`", "|", "\"", "#", "%", "<", ">", "&", "'"]
 
   @type direction :: :td | :lr | :bt | :rl
   @type graph_type :: :flowchart | :graph
@@ -45,9 +48,12 @@ defmodule Grafi.Serialize.Mermaid do
       rendering of atoms, strings, and integers.
 
   In node and edge labels, newlines (`\\n`, `\\r`, `\\r\\n`) become `#10;`,
-  backticks `#96;`, `|` `#124;`, `"` `#quot;` and `#` `#35;`, so a label
-  cannot end its node, its line, or an enclosing Markdown code fence, and
-  label text that looks like an entity code stays literal.
+  backticks `#96;`, `|` `#124;`, `"` `#quot;`, `#` `#35;`, `%` `#37;`,
+  `<` `#lt;`, `>` `#gt;`, `&` `#amp;` and `'` `#39;`, so a label cannot end
+  its node, its line, or an enclosing Markdown code fence, cannot start a
+  `%%` comment or `%%{init: ...}%%` directive, cannot inject HTML, and label
+  text that looks like an entity code stays literal. Node labels other than
+  plain ASCII letters, digits and `_` are wrapped in double quotes.
 
   ## Examples
 
@@ -102,7 +108,7 @@ defmodule Grafi.Serialize.Mermaid do
         edge_label =
           cond do
             e.label != nil -> "|#{escape_edge_label(to_string(e.label))}|"
-            show_weights? -> "|#{format_weight(e.weight)}|"
+            show_weights? -> "|#{Util.format_weight(e.weight)}|"
             true -> ""
           end
 
@@ -148,17 +154,25 @@ defmodule Grafi.Serialize.Mermaid do
 
   # Mermaid node text inside `[...]`. Characters that would end the label,
   # the line or an enclosing Markdown code fence (see `Grafi.Kino`) become
-  # Mermaid entity codes; labels with any special character or space are
-  # wrapped in quotes, which is the safest cross-version choice.
+  # Mermaid entity codes. Only plain ASCII words stay bare: anything else is
+  # quoted, so label text cannot change the node shape (`[/x/]`, `[(x)]`)
+  # or end the brackets.
   defp escape_label(s) when is_binary(s) do
-    if String.contains?(s, ["[", "]", "(", ")", "{", "}", "<", ">", " " | @escaped]) do
-      "\"" <> escape_text(s) <> "\""
-    else
-      s
-    end
+    if bare_label?(s), do: s, else: "\"" <> escape_text(s) <> "\""
   end
 
   defp escape_label(other), do: escape_label(to_string(other))
+
+  defp bare_label?(<<>>), do: false
+  defp bare_label?(s), do: bare_chars?(s)
+
+  defp bare_chars?(<<>>), do: true
+
+  defp bare_chars?(<<c, rest::binary>>)
+       when c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c == ?_,
+       do: bare_chars?(rest)
+
+  defp bare_chars?(_), do: false
 
   # Edge labels live between `|...|`.
   defp escape_edge_label(s), do: escape_text(s)
@@ -173,11 +187,9 @@ defmodule Grafi.Serialize.Mermaid do
   defp entity("|"), do: "#124;"
   defp entity("\""), do: "#quot;"
   defp entity("#"), do: "#35;"
-
-  # Compact display for whole floats (`80.0`), `Util.format_weight/1`
-  # otherwise, which raises for a non-number.
-  defp format_weight(w) when is_float(w) and w == trunc(w),
-    do: :erlang.float_to_binary(w, [:compact, decimals: 1])
-
-  defp format_weight(w), do: Util.format_weight(w)
+  defp entity("%"), do: "#37;"
+  defp entity("<"), do: "#lt;"
+  defp entity(">"), do: "#gt;"
+  defp entity("&"), do: "#amp;"
+  defp entity("'"), do: "#39;"
 end

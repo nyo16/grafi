@@ -122,7 +122,7 @@ defmodule Grafi.Serialize.MermaidTest do
       g = Graph.new() |> Graph.add_edge(:a, :b)
       out = Mermaid.to_mermaid(g, vertex_label: fn _ -> "x]\nv1 --> v0\r\nz\ry" end)
 
-      assert ~s(    v0["x]#10;v1 --> v0#10;z#10;y"]) in lines(out)
+      assert ~s(    v0["x]#10;v1 --#gt; v0#10;z#10;y"]) in lines(out)
       assert length(lines(out)) == 4
     end
 
@@ -149,6 +149,41 @@ defmodule Grafi.Serialize.MermaidTest do
       out = Mermaid.to_mermaid(g)
       assert out =~ "|2.5|"
       assert out =~ "|3|"
+    end
+
+    test "weight labels use the shared weight format" do
+      g = Graph.new() |> Graph.add_edge(:a, :b, weight: 1.0e20)
+      assert Mermaid.to_mermaid(g) =~ "|1.0e20|"
+    end
+
+    test "a %%{init}%% directive in a label is not passed through" do
+      directive = "%%{init: {'flowchart': {'htmlLabels': true}, 'themeCSS': 'x'}}%%"
+      g = Graph.new() |> Graph.add_edge(:a, :b, label: directive)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> directive end)
+
+      refute out =~ "%"
+      refute out =~ "'"
+      assert out =~ "#37;#37;{init"
+    end
+
+    test "HTML in node and edge labels is entity-encoded" do
+      html = "<img src=x onerror=alert(1)> & co"
+      g = Graph.new() |> Graph.add_edge(:a, :b, label: html)
+      out = Mermaid.to_mermaid(g, vertex_label: fn _ -> html end)
+
+      refute out =~ "<img"
+      refute out =~ "&"
+      assert out =~ "#lt;img src=x onerror=alert(1)#gt; #amp; co"
+      # The only `>` left is the arrow's.
+      assert out |> String.graphemes() |> Enum.count(&(&1 == ">")) == 1
+    end
+
+    test "label text cannot change the node shape" do
+      g = Graph.new() |> Graph.add_vertices([:a, :b])
+      out = Mermaid.to_mermaid(g, vertex_label: fn v -> if v == :a, do: "/x/", else: "y-z" end)
+
+      assert out =~ ~s(v0["/x/"])
+      assert out =~ ~s(v1["y-z"])
     end
   end
 end
