@@ -17,6 +17,7 @@ defmodule Grafi.Serialize.JSON do
   """
 
   alias Grafi.Graph
+  alias Grafi.Serialize.Util
 
   @doc """
   Encodes a graph as a JSON string using the schema in the moduledoc.
@@ -47,12 +48,37 @@ defmodule Grafi.Serialize.JSON do
   Decodes a JSON string produced by `to_json/1` (or a hand-written one
   matching the schema) into a `Grafi.Graph`.
 
-  Returns the graph on success, or `{:error, :malformed_json}` if the input is
-  not valid JSON or does not match the expected shape (missing `"type"`,
-  `"vertices"`, or `"edges"`, or those fields have the wrong type).
+  ## Options
+    * `:max_bytes` — maximum input size in bytes (default 64 MiB, or
+      `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
+
+  Returns the graph on success, or `{:error, reason}`:
+
+    * `:malformed_json` — the input is not valid JSON or does not match the
+      expected shape (missing `"type"`, `"vertices"`, or `"edges"`, or those
+      fields have the wrong type).
+    * `{:invalid_weight, value}` — an edge `"weight"` is present but is not a
+      number (a string, `null`, a boolean, an array or an object). A missing
+      weight defaults to `1.0`.
+    * `{:too_large, size, max}` — see `:max_bytes`.
   """
-  @spec from_json(String.t()) :: Graph.t() | {:error, :malformed_json}
-  def from_json(json) when is_binary(json) do
+  @spec from_json(String.t(), keyword()) ::
+          Graph.t()
+          | {:error,
+             :malformed_json
+             | {:invalid_weight, term()}
+             | {:too_large, non_neg_integer(), pos_integer()}}
+  def from_json(json, opts \\ [])
+
+  def from_json(json, opts) when is_binary(json) do
+    with :ok <- Util.check_size(json, opts) do
+      decode(json)
+    end
+  end
+
+  def from_json(_, _), do: {:error, :malformed_json}
+
+  defp decode(json) do
     with {:ok, data} <- JSON.decode(json),
          {:ok, type} <- decode_type(data),
          {:ok, vertices} <- fetch_list(data, "vertices"),
@@ -62,8 +88,6 @@ defmodule Grafi.Serialize.JSON do
       _ -> {:error, :malformed_json}
     end
   end
-
-  def from_json(_), do: {:error, :malformed_json}
 
   defp decode_type(%{"type" => "directed"}), do: {:ok, :directed}
   defp decode_type(%{"type" => "undirected"}), do: {:ok, :undirected}
@@ -97,14 +121,27 @@ defmodule Grafi.Serialize.JSON do
   defp reduce_edges(g, edges) do
     Enum.reduce_while(edges, {:ok, g}, fn
       %{"from" => from, "to" => to} = e, {:ok, acc} ->
-        weight = Map.get(e, "weight", 1.0)
-        opts = [weight: weight]
-        opts = if e["label"], do: Keyword.put(opts, :label, e["label"]), else: opts
-        {:cont, {:ok, Graph.add_edge(acc, from, to, opts)}}
+        case fetch_weight(e) do
+          {:ok, weight} ->
+            opts = [weight: weight]
+            opts = if e["label"], do: Keyword.put(opts, :label, e["label"]), else: opts
+            {:cont, {:ok, Graph.add_edge(acc, from, to, opts)}}
+
+          {:error, _} = error ->
+            {:halt, error}
+        end
 
       _bad, _acc ->
         {:halt, {:error, :malformed_json}}
     end)
+  end
+
+  defp fetch_weight(edge) do
+    case Map.fetch(edge, "weight") do
+      :error -> {:ok, 1.0}
+      {:ok, w} when is_number(w) -> {:ok, w}
+      {:ok, other} -> {:error, {:invalid_weight, other}}
+    end
   end
 
   defp maybe_put(map, _key, nil), do: map
