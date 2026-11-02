@@ -344,31 +344,42 @@ defmodule Grafi do
       ...>   dot =~ "a -> b" and dot =~ "a;" and dot =~ "b;"
       true
   """
+  @spec to_dot(Grafi.Graph.t(), keyword()) :: String.t()
   def to_dot(g, opts \\ []),
     do: Grafi.Serialize.DOT.to_dot(g, opts)
 
   @doc "Export to JSON (uses the built-in `JSON` module)."
+  @spec to_json(Grafi.Graph.t()) :: String.t()
   def to_json(g),
     do: Grafi.Serialize.JSON.to_json(g)
 
   @doc """
-  Import from a JSON string. Options are passed to
-  `Grafi.Serialize.JSON.from_json/2` (e.g. `:max_bytes`).
+  Import from a JSON string: `{:ok, graph}` or `{:error, reason}`. Options
+  are passed to `Grafi.Serialize.JSON.from_json/2` (e.g. `:max_bytes`).
   """
+  @spec from_json(String.t(), keyword()) :: {:ok, Grafi.Graph.t()} | {:error, term()}
   def from_json(json, opts \\ []),
     do: Grafi.Serialize.JSON.from_json(json, opts)
 
+  defdelegate from_json!(json, opts \\ []), to: Grafi.Serialize.JSON
   defdelegate to_mermaid(g, opts \\ []), to: Grafi.Serialize.Mermaid
+  defdelegate to_markdown(g, opts \\ []), to: Grafi.Serialize.Mermaid
   defdelegate to_graphml(g, opts \\ []), to: Grafi.Serialize.GraphML
   defdelegate from_graphml(xml, opts \\ []), to: Grafi.Serialize.GraphML
+  defdelegate from_graphml!(xml, opts \\ []), to: Grafi.Serialize.GraphML
   defdelegate to_gexf(g, opts \\ []), to: Grafi.Serialize.GEXF
   defdelegate from_gexf(xml, opts \\ []), to: Grafi.Serialize.GEXF
+  defdelegate from_gexf!(xml, opts \\ []), to: Grafi.Serialize.GEXF
   defdelegate to_pajek(g, opts \\ []), to: Grafi.Serialize.Pajek
   defdelegate from_pajek(text, opts \\ []), to: Grafi.Serialize.Pajek
+  defdelegate from_pajek!(text, opts \\ []), to: Grafi.Serialize.Pajek
   defdelegate to_edge_list(g, opts \\ []), to: Grafi.Serialize.EdgeList
   defdelegate from_edge_list(text, opts \\ []), to: Grafi.Serialize.EdgeList
+  defdelegate from_edge_list!(text, opts \\ []), to: Grafi.Serialize.EdgeList
   defdelegate to_adjacency_list(g, opts \\ []), to: Grafi.Serialize.AdjacencyList
   defdelegate from_adjacency_list(text, opts \\ []), to: Grafi.Serialize.AdjacencyList
+  defdelegate from_adjacency_list!(text, opts \\ []), to: Grafi.Serialize.AdjacencyList
   defdelegate to_matrix_market(g, opts \\ []), to: Grafi.Serialize.MatrixMarket
   defdelegate from_matrix_market(text, opts \\ []), to: Grafi.Serialize.MatrixMarket
+  defdelegate from_matrix_market!(text, opts \\ []), to: Grafi.Serialize.MatrixMarket
 end

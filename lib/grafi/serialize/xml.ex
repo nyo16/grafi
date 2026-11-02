@@ -221,7 +221,7 @@ defmodule Grafi.Serialize.XML do
   """
   @spec build_graph(:directed | :undirected, [{String.t() | nil, String.t() | nil}], [
           {String.t() | nil, String.t() | nil, String.t() | nil, String.t() | nil}
-        ]) :: Graph.t() | {:error, {:invalid_weight, String.t()}}
+        ]) :: {:ok, Graph.t()} | {:error, {:invalid_weight, String.t()}}
   def build_graph(type, vertices, edges) do
     g =
       Enum.reduce(vertices, Graph.new(type: type), fn
@@ -230,15 +230,15 @@ defmodule Grafi.Serialize.XML do
         {id, label}, acc -> Graph.add_vertex(acc, id, label: label)
       end)
 
-    Enum.reduce_while(edges, g, fn
+    Enum.reduce_while(edges, {:ok, g}, fn
       {src, tgt, _, _}, acc when src == nil or tgt == nil ->
         {:cont, acc}
 
-      {src, tgt, weight_text, label}, acc ->
+      {src, tgt, weight_text, label}, {:ok, acc} ->
         case edge_weight(weight_text) do
           {:ok, weight} ->
             opts = if label, do: [weight: weight, label: label], else: [weight: weight]
-            {:cont, Graph.add_edge(acc, src, tgt, opts)}
+            {:cont, {:ok, Graph.add_edge(acc, src, tgt, opts)}}
 
           {:error, _} = error ->
             {:halt, error}

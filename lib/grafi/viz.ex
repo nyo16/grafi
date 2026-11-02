@@ -50,7 +50,8 @@ defmodule Grafi.Viz do
   Render a graph to the given image `format` via Graphviz.
 
   Returns `{:ok, binary}` on success — an SVG XML string, PNG bytes,
-  etc. — or `{:error, reason}` on failure.
+  etc. — or `{:error, reason}` on failure. An unsupported `format` or an
+  unknown option raises `ArgumentError`.
 
   ## Formats
 
@@ -74,7 +75,6 @@ defmodule Grafi.Viz do
 
     * `{:error, :graphviz_not_installed}` — the engine executable is not
       in PATH.
-    * `{:error, {:invalid_format, fmt}}` — unsupported format atom.
     * `{:error, {:invalid_engine, eng}}` — unsupported engine atom.
     * `{:error, {:graphviz_failed, output, exit_code}}` — Graphviz
       returned a non-zero exit status; `output` is what it printed
@@ -91,18 +91,19 @@ defmodule Grafi.Viz do
           | {:error,
              :graphviz_not_installed
              | :timeout
-             | {:invalid_format, atom()}
              | {:invalid_engine, atom()}
              | {:graphviz_failed, String.t(), integer()}
              | {:tempfile_error, term()}}
   def render(graph, format \\ :svg, opts \\ [])
 
   def render(_graph, format, _opts) when format not in @valid_formats do
-    {:error, {:invalid_format, format}}
+    raise ArgumentError,
+          "invalid format #{inspect(format)} (expected one of #{inspect(@valid_formats)})"
   end
 
   def render(%Graph{} = graph, format, opts) do
-    engine = Keyword.get(opts, :engine, :dot)
+    opts = Keyword.validate!(opts, engine: :dot, timeout: @default_timeout, name: "G")
+    engine = opts[:engine]
 
     cond do
       engine not in @valid_engines ->
@@ -135,7 +136,10 @@ defmodule Grafi.Viz do
   from the file extension (e.g. `"foo.svg"` → `:svg`, `"foo.gv"` →
   `:dot`).
 
-  Returns `:ok` on success, `{:error, reason}` otherwise.
+  Returns `:ok` on success, `{:error, reason}` otherwise. An extension
+  that names no supported format is `{:error, {:invalid_format, ext}}`;
+  an unsupported explicit `:format` raises `ArgumentError`, as in
+  `render/3`.
 
   ## Options
 
@@ -148,26 +152,27 @@ defmodule Grafi.Viz do
           | {:error,
              :graphviz_not_installed
              | :timeout
-             | {:invalid_format, atom() | String.t()}
+             | {:invalid_format, String.t()}
              | {:invalid_engine, atom()}
              | {:graphviz_failed, String.t(), integer()}
              | {:tempfile_error, term()}
              | {:file_write_error, File.posix()}}
   def render_to_file(%Graph{} = graph, path, opts \\ []) do
-    case Keyword.get(opts, :format) || infer_format(path) do
+    {format, opts} =
+      opts
+      |> Keyword.validate!([:format, engine: :dot, timeout: @default_timeout, name: "G"])
+      |> Keyword.pop(:format)
+
+    case format || infer_format(path) do
       {:error, _} = err ->
         err
 
-      format when is_atom(format) ->
-        case render(graph, format, opts) do
-          {:ok, bin} ->
-            case File.write(path, bin) do
-              :ok -> :ok
-              {:error, reason} -> {:error, {:file_write_error, reason}}
-            end
-
-          {:error, _} = err ->
-            err
+      format ->
+        with {:ok, bin} <- render(graph, format, opts) do
+          case File.write(path, bin) do
+            :ok -> :ok
+            {:error, reason} -> {:error, {:file_write_error, reason}}
+          end
         end
     end
   end
@@ -206,8 +211,8 @@ defmodule Grafi.Viz do
   # arrive on the merged stderr stream, out of the rendered bytes. Both
   # files live in a private per-render directory removed in an `after`.
   defp do_render(graph, format, exe, opts) do
-    timeout = validate_timeout(Keyword.get(opts, :timeout, @default_timeout))
-    dot_string = Grafi.Serialize.DOT.to_dot(graph, Keyword.take(opts, [:name]))
+    timeout = validate_timeout(opts[:timeout])
+    dot_string = Grafi.Serialize.DOT.to_dot(graph, name: opts[:name])
 
     with_private_dir(fn dir ->
       dot_path = Path.join(dir, "in.dot")

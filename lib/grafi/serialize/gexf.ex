@@ -47,7 +47,8 @@ defmodule Grafi.Serialize.GEXF do
       true
   """
   @spec to_gexf(Graph.t(), keyword()) :: String.t()
-  def to_gexf(%Graph{} = g, _opts \\ []) do
+  def to_gexf(%Graph{} = g, opts \\ []) do
+    Keyword.validate!(opts, [])
     edgetype = if g.type == :directed, do: "directed", else: "undirected"
 
     node_lines =
@@ -96,7 +97,7 @@ defmodule Grafi.Serialize.GEXF do
   @doc """
   Parses a GEXF string into a `Grafi.Graph`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure:
+  Returns `{:ok, graph}` on success or `{:error, reason}` on parse failure:
     * `{:invalid_weight, text}` for a `weight` attribute that is not a
       finite number;
     * `:missing_graph_element` without a `<graph>` whose `defaultedgetype`
@@ -114,15 +115,26 @@ defmodule Grafi.Serialize.GEXF do
     * `:max_bytes` — reject input larger than this many bytes with
       `{:error, {:too_large, size, max}}` before parsing. Defaults to 64 MiB;
       pass `:infinity` to disable the limit.
+
+  Unknown options raise `ArgumentError`.
   """
-  @spec from_gexf(String.t(), keyword()) :: Graph.t() | {:error, term()}
+  @spec from_gexf(String.t(), keyword()) :: {:ok, Graph.t()} | {:error, term()}
   def from_gexf(xml, opts \\ []) when is_binary(xml) do
+    opts = Keyword.validate!(opts, [:max_bytes])
+
     with :ok <- Util.check_size(xml, opts),
          {:ok, type, vertices, edges} <-
            XML.parse(xml, "defaultedgetype", &vertex/2, &edge/2) do
       XML.build_graph(type, vertices, edges)
     end
   end
+
+  @doc """
+  Like `from_gexf/2`, but returns the graph and raises `ArgumentError`
+  with the reason on failure.
+  """
+  @spec from_gexf!(String.t(), keyword()) :: Graph.t()
+  def from_gexf!(xml, opts \\ []), do: xml |> from_gexf(opts) |> Util.unwrap!("GEXF")
 
   defp vertex(attrs, _data), do: {attrs["id"], attrs["label"]}
 

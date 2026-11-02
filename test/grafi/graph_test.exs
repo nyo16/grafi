@@ -293,6 +293,65 @@ defmodule Grafi.GraphTest do
       g = Graph.new() |> Graph.add_vertex(:x)
       assert Enum.member?(g, :x)
     end
+
+    test "reduce/3 visits every vertex once and supports halting and suspending" do
+      g = Graph.new() |> Graph.add_vertices([:a, :b, :c])
+
+      assert g |> Enum.to_list() |> Enum.sort() == [:a, :b, :c]
+      assert Enum.take(g, 2) |> length() == 2
+
+      # zip suspends the reduction after each element.
+      assert g |> Enum.zip(1..3) |> Enum.map(&elem(&1, 1)) == [1, 2, 3]
+      assert Enum.to_list(Graph.new()) == []
+    end
+
+    test "slice/1 falls back to reduce, so positional access works" do
+      g = Graph.new() |> Graph.add_vertices([:a, :b, :c])
+      vs = Enum.to_list(g)
+
+      assert Enumerable.slice(g) == {:error, Enumerable.Grafi.Graph}
+      assert Enum.at(g, 1) == Enum.at(vs, 1)
+      assert Enum.slice(g, 1..2) == Enum.slice(vs, 1..2)
+    end
+  end
+
+  describe "Inspect" do
+    test "shows the type and counts" do
+      g = Graph.new(type: :undirected) |> Graph.add_edges([{:a, :b}, {:b, :c}])
+      assert inspect(g) == "#Grafi.Graph<undirected, V: 3, E: 2>"
+    end
+
+    test "respects inspect options" do
+      g = Graph.new() |> Graph.add_vertices(Enum.to_list(1..16))
+
+      assert inspect(g, base: :hex) == "#Grafi.Graph<directed, V: 0x10, E: 0x0>"
+
+      colored = inspect(g, syntax_colors: [number: :red, reset: :reset])
+      assert colored =~ IO.ANSI.red() <> "16"
+    end
+  end
+
+  describe "option validation" do
+    test "new/1 rejects unknown options" do
+      assert_raise ArgumentError, ~r/unknown keys \[:directed\]/, fn ->
+        Graph.new(directed: false)
+      end
+    end
+
+    test "add_vertex/3 accepts :label only" do
+      assert_raise ArgumentError, ~r/unknown keys \[:weight\]/, fn ->
+        Graph.add_vertex(Graph.new(), :a, weight: 2)
+      end
+    end
+
+    test "add_edge/4 accepts :weight and :label only" do
+      g = Graph.add_edge(Graph.new(), :a, :b, weight: 2, label: "x")
+      assert [%{weight: 2, label: "x"}] = Graph.edges(g)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:wieght\]/, fn ->
+        Graph.add_edge(Graph.new(), :a, :b, wieght: 2)
+      end
+    end
   end
 
   describe "add_edge/4 :weight validation" do

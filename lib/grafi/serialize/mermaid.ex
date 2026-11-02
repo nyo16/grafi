@@ -5,8 +5,17 @@ defmodule Grafi.Serialize.Mermaid do
 
   The output is a string that can be pasted into a Markdown code fence
   tagged ` ```mermaid` and rendered by Livebook, GitHub Markdown, Notion,
-  or any Mermaid-compatible viewer. See `Grafi.Kino` for a thin wrapper
-  that produces a Markdown-ready block.
+  or any Mermaid-compatible viewer. `to_markdown/2` produces that fenced
+  block.
+
+  ## Livebook
+
+  When the optional `:kino` dependency is installed, a `Grafi.Graph`
+  returned from a Livebook cell renders as a Mermaid diagram (through
+  `Kino.Mermaid`), with the default options of `to_mermaid/2`. For other
+  options, render it yourself:
+
+      g |> Grafi.Serialize.Mermaid.to_mermaid(direction: :lr) |> Kino.Mermaid.new()
 
   ## Quick reference
 
@@ -67,10 +76,18 @@ defmodule Grafi.Serialize.Mermaid do
   """
   @spec to_mermaid(Graph.t(), keyword()) :: String.t()
   def to_mermaid(%Graph{} = g, opts \\ []) do
-    direction = Keyword.get(opts, :direction, :td) |> validate_direction!()
-    graph_type = Keyword.get(opts, :graph_type, :flowchart) |> validate_graph_type!()
-    weight_mode = Keyword.get(opts, :weights, :auto)
-    label_fn = Keyword.get(opts, :vertex_label, &default_label/1)
+    opts =
+      Keyword.validate!(opts,
+        direction: :td,
+        graph_type: :flowchart,
+        weights: :auto,
+        vertex_label: &default_label/1
+      )
+
+    direction = validate_direction!(opts[:direction])
+    graph_type = validate_graph_type!(opts[:graph_type])
+    weight_mode = opts[:weights]
+    label_fn = opts[:vertex_label]
 
     show_weights? = resolve_weight_mode(weight_mode, g)
 
@@ -121,6 +138,29 @@ defmodule Grafi.Serialize.Mermaid do
     |> Enum.join("\n")
   end
 
+  @doc """
+  Renders the graph as a Markdown string holding a fenced ` ```mermaid`
+  block. Takes the options of `to_mermaid/2`.
+
+  The output is GitHub-flavoured Markdown, rendered natively by GitHub,
+  GitLab, Notion and `Kino.Markdown.new/1`. Labels cannot end the fence:
+  backticks in them are escaped (see `to_mermaid/2`).
+
+  ## Examples
+
+      iex> md = Grafi.Graph.new()
+      ...>   |> Grafi.Graph.add_edge(:a, :b)
+      ...>   |> Grafi.Serialize.Mermaid.to_markdown()
+      iex> String.starts_with?(md, "```mermaid\\nflowchart TD\\n")
+      true
+      iex> String.ends_with?(md, "\\n```")
+      true
+  """
+  @spec to_markdown(Graph.t(), keyword()) :: String.t()
+  def to_markdown(%Graph{} = g, opts \\ []) do
+    "```mermaid\n" <> to_mermaid(g, opts) <> "\n```"
+  end
+
   # ── Option validation ────────────────────────────────────────────────
 
   defp validate_direction!(d) when d in [:td, :lr, :bt, :rl], do: d
@@ -153,7 +193,7 @@ defmodule Grafi.Serialize.Mermaid do
   defp default_label(v), do: inspect(v)
 
   # Mermaid node text inside `[...]`. Characters that would end the label,
-  # the line or an enclosing Markdown code fence (see `Grafi.Kino`) become
+  # the line or an enclosing Markdown code fence (see `to_markdown/2`) become
   # Mermaid entity codes. Only plain ASCII words stay bare: anything else is
   # quoted, so label text cannot change the node shape (`[/x/]`, `[(x)]`)
   # or end the brackets.
@@ -192,4 +232,18 @@ defmodule Grafi.Serialize.Mermaid do
   defp entity(">"), do: "#gt;"
   defp entity("&"), do: "#amp;"
   defp entity("'"), do: "#39;"
+end
+
+if Code.ensure_loaded?(Kino.Render) do
+  defimpl Kino.Render, for: Grafi.Graph do
+    # The layout Kino documents for custom renders: the diagram, plus the
+    # default inspect output in a second tab.
+    def to_livebook(graph) do
+      diagram = graph |> Grafi.Serialize.Mermaid.to_mermaid() |> Kino.Mermaid.new()
+
+      [Graph: diagram, Raw: Kino.Inspect.new(graph)]
+      |> Kino.Layout.tabs()
+      |> Kino.Render.to_livebook()
+    end
+  end
 end

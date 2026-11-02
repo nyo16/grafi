@@ -50,7 +50,8 @@ defmodule Grafi.Serialize.EdgeList do
   """
   @spec to_edge_list(Graph.t(), keyword()) :: String.t()
   def to_edge_list(%Graph{} = g, opts \\ []) do
-    sep = Keyword.get(opts, :separator, " ")
+    opts = Keyword.validate!(opts, [:weighted, :comment, separator: " "])
+    sep = opts[:separator]
     token = &LineIds.vertex_token!(&1, sep, "an edge list")
     edges = Graph.edges(g)
 
@@ -60,7 +61,7 @@ defmodule Grafi.Serialize.EdgeList do
       end)
 
     header =
-      case Keyword.get(opts, :comment) do
+      case opts[:comment] do
         nil -> []
         c when is_binary(c) -> ["# " <> LineIds.comment!(c)]
       end
@@ -79,7 +80,7 @@ defmodule Grafi.Serialize.EdgeList do
   Parses an edge list string into a `Grafi.Graph`.
 
   ## Options
-    * `:directed` — `true` (default) or `false`.
+    * `:type` — `:directed` (default) or `:undirected`.
     * `:separator` — column separator. By default columns are separated by
       any run of whitespace. When given, each line is split on exactly this
       string and every field is trimmed of surrounding whitespace, so
@@ -101,34 +102,55 @@ defmodule Grafi.Serialize.EdgeList do
     * `:max_bytes` — maximum input size in bytes (default 64 MiB, or
       `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
-  Returns the graph on success or `{:error, reason}`: `{:malformed_line,
+  Returns `{:ok, graph}` on success or `{:error, reason}`: `{:malformed_line,
   line}` for a line with the wrong number of fields, and `{:invalid_weight,
   token}` for a weight that is not a finite number. The `line` and `token`
-  in an error are cut to their first 200 bytes.
+  in an error are cut to their first 200 bytes. Unknown options raise
+  `ArgumentError`.
 
   ## Examples
 
-      iex> Grafi.Serialize.EdgeList.from_edge_list("a b\\nb c")
-      ...> |> Grafi.Graph.num_edges()
-      2
+      iex> {:ok, g} = Grafi.Serialize.EdgeList.from_edge_list("a b\\nb c", type: :undirected)
+      iex> {g.type, Grafi.Graph.num_edges(g)}
+      {:undirected, 2}
   """
-  @spec from_edge_list(String.t(), keyword()) :: Graph.t() | {:error, term()}
+  @spec from_edge_list(String.t(), keyword()) :: {:ok, Graph.t()} | {:error, term()}
   def from_edge_list(text, opts \\ []) when is_binary(text) do
-    with :ok <- Util.check_size(text, opts) do
-      parse(text, opts)
+    opts =
+      Keyword.validate!(opts, [
+        :max_bytes,
+        :separator,
+        type: :directed,
+        weighted: :auto,
+        default_weight: 1.0,
+        vertices_as_atoms: false
+      ])
+
+    empty = Graph.new(type: opts[:type])
+
+    with :ok <- Util.check_size(text, opts),
+         %Graph{} = g <- parse(text, empty, opts) do
+      {:ok, g}
     end
   end
 
+  @doc """
+  Like `from_edge_list/2`, but returns the graph and raises `ArgumentError`
+  with the reason on failure.
+  """
+  @spec from_edge_list!(String.t(), keyword()) :: Graph.t()
+  def from_edge_list!(text, opts \\ []),
+    do: text |> from_edge_list(opts) |> Util.unwrap!("edge list")
+
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp parse(text, opts) do
-    type = if Keyword.get(opts, :directed, true), do: :directed, else: :undirected
-    weighted = Keyword.get(opts, :weighted, :auto)
-    default_w = Keyword.get(opts, :default_weight, 1.0)
-    atoms? = Keyword.get(opts, :vertices_as_atoms, false)
-    split = Util.field_splitter(Keyword.get(opts, :separator))
+  defp parse(text, empty, opts) do
+    weighted = opts[:weighted]
+    default_w = opts[:default_weight]
+    atoms? = opts[:vertices_as_atoms]
+    split = Util.field_splitter(opts[:separator])
 
-    Util.reduce_lines(text, Graph.new(type: type), "#", fn line, g ->
+    Util.reduce_lines(text, empty, "#", fn line, g ->
       case parse_line(line, split.(line), weighted, default_w) do
         {:ok, from, to, w} ->
           from = Util.cast_vertex(from, atoms?)

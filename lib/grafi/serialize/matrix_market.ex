@@ -79,7 +79,8 @@ defmodule Grafi.Serialize.MatrixMarket do
       true
   """
   @spec to_matrix_market(Graph.t(), keyword()) :: String.t()
-  def to_matrix_market(%Graph{} = g, _opts \\ []) do
+  def to_matrix_market(%Graph{} = g, opts \\ []) do
+    Keyword.validate!(opts, [])
     vertices = Graph.vertices(g)
     n = length(vertices)
     index = vertices |> Enum.with_index(1) |> Map.new()
@@ -128,7 +129,7 @@ defmodule Grafi.Serialize.MatrixMarket do
   Recovers vertex ids from `%GRAFI_VERTEX i ID` comment lines when present.
   Otherwise falls back to integer ids `1..n`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure:
+  Returns `{:ok, graph}` on success or `{:error, reason}` on parse failure:
 
     * `{:too_large, size, max}`: the input exceeds `:max_bytes`.
     * `:missing_header` / `:bad_header`: no `%%MatrixMarket` line, or one
@@ -159,10 +160,13 @@ defmodule Grafi.Serialize.MatrixMarket do
       number of entries, so a short header can declare a huge graph. Each
       vertex takes about 250 bytes once built (more while building), so
       the default allows a graph of about 250 MB from a one-line header.
+
+  Unknown options raise `ArgumentError`.
   """
-  @spec from_matrix_market(String.t(), keyword()) :: Graph.t() | {:error, term()}
+  @spec from_matrix_market(String.t(), keyword()) :: {:ok, Graph.t()} | {:error, term()}
   def from_matrix_market(text, opts \\ []) when is_binary(text) do
-    max_vertices = max_vertices!(opts)
+    opts = Keyword.validate!(opts, [:max_bytes, max_vertices: @default_max_vertices])
+    max_vertices = max_vertices!(opts[:max_vertices])
 
     with :ok <- Util.check_size(text, opts) do
       text
@@ -171,10 +175,18 @@ defmodule Grafi.Serialize.MatrixMarket do
     end
   end
 
+  @doc """
+  Like `from_matrix_market/2`, but returns the graph and raises
+  `ArgumentError` with the reason on failure.
+  """
+  @spec from_matrix_market!(String.t(), keyword()) :: Graph.t()
+  def from_matrix_market!(text, opts \\ []),
+    do: text |> from_matrix_market(opts) |> Util.unwrap!("Matrix Market")
+
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp max_vertices!(opts) do
-    case Keyword.get(opts, :max_vertices, @default_max_vertices) do
+  defp max_vertices!(max) do
+    case max do
       :infinity ->
         :infinity
 
@@ -238,7 +250,7 @@ defmodule Grafi.Serialize.MatrixMarket do
   defp finish({:error, _} = error), do: error
   defp finish(:header), do: {:error, :missing_header}
   defp finish({:ids, _type, _id_map, _taken}), do: {:error, :missing_size_line}
-  defp finish({:entries, g, {_rows, _cols, nnz}, _id_map, nnz}), do: g
+  defp finish({:entries, g, {_rows, _cols, nnz}, _id_map, nnz}), do: {:ok, g}
 
   defp finish({:entries, _g, {_rows, _cols, nnz}, _id_map, seen}),
     do: {:error, {:nnz_mismatch, nnz, seen}}

@@ -50,7 +50,7 @@ defmodule Grafi.Serialize.PajekTest do
       1 2 1.0
       """
 
-      g = Pajek.from_pajek(input)
+      {:ok, g} = Pajek.from_pajek(input)
       assert g.type == :directed
       assert Graph.num_vertices(g) == 2
       assert Graph.has_edge?(g, "a", "b")
@@ -65,7 +65,7 @@ defmodule Grafi.Serialize.PajekTest do
       1 2 1.0
       """
 
-      g = Pajek.from_pajek(input)
+      {:ok, g} = Pajek.from_pajek(input)
       assert g.type == :undirected
     end
 
@@ -78,7 +78,7 @@ defmodule Grafi.Serialize.PajekTest do
       1 2 4.5
       """
 
-      g = Pajek.from_pajek(input)
+      {:ok, g} = Pajek.from_pajek(input)
       [e] = Graph.edges_between(g, "x", "y")
       assert e.weight == 4.5
     end
@@ -107,7 +107,7 @@ defmodule Grafi.Serialize.PajekTest do
       size = byte_size(input)
 
       assert {:error, {:too_large, ^size, 5}} = Pajek.from_pajek(input, max_bytes: 5)
-      assert %Graph{} = Pajek.from_pajek(input, max_bytes: :infinity)
+      assert {:ok, %Graph{}} = Pajek.from_pajek(input, max_bytes: :infinity)
     end
   end
 
@@ -130,7 +130,7 @@ defmodule Grafi.Serialize.PajekTest do
     test "multi-relational *Arcs header is read as *Arcs" do
       input = "*Vertices 2\n1 \"a\"\n2 \"b\"\n*Arcs :2 \"rel\"\n1 2 3\n"
 
-      g = parse_within(input, 5_000)
+      {:ok, g} = parse_within(input, 5_000)
       assert g.type == :directed
       assert [%{weight: 3.0}] = Graph.edges_between(g, "a", "b")
     end
@@ -147,7 +147,7 @@ defmodule Grafi.Serialize.PajekTest do
       2 3 2.0
       """
 
-      g = Pajek.from_pajek(input)
+      {:ok, g} = Pajek.from_pajek(input)
       assert g.type == :directed
       assert Graph.has_edge?(g, "a", "b")
       refute Graph.has_edge?(g, "b", "a")
@@ -169,7 +169,7 @@ defmodule Grafi.Serialize.PajekTest do
       2 3
       """
 
-      g = Pajek.from_pajek(input)
+      {:ok, g} = Pajek.from_pajek(input)
       assert g.type == :directed
       assert Graph.has_edge?(g, "a", "b")
       assert Graph.has_edge?(g, "b", "a")
@@ -262,7 +262,7 @@ defmodule Grafi.Serialize.PajekTest do
         "*Vertices 2\n1 #{long}a\n2 \"#{long}b\"\n*Arcs\n1 2\n" <>
           String.duplicate("% padding\n", 100)
 
-      for v <- Graph.vertices(Pajek.from_pajek(input)) do
+      for v <- Graph.vertices(Pajek.from_pajek!(input)) do
         assert :binary.referenced_byte_size(v) < byte_size(input)
       end
     end
@@ -278,7 +278,9 @@ defmodule Grafi.Serialize.PajekTest do
 
       edges = String.duplicate("\n", 64 * 1024 * 1024 - 64)
       input = ~s(*Vertices 2\n1 "a"\n2 "b"\n*Edges\n) <> edges <> "1 2\n"
-      assert {:done, %Graph{type: :undirected}} = with_heap_cap(fn -> Pajek.from_pajek(input) end)
+
+      assert {:done, {:ok, %Graph{type: :undirected}}} =
+               with_heap_cap(fn -> Pajek.from_pajek(input) end)
     end
   end
 
@@ -294,7 +296,7 @@ defmodule Grafi.Serialize.PajekTest do
       2 3 5
       """
 
-      g = Pajek.from_pajek(input)
+      {:ok, g} = Pajek.from_pajek(input)
       assert Graph.num_vertices(g) == 3
       assert Enum.sort(Graph.vertices(g)) == Enum.sort([{"a", 1}, {"a", 2}, "b"])
       assert [%{weight: 1.0}] = Graph.edges_between(g, {"a", 1}, "b")
@@ -303,7 +305,7 @@ defmodule Grafi.Serialize.PajekTest do
 
     test "ids with the same text form survive a round-trip as separate vertices" do
       g = Graph.new() |> Graph.add_edge(:a, "a")
-      g2 = g |> Pajek.to_pajek() |> Pajek.from_pajek()
+      g2 = g |> Pajek.to_pajek() |> Pajek.from_pajek!()
 
       assert Graph.num_vertices(g2) == 2
       assert Graph.num_edges(g2) == 1
@@ -327,7 +329,7 @@ defmodule Grafi.Serialize.PajekTest do
       ]
 
       g = Enum.reduce(labels, Graph.new(), &Graph.add_vertex(&2, &1))
-      g2 = g |> Pajek.to_pajek() |> Pajek.from_pajek()
+      g2 = g |> Pajek.to_pajek() |> Pajek.from_pajek!()
 
       assert Enum.sort(Graph.vertices(g2)) == Enum.sort(labels)
       assert Graph.num_edges(g2) == 0
@@ -338,21 +340,21 @@ defmodule Grafi.Serialize.PajekTest do
       text = Graph.new() |> Graph.add_vertex(label) |> Pajek.to_pajek()
 
       assert length(String.split(text, "\n")) == 3
-      g = Pajek.from_pajek(text)
+      {:ok, g} = Pajek.from_pajek(text)
       assert Graph.vertices(g) == [label]
       assert Graph.num_edges(g) == 0
     end
 
     test "edges between escaped labels round-trip" do
       g = Graph.new() |> Graph.add_edge("a\"b", "c\\d", weight: 2.5)
-      g2 = g |> Pajek.to_pajek() |> Pajek.from_pajek()
+      g2 = g |> Pajek.to_pajek() |> Pajek.from_pajek!()
 
       assert [%{weight: 2.5}] = Graph.edges_between(g2, "a\"b", "c\\d")
     end
 
     test "unknown escapes are kept and trailing vertex attributes ignored" do
       input = "*Vertices 1\n1 \"C:\\dir\" 0.1 0.2 0.5\n*Arcs\n"
-      assert Graph.vertices(Pajek.from_pajek(input)) == ["C:\\dir"]
+      assert Graph.vertices(Pajek.from_pajek!(input)) == ["C:\\dir"]
     end
   end
 
@@ -365,7 +367,7 @@ defmodule Grafi.Serialize.PajekTest do
         |> Graph.add_edge("a", "c", weight: 7.0)
 
       text = Pajek.to_pajek(g)
-      g2 = Pajek.from_pajek(text)
+      {:ok, g2} = Pajek.from_pajek(text)
 
       assert g2.type == :directed
       assert Graph.num_vertices(g2) == 3
@@ -380,7 +382,7 @@ defmodule Grafi.Serialize.PajekTest do
         |> Graph.add_edge("x", "y", weight: 1.5)
 
       text = Pajek.to_pajek(g)
-      g2 = Pajek.from_pajek(text)
+      {:ok, g2} = Pajek.from_pajek(text)
 
       assert g2.type == :undirected
       assert Graph.has_edge?(g2, "x", "y")
@@ -394,7 +396,7 @@ defmodule Grafi.Serialize.PajekTest do
         |> Graph.add_edge("a", "b", weight: 2.0)
 
       text = Pajek.to_pajek(g)
-      g2 = Pajek.from_pajek(text)
+      {:ok, g2} = Pajek.from_pajek(text)
 
       assert Graph.num_edges(g2) == 2
       assert length(Graph.edges_between(g2, "a", "b")) == 2

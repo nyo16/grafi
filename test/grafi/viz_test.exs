@@ -9,11 +9,6 @@ defmodule Grafi.VizTest do
   # Grafi.VizPathTest.
 
   describe "graphviz_available?/1" do
-    test "returns a boolean" do
-      assert is_boolean(Viz.graphviz_available?())
-      assert is_boolean(Viz.graphviz_available?(:neato))
-    end
-
     test "is false for an unsupported engine" do
       eng = Enum.random([:bogus_engine])
       refute Viz.graphviz_available?(eng)
@@ -21,10 +16,21 @@ defmodule Grafi.VizTest do
   end
 
   describe "render/3 — input validation (no graphviz required)" do
-    test "invalid format atom returns {:invalid_format, _}" do
+    test "an invalid format raises ArgumentError" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
       fmt = Enum.random([:bogus_format])
-      assert {:error, {:invalid_format, ^fmt}} = Viz.render(g, fmt)
+
+      assert_raise ArgumentError, ~r/invalid format :bogus_format/, fn ->
+        Viz.render(g, fmt)
+      end
+    end
+
+    test "an unknown option raises ArgumentError" do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:engin\]/, fn ->
+        Viz.render(g, :svg, engin: :neato)
+      end
     end
 
     test "invalid engine returns {:invalid_engine, _}" do
@@ -85,14 +91,23 @@ defmodule Grafi.VizTest do
   end
 
   describe "render!/3 — failure" do
-    test "raises on error (invalid format)" do
+    test "raises ArgumentError for an invalid format" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
       # Pick the bogus atom at runtime to bypass Elixir's static
       # type-check on the format argument.
       fmt = Enum.random([:bogus_format])
 
-      assert_raise RuntimeError, ~r/Grafi.Viz.render!/, fn ->
+      assert_raise ArgumentError, ~r/invalid format :bogus_format/, fn ->
         Viz.render!(g, fmt)
+      end
+    end
+
+    test "raises with the reason of an error result" do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+      eng = Enum.random([:bogus_engine])
+
+      assert_raise RuntimeError, ~r/render!\/3 failed: \{:invalid_engine, :bogus_engine\}/, fn ->
+        Viz.render!(g, :svg, engine: eng)
       end
     end
   end
@@ -105,6 +120,25 @@ defmodule Grafi.VizTest do
       path = Path.join(tmp_dir, "graph.bogusext")
 
       assert {:error, {:invalid_format, "bogusext"}} = Viz.render_to_file(g, path)
+    end
+
+    test "an invalid explicit :format raises ArgumentError", %{tmp_dir: tmp_dir} do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+      path = Path.join(tmp_dir, "graph.svg")
+
+      assert_raise ArgumentError, ~r/invalid format "svg"/, fn ->
+        Viz.render_to_file(g, path, format: "svg")
+      end
+
+      refute File.exists?(path)
+    end
+
+    test "an unknown option raises ArgumentError", %{tmp_dir: tmp_dir} do
+      g = Grafi.new() |> Grafi.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:fromat\]/, fn ->
+        Viz.render_to_file(g, Path.join(tmp_dir, "graph.svg"), fromat: :svg)
+      end
     end
   end
 

@@ -82,6 +82,8 @@ defmodule Grafi.MixProject do
       {:elixir_make, "~> 0.10", runtime: false},
       # Not optional: consumers need it to fetch artefacts or build from source.
       {:cc_precompiler, "~> 0.1.11", runtime: false},
+      # Optional: Livebook renders a Grafi.Graph as Mermaid when present.
+      {:kino, "~> 0.14", optional: true},
 
       # Dev / test
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},

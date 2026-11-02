@@ -20,7 +20,7 @@ defmodule Grafi.SerializeTest do
         |> Grafi.add_edge(:x, :y)
 
       dot = Grafi.to_dot(g)
-      assert dot =~ "graph"
+      assert dot =~ ~r/^graph /
       assert dot =~ "--"
     end
   end
@@ -34,7 +34,7 @@ defmodule Grafi.SerializeTest do
         |> Grafi.add_edge(:a, :c, weight: 7.0)
 
       json = Grafi.to_json(g)
-      g2 = Grafi.from_json(json)
+      {:ok, g2} = Grafi.from_json(json)
 
       # After JSON round-trip, vertex IDs become strings
       assert g2.type == :directed
@@ -58,7 +58,7 @@ defmodule Grafi.SerializeTest do
         |> Grafi.add_edge(:y, :z)
 
       json = Grafi.to_json(g)
-      g2 = Grafi.from_json(json)
+      {:ok, g2} = Grafi.from_json(json)
 
       # After JSON round-trip, vertex IDs become strings
       assert g2.type == :undirected
@@ -71,7 +71,7 @@ defmodule Grafi.SerializeTest do
     test "empty graph survives to_json |> from_json" do
       g = Grafi.new()
       json = Grafi.to_json(g)
-      g2 = Grafi.from_json(json)
+      {:ok, g2} = Grafi.from_json(json)
 
       assert g2.type == :directed
       assert Graph.num_vertices(g2) == 0
@@ -110,7 +110,7 @@ defmodule Grafi.SerializeTest do
       json =
         ~s({"type":"directed","vertices":[{"id":"a"},{"id":"b"}],"edges":[{"from":"a","to":"b","weight":0}]})
 
-      g = Grafi.from_json(json)
+      {:ok, g} = Grafi.from_json(json)
       [edge] = Graph.edges_between(g, "a", "b")
       assert edge.weight == 0
     end
@@ -119,7 +119,7 @@ defmodule Grafi.SerializeTest do
       json =
         ~s({"type":"directed","vertices":[{"id":"a"},{"id":"b"}],"edges":[{"from":"a","to":"b"}]})
 
-      g = Grafi.from_json(json)
+      {:ok, g} = Grafi.from_json(json)
       [edge] = Graph.edges_between(g, "a", "b")
       assert edge.weight == 1.0
     end
@@ -151,23 +151,42 @@ defmodule Grafi.SerializeTest do
   describe "facade forwards decoder options" do
     @sample Grafi.new() |> Grafi.add_edge(:a, :b) |> Grafi.add_edge(:b, :c)
 
-    for {fun, to} <- [
-          from_json: :to_json,
-          from_graphml: :to_graphml,
-          from_gexf: :to_gexf,
-          from_pajek: :to_pajek,
-          from_edge_list: :to_edge_list,
-          from_adjacency_list: :to_adjacency_list,
-          from_matrix_market: :to_matrix_market
+    for {fun, bang, to} <- [
+          {:from_json, :from_json!, :to_json},
+          {:from_graphml, :from_graphml!, :to_graphml},
+          {:from_gexf, :from_gexf!, :to_gexf},
+          {:from_pajek, :from_pajek!, :to_pajek},
+          {:from_edge_list, :from_edge_list!, :to_edge_list},
+          {:from_adjacency_list, :from_adjacency_list!, :to_adjacency_list},
+          {:from_matrix_market, :from_matrix_market!, :to_matrix_market}
         ] do
       test "Grafi.#{fun}/2 honours :max_bytes" do
         text = apply(Grafi, unquote(to), [@sample])
-        assert %Grafi.Graph{} = apply(Grafi, unquote(fun), [text])
+        assert {:ok, %Grafi.Graph{}} = apply(Grafi, unquote(fun), [text])
 
         assert {:error, {:too_large, size, 1}} =
                  apply(Grafi, unquote(fun), [text, [max_bytes: 1]])
 
         assert size == byte_size(text)
+      end
+
+      test "Grafi.#{bang}/2 returns the graph or raises ArgumentError" do
+        text = apply(Grafi, unquote(to), [@sample])
+        bang = unquote(bang)
+
+        assert %Grafi.Graph{num_edges: 2} = apply(Grafi, bang, [text])
+
+        assert_raise ArgumentError, ~r/too_large/, fn ->
+          apply(Grafi, bang, [text, [max_bytes: 1]])
+        end
+      end
+
+      test "Grafi.#{fun}/2 rejects unknown options" do
+        text = apply(Grafi, unquote(to), [@sample])
+
+        assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn ->
+          apply(Grafi, unquote(fun), [text, [bogus: 1]])
+        end
       end
     end
 
@@ -176,6 +195,28 @@ defmodule Grafi.SerializeTest do
 
       assert {:error, {:too_many_vertices, _}} =
                Grafi.from_matrix_market(text, max_vertices: 1)
+    end
+  end
+
+  describe "encoders validate options" do
+    for fun <- [
+          :to_dot,
+          :to_mermaid,
+          :to_markdown,
+          :to_graphml,
+          :to_gexf,
+          :to_pajek,
+          :to_edge_list,
+          :to_adjacency_list,
+          :to_matrix_market
+        ] do
+      test "Grafi.#{fun}/2 rejects unknown options" do
+        g = Grafi.new() |> Grafi.add_edge(:a, :b)
+
+        assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn ->
+          apply(Grafi, unquote(fun), [g, [bogus: 1]])
+        end
+      end
     end
   end
 end

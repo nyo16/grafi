@@ -84,12 +84,26 @@ defmodule Grafi.Serialize.MermaidTest do
 
     test "invalid :direction raises ArgumentError" do
       g = Graph.new() |> Graph.add_edge(:a, :b)
-      assert_raise ArgumentError, fn -> Mermaid.to_mermaid(g, direction: :diagonal) end
+
+      assert_raise ArgumentError, ~r/invalid :direction :diagonal/, fn ->
+        Mermaid.to_mermaid(g, direction: :diagonal)
+      end
     end
 
     test "invalid :weights raises ArgumentError" do
       g = Graph.new() |> Graph.add_edge(:a, :b)
-      assert_raise ArgumentError, fn -> Mermaid.to_mermaid(g, weights: :maybe) end
+
+      assert_raise ArgumentError, ~r/invalid :weights :maybe/, fn ->
+        Mermaid.to_mermaid(g, weights: :maybe)
+      end
+    end
+
+    test "an unknown option raises ArgumentError" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:graph_typ\]/, fn ->
+        Mermaid.to_mermaid(g, graph_typ: :graph)
+      end
     end
 
     test "empty graph still emits a valid header" do
@@ -184,6 +198,51 @@ defmodule Grafi.Serialize.MermaidTest do
 
       assert out =~ ~s(v0["/x/"])
       assert out =~ ~s(v1["y-z"])
+    end
+  end
+
+  describe "to_markdown/2" do
+    test "wraps the mermaid source in a fenced markdown block" do
+      g =
+        Graph.new()
+        |> Graph.add_edges([{:athens, :sparta, weight: 210.0}, {:athens, :corinth}])
+
+      assert Mermaid.to_markdown(g, direction: :lr) ==
+               "```mermaid\n" <> Mermaid.to_mermaid(g, direction: :lr) <> "\n```"
+    end
+
+    test "a label containing a code fence cannot close the markdown fence" do
+      g =
+        Graph.new()
+        |> Graph.add_vertex("x\n```\n# injected")
+        |> Graph.add_edge(:a, :b, label: "```")
+
+      md = Mermaid.to_markdown(g)
+      fence_lines = md |> String.split(["\r\n", "\n", "\r"]) |> Enum.filter(&(&1 =~ "```"))
+
+      assert fence_lines == ["```mermaid", "```"]
+    end
+
+    test "validates options like to_mermaid/2" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/invalid :direction :up/, fn ->
+        Mermaid.to_markdown(g, direction: :up)
+      end
+    end
+  end
+
+  describe "Kino.Render" do
+    test "a graph renders as a Mermaid diagram tab plus the inspect output" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert %{type: :tabs, labels: ["Graph", "Raw"], outputs: [diagram, raw]} =
+               Kino.Render.to_livebook(g)
+
+      assert %{type: :js, js_view: %{assets: %{archive_path: path}}} = diagram
+      assert path =~ "Kino_Mermaid"
+      assert %{type: :terminal_text, text: text} = raw
+      assert text =~ "#Grafi.Graph<directed, V: "
     end
   end
 end

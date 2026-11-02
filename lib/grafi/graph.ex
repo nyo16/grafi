@@ -15,6 +15,28 @@ defmodule Grafi.Graph do
       iex> Grafi.Graph.new()
       ...>   |> Grafi.Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
       #Grafi.Graph<directed, V: 3, E: 3>
+
+  ## Memory
+
+  Measured with `:erts_debug.size/1` on random graphs (2,000 integer
+  vertices, 20,000 edges, 8-byte words):
+
+    * a directed edge costs about 17 words (~135 bytes): one `Grafi.Edge`
+      struct, shared by the `out_edges` and `in_edges` maps, plus an entry
+      in each map;
+    * an undirected edge costs about 33 words (~265 bytes), since it is
+      stored once per direction;
+    * a parallel edge between an already-connected pair costs about 12
+      words directed and 24 undirected;
+    * a vertex costs about 18 words before any edge. Its id is a key in
+      `vertices`, `out_edges`, `in_edges`, `out_degrees` and `in_degrees`
+      (and `vertex_labels` when labelled), so large ids are referenced
+      five times; the cached degree maps trade that duplication for O(log
+      V) `out_degree/2` and `in_degree/2`.
+
+  Copying a graph to another process or to ETS flattens the shared edge
+  structs (`:erts_debug.flat_size/1`): about 40 words per directed edge
+  and 80 per undirected edge.
   """
 
   alias Grafi.Edge
@@ -67,7 +89,8 @@ defmodule Grafi.Graph do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    type = Keyword.get(opts, :type, :directed)
+    opts = Keyword.validate!(opts, type: :directed)
+    type = opts[:type]
 
     if type not in [:directed, :undirected],
       do: raise(ArgumentError, "type must be :directed or :undirected")
@@ -80,6 +103,8 @@ defmodule Grafi.Graph do
   @doc "Adds a vertex to the graph, optionally with a label."
   @spec add_vertex(t(), vertex_id(), keyword()) :: t()
   def add_vertex(%__MODULE__{} = g, v, opts \\ []) do
+    opts = Keyword.validate!(opts, [:label])
+
     if Map.has_key?(g.vertices, v) do
       maybe_set_label(g, v, opts)
     else
@@ -190,12 +215,13 @@ defmodule Grafi.Graph do
   """
   @spec add_edge(t(), vertex_id(), vertex_id(), keyword()) :: t()
   def add_edge(%__MODULE__{} = g, v1, v2, opts \\ []) do
-    weight = Keyword.get(opts, :weight, 1.0)
+    opts = Keyword.validate!(opts, weight: 1.0, label: nil)
+    weight = opts[:weight]
 
     if not is_number(weight),
       do: raise(ArgumentError, "expected :weight to be a number, got: #{inspect(weight)}")
 
-    label = Keyword.get(opts, :label)
+    label = opts[:label]
     edge = %Edge{from: v1, to: v2, weight: weight, label: label}
 
     g = g |> add_vertex(v1) |> add_vertex(v2)
@@ -600,8 +626,18 @@ defmodule Grafi.Graph do
   # ── Protocols ─────────────────────────────────────────────────────────
 
   defimpl Inspect do
-    def inspect(%Grafi.Graph{} = g, _opts) do
-      "#Grafi.Graph<#{g.type}, V: #{g.num_vertices}, E: #{g.num_edges}>"
+    import Inspect.Algebra
+
+    def inspect(%Grafi.Graph{} = g, opts) do
+      concat([
+        "#Grafi.Graph<",
+        Atom.to_string(g.type),
+        ", V: ",
+        to_doc(g.num_vertices, opts),
+        ", E: ",
+        to_doc(g.num_edges, opts),
+        ">"
+      ])
     end
   end
 

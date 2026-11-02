@@ -73,19 +73,19 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
             id_type <- member_of([:integer, :simple_string, :string]),
             g <- Generators.graph(id_type: id_type, vertex_labels: true, edge_labels: true)
           ) do
-      assert_same_graph(JSON.from_json(JSON.to_json(g)), g, :with_labels)
+      assert_same_graph(JSON.from_json!(JSON.to_json(g)), g, :with_labels)
     end
   end
 
   property "GraphML round-trips graphs exactly, ids as text" do
     check all(g <- Generators.graph(vertex_labels: true, edge_labels: true)) do
-      assert_same_graph(GraphML.from_graphml(GraphML.to_graphml(g)), stringify(g), :with_labels)
+      assert_same_graph(GraphML.from_graphml!(GraphML.to_graphml(g)), stringify(g), :with_labels)
     end
   end
 
   property "GEXF round-trips graphs exactly, ids as text" do
     check all(g <- Generators.graph(vertex_labels: true, edge_labels: true)) do
-      assert_same_graph(GEXF.from_gexf(GEXF.to_gexf(g)), stringify(g), :with_labels)
+      assert_same_graph(GEXF.from_gexf!(GEXF.to_gexf(g)), stringify(g), :with_labels)
     end
   end
 
@@ -93,7 +93,7 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
 
   property "Pajek round-trips type, vertices, edges and weights, ids as text" do
     check all(g <- Generators.graph()) do
-      assert_same_graph(Pajek.from_pajek(Pajek.to_pajek(g)), stringify(g), :weights_only)
+      assert_same_graph(Pajek.from_pajek!(Pajek.to_pajek(g)), stringify(g), :weights_only)
     end
   end
 
@@ -103,7 +103,7 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
             g <- Generators.graph(id_type: id_type)
           ) do
       expected = stringify(g)
-      decoded = EdgeList.from_edge_list(EdgeList.to_edge_list(g), directed: g.type == :directed)
+      {:ok, decoded} = EdgeList.from_edge_list(EdgeList.to_edge_list(g), type: g.type)
 
       assert %Graph{} = decoded
       assert decoded.type == g.type
@@ -119,7 +119,7 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
           ) do
       sep_opts = if sep, do: [separator: sep], else: []
       text = AdjacencyList.to_adjacency_list(g, [collapse_multi_edges: collapse?] ++ sep_opts)
-      decoded = AdjacencyList.from_adjacency_list(text, sep_opts)
+      {:ok, decoded} = AdjacencyList.from_adjacency_list(text, sep_opts)
 
       assert %Graph{} = decoded
       assert vertices(decoded) == vertices(g)
@@ -134,7 +134,7 @@ defmodule Grafi.Serialize.RoundTripPropertyTest do
 
   property "MatrixMarket round-trips integer, atom and string ids and summed pair weights" do
     check all(g <- Generators.graph()) do
-      decoded = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+      {:ok, decoded} = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
 
       sums = fn h ->
         Enum.reduce(
