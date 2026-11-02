@@ -279,16 +279,30 @@ defmodule Grafi.Serialize.GraphMLTest do
       assert [%{weight: 1.0, label: nil}] = Graph.edges_between(g2, "c", "d")
     end
 
+    # Linear-time decoding: 4x the input should take about 4x as long, not
+    # about 16x (the old bodied-regex parsers were quadratic). A ratio rather
+    # than a wall-clock budget, so slow runners and older Elixir/OTP versions
+    # don't fail it; best of 3 to damp GC noise.
     @tag :slow
-    test "10k vertices / 50k edges round-trip in under a second" do
-      g = large_graph(10_000, 50_000)
+    test "decoding time grows linearly up to 10k vertices / 50k edges" do
+      small = large_graph(2_500, 12_500) |> GraphML.to_graphml()
+      large = large_graph(10_000, 50_000) |> GraphML.to_graphml()
 
-      {micros, g2} = :timer.tc(fn -> g |> GraphML.to_graphml() |> GraphML.from_graphml() end)
+      best = fn xml ->
+        Enum.min(for _ <- 1..3, do: elem(:timer.tc(GraphML, :from_graphml, [xml]), 0))
+      end
 
+      g2 = GraphML.from_graphml(large)
       assert Graph.num_vertices(g2) == 10_000
       assert Graph.num_edges(g2) == 50_000
       assert Graph.label(g2, "v0") == "L0"
-      assert micros < 1_000_000, "round-trip took #{div(micros, 1000)} ms"
+
+      {t_small, t_large} = {best.(small), best.(large)}
+
+      assert t_large < 8 * t_small,
+             "4x the input took #{Float.round(t_large / t_small, 1)}x as long"
+
+      assert t_large < 10_000_000, "decoding took #{div(t_large, 1000)} ms"
     end
   end
 
