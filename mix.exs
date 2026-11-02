@@ -20,8 +20,13 @@ defmodule Grafi.MixProject do
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         flags: [:unmatched_returns, :error_handling]
       ],
-      # Floor for the merged three-engine-mode coverage in CI (86.9% when set).
-      test_coverage: [summary: [threshold: 85]],
+      # Floor for the merged three-engine-mode coverage in CI (92.7% when
+      # set): rounded down to a multiple of 5. Inspect impls and the test
+      # generators are not measured; the NIF stub bodies are.
+      test_coverage: [
+        summary: [threshold: 90],
+        ignore_modules: [~r/^Inspect\./, Grafi.Test.Generators]
+      ],
       # The precompiled NIF statically links igraph and is GPL-3.0-or-later,
       # so a consumer downloads it only after opting in, in their
       # config/config.exs:
