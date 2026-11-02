@@ -50,13 +50,17 @@ All notable changes to Grafi are documented here, following
   `source`. See Fixed below.
 - **Edge weights must be numbers.** `Grafi.Graph.add_edge/4` raises
   `ArgumentError` for any other `:weight`. Decoders return
-  `{:error, {:invalid_weight, value}}` instead of silently using 1.0.
+  `{:error, {:invalid_weight, value}}` instead of silently using 1.0,
+  including JSON integers outside the float range.
 - **Decoders enforce input limits:**
   - every `from_*` decoder takes `:max_bytes`, default 64 MiB
     (`:infinity` allowed), and returns `{:error, {:too_large, size, max}}`;
     the GraphML/GEXF `{:error, :input_too_large}` is gone;
-  - MatrixMarket takes `:max_vertices`, default 10_000_000, and checks it
-    before allocating anything.
+  - MatrixMarket takes `:max_vertices`, default 1_000_000 (about 250
+    bytes per vertex once built), and checks it before allocating
+    anything;
+  - index, size and count tokens longer than 19 characters (Pajek,
+    MatrixMarket) are rejected.
 
   The `Grafi.from_*` facade functions pass options through.
 - **`vertices_as_atoms: true` never creates atoms.** In the edge list and
@@ -66,24 +70,64 @@ All notable changes to Grafi are documented here, following
   - Pajek rejects unknown sections (`{:unsupported_section, line}`) and
     malformed or duplicate vertex lines;
   - MatrixMarket reports `{:index_out_of_range, i}`,
-    `{:nnz_mismatch, declared, seen}` and negative sizes;
-  - GraphML/GEXF report `{:unclosed_element, tag}`;
+    `{:nnz_mismatch, declared, seen}`, negative sizes, and
+    `{:bad_vertex_comment, i}` for colliding vertex ids;
+  - GraphML/GEXF report `{:unclosed_element, tag}` (also for a
+    mismatched end tag), `{:malformed_tag, text}`,
+    `{:duplicate_attribute, name}`, `{:unclosed_markup, kind}`,
+    `{:unsupported_markup, "<!DOCTYPE"}` and `{:invalid_char_ref, ref}`
+    (a malformed, overlong or XML-illegal numeric reference used to be
+    kept as is, or decoded to NUL);
+  - JSON rejects map or list labels with `{:invalid_label, value}`;
+  - error payloads quote at most 200 bytes of input;
   - decoders no longer catch arbitrary exceptions and turn them into
     error strings.
+- **The edge list decoder detects weights per line:** in `"a b\nc d 2.5"`
+  the second edge now weighs 2.5 (it used to be 1.0, decided by the
+  first line), and a line with extra columns is
+  `{:error, {:malformed_line, line}}` unless `weighted: false`.
+- **Encoders refuse what their format can't carry**, raising
+  `ArgumentError`:
+  - GraphML/GEXF: ids or labels that are invalid UTF-8 or contain
+    XML-illegal characters (control characters other than tab, LF and
+    CR; U+FFFE/U+FFFF). Invalid UTF-8 used to be silently truncated, so
+    distinct ids could merge;
+  - edge list and adjacency list: ids that can't round-trip (empty,
+    starting with `#`, containing a newline, the separator, or any
+    whitespace with the default separator; tuple ids), and a multi-line
+    `:comment`.
+- **Output changes:**
+  - GraphML/GEXF write tab, LF and CR in attribute values as character
+    references, CR in text as `&#13;`, and leading/trailing whitespace of
+    GraphML text as character references;
+  - MatrixMarket writes empty strings and strings starting with `int:`,
+    `atom:`, `float:` or `str:` as `str:…`, and percent-encodes all
+    whitespace in ids. Older files still decode; `%` not followed by two
+    hex digits is now literal text, and `int:` ids longer than 1 KiB stay
+    strings;
+  - DOT quotes weights in exponent notation (`weight="1.0e20"`);
+  - Mermaid: see below.
 - **Pajek semantics:** a file mixing `*Arcs` and `*Edges` decodes to a
   directed graph with `*Edges` as arcs in both directions. Vertices that
   share a label become `{label, index}` ids.
 - **Mermaid label escaping:** newlines become `#10;`, backticks `#96;`,
-  `|` `#124;`, `"` `#quot;` and `#` `#35;`. Edge-label pipes used to be
-  `\|`, and newlines used to become spaces.
+  `|` `#124;`, `"` `#quot;`, `#` `#35;`, `%` `#37;`, `<` `#lt;`, `>`
+  `#gt;`, `&` `#amp;` and `'` `#39;`. Node labels other than ASCII
+  letters, digits and `_` are quoted (`["..."]`). Whole-float weights use
+  the shared format (`1.0e20`, not `100000000000000000000.0`). Edge-label
+  pipes used to be `\|`, and newlines used to become spaces.
 - **DOT quoting:** a `:name` that is not a plain identifier, and DOT
   keywords used as ids, are quoted.
 - **`Grafi.Viz`:**
-  - `graphviz_available?/0` becomes `graphviz_available?/1` (default
-    `:dot`) and checks that engine's own executable;
-  - `render/3` takes `:timeout` (default 30 s) and returns
+  - `graphviz_available?` takes an optional engine (default `:dot`) and
+    checks that engine's own executable;
+  - `render/3` takes `:timeout` (default 30 s; a positive integer or
+    `:infinity`, otherwise `ArgumentError`) and returns
     `{:error, :timeout}`;
-  - `{:graphviz_failed, output, code}` carries Graphviz's real output.
+  - `{:graphviz_failed, output, code}` carries Graphviz's real output
+    (capped at 1 MiB); Graphviz warnings on a successful render are
+    dropped;
+  - temp-file failures return `{:error, {:tempfile_error, reason}}`.
 
 ### Added (NIF safety)
 - `engine: :auto | :nif | :elixir` option on every NIF-capable
@@ -189,22 +233,41 @@ All notable changes to Grafi are documented here, following
   label can no longer inject a section or an edge.
 - A MatrixMarket header declaring huge dimensions no longer allocates
   them (Sec H1).
-- GraphML and GEXF use a linear tokenizer:
+- Decoder memory is bounded by the input: the line-based decoders
+  stream lines (64 MiB of newlines used to take 43 s and about 12 GB),
+  and decoded ids, labels and error payloads no longer keep the whole
+  input binary alive.
+- GraphML and GEXF share one linear scanner:
   - a 10k-vertex/50k-edge round-trip takes under a second (GEXF used to
-    be quadratic: over 15 minutes);
-  - an attribute value containing `id=` is no longer read as the id;
+    be quadratic: over 15 minutes), and hostile input such as unclosed
+    `<data>` tags stays linear;
+  - an attribute value containing `id=` is no longer read as the id, a
+    quoted `>` no longer ends a tag, `<node-x>` is not a node, and
+    `ñtarget=` is not `target=`;
+  - comments, processing instructions and CDATA are handled as XML does,
+    so markup inside them no longer adds vertices or edges;
   - a self-closed node no longer takes the next node's label;
   - single-quoted attributes and numeric character references are
     decoded;
-  - GraphML labels with leading or trailing whitespace round-trip.
-- The edge list decoder honours `:separator` and detects weights per
-  line; the adjacency list decoder accepts `:separator`.
-- Numbers in input never raise: overflowing or 400-digit values are
-  rejected as invalid weights.
+  - GraphML labels with leading or trailing whitespace, or a combining
+    mark after whitespace, round-trip exactly.
+- The edge list decoder honours `:separator`; the adjacency list decoder
+  accepts `:separator`.
+- Numbers in input never raise, on Elixir 1.18 to 1.20: overflowing or
+  400-digit values are rejected as invalid weights, and MatrixMarket
+  `float:` ids fall back to text.
+- MatrixMarket string ids such as `"int:5"` or `"atom:x"` no longer come
+  back as an integer or an atom.
+- Edge list and adjacency list ids can no longer inject edges or
+  comments (the encoders raise instead).
 - DOT `:name` and labels, and Mermaid/Kino labels, can no longer inject
-  statements or close the enclosing code fence.
-- `Grafi.Viz` creates private (0600), exclusive temp files and runs
-  Graphviz through a port with a timeout that kills the OS process.
+  statements, Mermaid directives (`%%{init}%%`) or HTML, or close the
+  enclosing code fence.
+- JSON integer weights beyond the float range no longer raise
+  `ArithmeticError` later.
+- `Grafi.Viz` renders in a private (0700) per-render directory and runs
+  Graphviz through a port with a timeout that kills the OS process; a
+  caller trapping exits no longer receives the port's `:EXIT`.
 
 ### Fixed (packaging)
 - Using grafi as a dependency failed to compile: `cc_precompiler` was an
