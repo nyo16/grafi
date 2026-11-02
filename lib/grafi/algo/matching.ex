@@ -86,7 +86,7 @@ defmodule Grafi.Algo.Matching do
           {l, Enum.reject(neigh, &MapSet.member?(left_set, &1))}
         end)
 
-      {pair_l, pair_r} = run_hk(lefts, adj)
+      {pair_l, pair_r} = do_hk(lefts, adj, %{}, %{})
 
       matching =
         pair_l
@@ -110,110 +110,99 @@ defmodule Grafi.Algo.Matching do
     end
   end
 
-  # Main HK loop: alternate layered BFS + DFS augmentation until BFS can
-  # no longer reach an unmatched right vertex.
-  defp run_hk(lefts, adj) do
-    do_hk(lefts, adj, %{}, %{})
-  end
-
-  defp do_hk(lefts, adj, pair_l, pair_r) do
-    case hk_bfs(lefts, adj, pair_l, pair_r) do
+  # Main HK loop over the still-free left vertices. Each phase layers the
+  # graph by BFS from them, up to the first layer `limit` that touches a
+  # free right vertex, then augments along vertex-disjoint shortest
+  # augmenting paths by DFS. Stops when the BFS reaches no free right
+  # vertex.
+  defp do_hk(free, adj, pair_l, pair_r) do
+    case hk_bfs(free, adj, pair_r) do
       :done ->
         {pair_l, pair_r}
 
-      {:ok, dist} ->
-        {pair_l, pair_r, _dist} =
-          Enum.reduce(lefts, {pair_l, pair_r, dist}, fn l, {pl, pr, d} ->
-            if Map.has_key?(pl, l) do
-              {pl, pr, d}
-            else
-              case hk_dfs(l, adj, pl, pr, d) do
-                {:ok, pl2, pr2, d2} -> {pl2, pr2, d2}
-                {:fail, d2} -> {pl, pr, d2}
-              end
+      {:ok, dist, limit} ->
+        {still_free, pair_l, pair_r, _dist} =
+          Enum.reduce(free, {[], pair_l, pair_r, dist}, fn l, {fr, pl, pr, d} ->
+            case hk_dfs(l, 0, adj, pl, pr, d, limit) do
+              {:ok, pl2, pr2, d2} -> {fr, pl2, pr2, d2}
+              {:fail, d2} -> {[l | fr], pl, pr, d2}
             end
           end)
 
-        do_hk(lefts, adj, pair_l, pair_r)
+        do_hk(:lists.reverse(still_free), adj, pair_l, pair_r)
     end
   end
 
-  # Layered BFS from all currently unmatched left vertices. Returns
-  # `{:ok, dist}` if an augmenting path was discovered (so DFS should
-  # follow), or `:done` if no unmatched right vertex is reachable (the
-  # current matching is maximum).
-  defp hk_bfs(lefts, adj, pair_l, pair_r) do
-    {dist, queue} =
-      Enum.reduce(lefts, {%{}, :queue.new()}, fn l, {d, q} ->
-        if Map.has_key?(pair_l, l) do
-          {Map.put(d, l, :inf), q}
-        else
-          {Map.put(d, l, 0), :queue.in(l, q)}
-        end
-      end)
-
-    case hk_bfs_loop(queue, dist, adj, pair_r, false) do
-      {false, _dist} -> :done
-      {true, dist} -> {:ok, dist}
-    end
+  # Layered BFS from the free left vertices (layer 0). `dist` maps each
+  # reached left vertex to its layer. Halts as soon as a layer-`limit`
+  # vertex has a free right neighbour and returns `{:ok, dist, limit}`:
+  # every shortest augmenting path ends there, so deeper layers are never
+  # needed. Returns `:done` if no free right vertex is reachable (the
+  # matching is maximum).
+  defp hk_bfs(free, adj, pair_r) do
+    dist = Map.new(free, &{&1, 0})
+    hk_bfs_loop(:queue.from_list(free), dist, adj, pair_r)
   end
 
-  defp hk_bfs_loop(queue, dist, adj, pair_r, found) do
+  defp hk_bfs_loop(queue, dist, adj, pair_r) do
     case :queue.out(queue) do
       {:empty, _} ->
-        {found, dist}
+        :done
 
       {{:value, u}, rest} ->
         du = Map.fetch!(dist, u)
 
-        {dist, queue, found} =
-          Enum.reduce(Map.get(adj, u, []), {dist, rest, found}, fn v, {d, q, f} ->
-            case Map.get(pair_r, v) do
-              nil ->
-                # Unmatched right vertex reached: augmenting path exists.
-                {d, q, true}
-
-              next_l ->
-                if Map.get(d, next_l, :inf) == :inf do
-                  {Map.put(d, next_l, du + 1), :queue.in(next_l, q), f}
-                else
-                  {d, q, f}
-                end
-            end
-          end)
-
-        hk_bfs_loop(queue, dist, adj, pair_r, found)
+        case hk_expand(Map.get(adj, u, []), du + 1, dist, rest, pair_r) do
+          :free -> {:ok, dist, du}
+          {dist, queue} -> hk_bfs_loop(queue, dist, adj, pair_r)
+        end
     end
   end
 
-  # DFS along the layered graph from a left vertex `u`. Steps from `u`
-  # to a right neighbour `v`, then (if v is matched) recurses on
-  # `pair_r[v]` only if it sits in the next BFS layer.
-  defp hk_dfs(u, adj, pair_l, pair_r, dist) do
-    do_hk_dfs(Map.get(adj, u, []), u, adj, pair_l, pair_r, dist)
-  end
+  defp hk_expand([], _next, dist, queue, _pair_r), do: {dist, queue}
 
-  defp do_hk_dfs([], u, _adj, _pair_l, _pair_r, dist) do
-    {:fail, Map.put(dist, u, :inf)}
-  end
-
-  defp do_hk_dfs([v | rest], u, adj, pair_l, pair_r, dist) do
+  defp hk_expand([v | rest], next, dist, queue, pair_r) do
     case Map.get(pair_r, v) do
       nil ->
+        :free
+
+      l when is_map_key(dist, l) ->
+        hk_expand(rest, next, dist, queue, pair_r)
+
+      l ->
+        hk_expand(rest, next, Map.put(dist, l, next), :queue.in(l, queue), pair_r)
+    end
+  end
+
+  # DFS from the left vertex `u` (on layer `du`) along the layered graph:
+  # to a free right neighbour if `u` is on the last layer, else through a
+  # matched right neighbour `v` to `pair_r[v]` on layer `du + 1`. A vertex
+  # with no augmenting path is dropped from `dist`, so no later DFS in the
+  # phase revisits it.
+  defp hk_dfs(u, du, adj, pair_l, pair_r, dist, limit) do
+    do_hk_dfs(Map.get(adj, u, []), u, du, adj, pair_l, pair_r, dist, limit)
+  end
+
+  defp do_hk_dfs([], u, _du, _adj, _pair_l, _pair_r, dist, _limit) do
+    {:fail, Map.delete(dist, u)}
+  end
+
+  defp do_hk_dfs([v | rest], u, du, adj, pair_l, pair_r, dist, limit) do
+    case Map.get(pair_r, v) do
+      nil when du == limit ->
         {:ok, Map.put(pair_l, u, v), Map.put(pair_r, v, u), dist}
 
-      next_l ->
-        if Map.get(dist, next_l, :inf) == Map.fetch!(dist, u) + 1 do
-          case hk_dfs(next_l, adj, pair_l, pair_r, dist) do
-            {:ok, pl, pr, d2} ->
-              {:ok, Map.put(pl, u, v), Map.put(pr, v, u), d2}
+      next_l when next_l != nil and du < limit and :erlang.map_get(next_l, dist) == du + 1 ->
+        case hk_dfs(next_l, du + 1, adj, pair_l, pair_r, dist, limit) do
+          {:ok, pl, pr, d2} ->
+            {:ok, Map.put(pl, u, v), Map.put(pr, v, u), d2}
 
-            {:fail, d2} ->
-              do_hk_dfs(rest, u, adj, pair_l, pair_r, d2)
-          end
-        else
-          do_hk_dfs(rest, u, adj, pair_l, pair_r, dist)
+          {:fail, d2} ->
+            do_hk_dfs(rest, u, du, adj, pair_l, pair_r, d2, limit)
         end
+
+      _ ->
+        do_hk_dfs(rest, u, du, adj, pair_l, pair_r, dist, limit)
     end
   end
 

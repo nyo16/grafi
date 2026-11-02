@@ -128,6 +128,34 @@ defmodule Grafi.Algo.MatchingTest do
       rs = Enum.map(matched_left, &Map.fetch!(m, &1))
       assert length(Enum.uniq(rs)) == length(rs)
     end
+
+    property "finds a maximum matching: its size is the unit-capacity max flow" do
+      check all(
+              type <- member_of([:undirected, :directed]),
+              edges <- list_of({integer(0..9), integer(0..9), boolean()}, max_length: 40)
+            ) do
+        g =
+          Enum.reduce(edges, Graph.new(type: type), fn {l, r, forward?}, g ->
+            if forward?,
+              do: Graph.add_edge(g, {:l, l}, {:r, r}),
+              else: Graph.add_edge(g, {:r, r}, {:l, l})
+          end)
+
+        lefts = for i <- 0..9, do: {:l, i}
+        assert {:ok, %{matching: m, size: size}} = Matching.hopcroft_karp(g, lefts)
+
+        pairs = for {{:l, _} = l, r} <- m, do: {l, r}
+        assert length(pairs) == size
+        assert map_size(m) == 2 * size
+
+        for {l, r} <- pairs do
+          assert m[r] == l
+          assert Graph.has_edge?(g, l, r) or Graph.has_edge?(g, r, l)
+        end
+
+        assert size == unit_max_flow(edges)
+      end
+    end
   end
 
   # ── Hungarian ────────────────────────────────────────────────────────
@@ -412,6 +440,24 @@ defmodule Grafi.Algo.MatchingTest do
   end
 
   # ── Helpers ──────────────────────────────────────────────────────────
+
+  # The size of a maximum matching, as the max flow of the unit network
+  # s -> {:l, i} -> {:r, j} -> t.
+  defp unit_max_flow(edges) do
+    pairs = edges |> Enum.map(fn {l, r, _} -> {{:l, l}, {:r, r}} end) |> Enum.uniq()
+    ls = pairs |> Enum.map(&elem(&1, 0)) |> Enum.uniq()
+    rs = pairs |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+
+    g =
+      Graph.new()
+      |> Graph.add_vertices([:s, :t])
+      |> Graph.add_edges(for {l, r} <- pairs, do: {l, r, weight: 1})
+      |> Graph.add_edges(for l <- ls, do: {:s, l, weight: 1})
+      |> Graph.add_edges(for r <- rs, do: {r, :t, weight: 1})
+
+    {:ok, %{flow: flow}} = Grafi.Algo.MaxFlow.dinic(g, :s, :t)
+    flow
+  end
 
   # Minimum-cost assignment of min(rows, cols) pairs, by dynamic programming
   # over the sets of used columns (transposing so rows <= cols).
