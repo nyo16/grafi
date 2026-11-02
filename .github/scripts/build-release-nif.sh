@@ -45,7 +45,7 @@ case "$(uname -s)" in
     esac
     erts_root=$(dirname "$(dirname "$erts_include")")
     docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
-      -v "$root:$root" -v "$erts_root:$erts_root:ro" \
+      -v "$root:$root" -v "$out:$out" -v "$erts_root:$erts_root:ro" \
       "$image" bash -c "$build_cmds"
     ;;
   Darwin)
