@@ -58,8 +58,11 @@ defmodule Grafi.Serialize.JSON do
       expected shape (missing `"type"`, `"vertices"`, or `"edges"`, or those
       fields have the wrong type).
     * `{:invalid_weight, value}` — an edge `"weight"` is present but is not a
-      number (a string, `null`, a boolean, an array or an object). A missing
-      weight defaults to `1.0`.
+      number (a string, `null`, a boolean, an array or an object), or is an
+      integer too large to convert to a float. A missing weight defaults to
+      `1.0`.
+    * `{:invalid_label, value}` — a vertex or edge `"label"` is an array or
+      an object; labels must be scalars.
     * `{:too_large, size, max}` — see `:max_bytes`.
   """
   @spec from_json(String.t(), keyword()) ::
@@ -67,6 +70,7 @@ defmodule Grafi.Serialize.JSON do
           | {:error,
              :malformed_json
              | {:invalid_weight, term()}
+             | {:invalid_label, list() | map()}
              | {:too_large, non_neg_integer(), pos_integer()}}
   def from_json(json, opts \\ [])
 
@@ -110,8 +114,10 @@ defmodule Grafi.Serialize.JSON do
   defp reduce_vertices(g, vertices) do
     Enum.reduce_while(vertices, {:ok, g}, fn
       %{"id" => id} = v, {:ok, acc} ->
-        opts = if v["label"], do: [label: v["label"]], else: []
-        {:cont, {:ok, Graph.add_vertex(acc, id, opts)}}
+        case fetch_label(v) do
+          {:ok, opts} -> {:cont, {:ok, Graph.add_vertex(acc, id, opts)}}
+          {:error, _} = error -> {:halt, error}
+        end
 
       _bad, _acc ->
         {:halt, {:error, :malformed_json}}
@@ -121,14 +127,11 @@ defmodule Grafi.Serialize.JSON do
   defp reduce_edges(g, edges) do
     Enum.reduce_while(edges, {:ok, g}, fn
       %{"from" => from, "to" => to} = e, {:ok, acc} ->
-        case fetch_weight(e) do
-          {:ok, weight} ->
-            opts = [weight: weight]
-            opts = if e["label"], do: Keyword.put(opts, :label, e["label"]), else: opts
-            {:cont, {:ok, Graph.add_edge(acc, from, to, opts)}}
-
-          {:error, _} = error ->
-            {:halt, error}
+        with {:ok, weight} <- fetch_weight(e),
+             {:ok, label_opts} <- fetch_label(e) do
+          {:cont, {:ok, Graph.add_edge(acc, from, to, [weight: weight] ++ label_opts)}}
+        else
+          {:error, _} = error -> {:halt, error}
         end
 
       _bad, _acc ->
@@ -136,11 +139,26 @@ defmodule Grafi.Serialize.JSON do
     end)
   end
 
+  # Integers beyond the float range would raise ArithmeticError wherever a
+  # weight meets a float. JSON floats are always finite (`1e400` does not
+  # decode).
+  @max_float_int trunc(1.797_693_134_862_315_7e308)
+
   defp fetch_weight(edge) do
     case Map.fetch(edge, "weight") do
       :error -> {:ok, 1.0}
-      {:ok, w} when is_number(w) -> {:ok, w}
+      {:ok, w} when is_float(w) -> {:ok, w}
+      {:ok, w} when is_integer(w) and abs(w) <= @max_float_int -> {:ok, w}
       {:ok, other} -> {:error, {:invalid_weight, other}}
+    end
+  end
+
+  # A falsy (absent, `null` or `false`) label means no label.
+  defp fetch_label(item) do
+    case item["label"] do
+      label when label in [nil, false] -> {:ok, []}
+      label when is_map(label) or is_list(label) -> {:error, {:invalid_label, label}}
+      label -> {:ok, [label: label]}
     end
   end
 

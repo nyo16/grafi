@@ -35,7 +35,9 @@ defmodule Grafi.Serialize.DOTTest do
     end
 
     test "control characters in the name raise" do
-      assert_raise ArgumentError, fn -> DOT.to_dot(Graph.new(), name: "a\0b") end
+      assert_raise ArgumentError, ~r/cannot contain control characters/, fn ->
+        DOT.to_dot(Graph.new(), name: "a\0b")
+      end
     end
   end
 
@@ -60,7 +62,27 @@ defmodule Grafi.Serialize.DOTTest do
 
     test "control characters in a label raise" do
       g = Graph.new() |> Graph.add_vertex(:a, label: "x\by")
-      assert_raise ArgumentError, fn -> DOT.to_dot(g) end
+      assert_raise ArgumentError, ~r/cannot contain control characters/, fn -> DOT.to_dot(g) end
+    end
+
+    test "tab, newline and carriage return are allowed" do
+      g = Graph.new() |> Graph.add_vertex(:a, label: "x\ty\nz\rw")
+      assert DOT.to_dot(g) =~ "z\rw"
+    end
+
+    # DOT numerals have no exponent, so `weight=1.0e20` would not be one token.
+    test "weights in exponent notation are quoted; plain numerals stay bare" do
+      g =
+        Graph.new()
+        |> Graph.add_edge(:a, :b, weight: 1.0e20)
+        |> Graph.add_edge(:b, :c, weight: -1.0e-300)
+        |> Graph.add_edge(:c, :d, weight: -2.5)
+
+      dot = DOT.to_dot(g)
+      assert dot =~ ~s(weight="1.0e20")
+      assert dot =~ ~s(weight="-1.0e-300")
+      assert dot =~ "weight=-2.5"
+      refute dot =~ ~r/weight=[^"\s\]]*e/
     end
   end
 
@@ -84,7 +106,26 @@ defmodule Grafi.Serialize.DOTTest do
 
     test "control characters in an id raise" do
       g = Graph.new() |> Graph.add_vertex("a\eb")
-      assert_raise ArgumentError, fn -> DOT.to_dot(g) end
+      assert_raise ArgumentError, ~r/cannot contain control characters/, fn -> DOT.to_dot(g) end
+    end
+  end
+
+  describe "Graphviz parsing" do
+    # Checks the output against a real Graphviz: ids and labels ending in
+    # backslashes, or holding `\"`, must not end or escape their quotes.
+    @describetag :graphviz
+    test "backslash runs cannot end or escape a quoted string" do
+      g =
+        Graph.new()
+        |> Graph.add_edge("a\\", "b\\\\", label: "c\\")
+        |> Graph.add_edge("d\\\"", "e", label: ~s(\\"; x -> y [label="))
+        |> Graph.add_vertex("f\\\\\\", label: "\\")
+
+      assert {:ok, json} = Grafi.Viz.render(g, :json)
+      out = JSON.decode!(json)
+
+      assert length(out["objects"]) == 5
+      assert length(out["edges"]) == 2
     end
   end
 end
