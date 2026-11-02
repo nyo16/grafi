@@ -101,8 +101,9 @@ jobs:
       - name: Merge coverage
         run: mix test.coverage
 
-      # Wall-clock budgets (e.g. the 10k-vertex GraphML/GEXF round-trips),
-      # excluded from the parallel runs above.
+      # Scaling-ratio checks (4x the input must take < 8x the time, best of
+      # 3, e.g. the 10k-vertex GraphML/GEXF round-trips), excluded from the
+      # parallel runs above. Gated on matrix.graphviz only to run them once.
       - name: Run slow tests alone
         if: matrix.graphviz
         run: mix test --only slow --max-cases 1
