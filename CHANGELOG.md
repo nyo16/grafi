@@ -128,6 +128,58 @@ All notable changes to Grafi are documented here, following
     (capped at 1 MiB); Graphviz warnings on a successful render are
     dropped;
   - temp-file failures return `{:error, {:tempfile_error, reason}}`.
+- **API conventions** (the "Conventions" section of the `Grafi` moduledoc):
+  - deserializers return `{:ok, graph}` or `{:error, reason}`, and each
+    has a raising `from_x!/2` (also on the `Grafi` facade);
+  - no path is `{:error, :no_path}` everywhere (`dijkstra`, `a_star`,
+    `Bidirectional.dijkstra`, `APSP.reconstruct_path`), `find_cycle/1`
+    returns `{:error, :no_cycle}`, `isomorphism/3` and
+    `subgraph_isomorphism/3` return `{:error, :no_isomorphism}`,
+    `count_subgraph_isomorphisms/3` returns `{:ok, count}`, and
+    `Bipartite.coloring/1` returns `{:error, {:not_bipartite, {u, v}}}`;
+  - a missing vertex is `{:error, :no_such_vertex}` from functions that
+    return `{:ok, _}` (`bellman_ford/2` used to return `{:ok, %{}}`,
+    `reconstruct_path/3`), and raises `ArgumentError` from functions that
+    return a plain value (`Traversal.bfs/2`, `dfs/2`, `dfs_post/2`,
+    `reachable?/3`, `reachable_from/2`, `Metrics.eccentricity/3`,
+    `clustering_coefficient/2`, `MST.prim/2`);
+  - unknown options raise `ArgumentError` in every public function;
+  - iteration knobs are `:max_iter` and `:tol`: `pagerank/2`'s
+    `:iterations`/`:tolerance` and `label_propagation_simple/2`'s
+    `:iterations` are gone;
+  - directedness is `type: :directed | :undirected`, default `:directed`,
+    replacing `directed:` in `Grafi.Generators` (whose default flips from
+    undirected to directed) and in the edge-list and adjacency-list
+    readers;
+  - `:maximize` defaults to `false` in both `hungarian/2` and
+    `weighted_bipartite_matching/3` (the latter used to maximise).
+- **Facade names mirror the module functions:** `Grafi.shortest_path` is
+  `Grafi.dijkstra`, `scc` is `strongly_connected_components`,
+  `components` is `connected_components`, `k_shortest_paths` is `yen`,
+  and `bipartite_matching` is `hopcroft_karp`. The few aliases are listed
+  in the moduledoc's "Facade names" table, every facade function has a
+  `@spec`, and `Grafi.max_flow/4` delegates to the new
+  `MaxFlow.max_flow/4` (an unknown `:algo` raises `ArgumentError`).
+- **Algorithm semantics:**
+  - `connected_components/1` is weak connectivity on directed graphs;
+  - `has_cycle?/1` and `find_cycle/1` follow undirected rules on
+    undirected graphs: a lone edge is not a cycle, while a self-loop, a
+    parallel pair or a triangle is. `Layout.sugiyama/2` and `levels/1`
+    accept undirected forests (they returned `{:error, :has_cycle}`);
+  - `condensation/1` vertices are integers (`strongly_connected_components/2`
+    order), each labelled with its sorted members;
+  - `label_propagation_simple/2` stops after a sweep with no change, and a
+    vertex tied for the most common label keeps its own;
+  - `DAG.add_edges/2` checks for a cycle once, after inserting every edge,
+    and its `CycleError` names an offending new edge; `DAG.layers/1` keeps
+    each layer in topological order; `DAG.from_graph!/1` raises
+    `ArgumentError` for an undirected graph.
+- **Structs and protocols:** `Grafi.Edge` requires `:from` and `:to`;
+  the `Inspect` output of `Graph`, `Edge` and `DAG` follows the inspect
+  options; `Grafi.DAG` implements `Enumerable`.
+- **`Grafi.Kino` is removed:** use `Grafi.Serialize.Mermaid.to_markdown/2`.
+  With the optional `kino` dependency installed, a `Grafi.Graph` renders
+  as a Mermaid diagram in Livebook (`Kino.Render`).
 
 ### Added (NIF safety)
 - `engine: :auto | :nif | :elixir` option on every NIF-capable
@@ -290,6 +342,38 @@ All notable changes to Grafi are documented here, following
 - The package lists `checksum.exs`, `NOTICE`, `LICENSES/` and
   `CHANGELOG.md`; the source URL points at `nyo16/grafi`.
 
+### Fixed (algorithms)
+- `connected_components/1` on a directed graph split weakly connected
+  vertices (`b→a, c→a` gave two components).
+- `has_cycle?/1` reported a cycle for any undirected edge, so `Layout`
+  refused undirected trees.
+- `yen/5` on undirected graphs returned only the first path.
+- `Matching` with parallel edges used the heaviest edge when minimising.
+- The Elixir isomorphism search mapped a pattern self-loop onto a host
+  vertex without one.
+- `label_propagation_simple/2` could keep flipping between tied labels.
+
+### Changed (performance)
+- `Graph.delete_vertex/2` is O(d log V) (it rebuilt every adjacency map).
+- Elixir Dijkstra stops at the target and relaxes each neighbour once;
+  Bellman-Ford stops at the first pass with no change; Yen's spur searches
+  skip forbidden vertices and edges instead of rebuilding the graph;
+  Johnson shares `ShortestPath.dijkstra_all/3`.
+- Hungarian is O(n³); Hopcroft–Karp takes only shortest augmenting paths,
+  for its O(E·√V) bound (random inputs take more, cheaper phases).
+- Biconnected components, k-core (Batagelj–Zaversnik) and
+  `DAG.add_edges/2` are O(V+E); triangles, clustering and transitivity
+  use one degree-ordered pass, O(E^1.5).
+- The Elixir isomorphism search orders the pattern once, draws candidates
+  from mapped neighbours, and uses colour refinement for full
+  isomorphism.
+- Link prediction, HITS, Katz, eigenvector centrality and label
+  propagation precompute adjacency once; the clique counter no longer
+  counts its accumulator; `Layout` groups layers in one pass.
+- One shared topological sort (`Traversal.topological_sort/1`), one BFS
+  distance helper and one undirected-neighbour helper replace the copies
+  in `DAG`, `Layout`, `Centrality`, `Metrics` and the other algorithms.
+
 ### Added
 - README sections covering pre-Hex install instructions, benchmarks
   scaffolding, a "When to use Grafi" decision guide, and a
@@ -358,9 +442,9 @@ All notable changes to Grafi are documented here, following
 - **`Grafi.Serialize.Mermaid`** — emit Mermaid `flowchart`/`graph`
   syntax for Markdown / Livebook docs. Direction, edge weights/labels,
   custom vertex labels all configurable.
-- **`Grafi.Kino`** — produces Markdown-wrapped Mermaid blocks ready
-  for `Kino.Markdown.new/1` in Livebook. **No new dependency** —
-  `kino` is not added to `mix.exs`; users bring their own.
+- **Livebook rendering** — with the optional `kino` dependency, a
+  `Grafi.Graph` renders as a Mermaid diagram (`Kino.Render`);
+  `Grafi.Serialize.Mermaid.to_markdown/2` produces the Markdown block.
 - **`Grafi.Layout`** — `sugiyama/2` (layered DAG layout with
   longest-path layering + barycenter crossing reduction) and
   `levels/1`. Returns `%{vertex => {x, y}}`.
@@ -368,18 +452,9 @@ All notable changes to Grafi are documented here, following
   `render!/3` / `render_to_file/3` / `graphviz_available?/0`.
   Supports `:svg`, `:png`, `:pdf`, `:dot`, `:json`, `:eps` formats
   and `:dot`/`:neato`/`:circo`/`:twopi`/`:fdp`/`:sfdp` engines.
-- **Top-level `Grafi.*` delegations** for the most-used new
-  functions: `triangle_count`, `clustering_coefficient`,
-  `transitivity`, `density`, `diameter`, `radius`, `eccentricity`,
-  `kruskal`, `prim`, `floyd_warshall`, `johnson`,
-  `transitive_closure`, `bidirectional_dijkstra`,
-  `k_shortest_paths`, `bridges`, `articulation_points`,
-  `biconnected_components`, `bipartite?`, `core_numbers`, `k_core`,
-  `maximal_cliques`, `maximum_clique`, `hits`, `katz`,
-  `eigenvector_centrality`, `harmonic_centrality`, `max_flow`,
-  `min_cut`, `bipartite_matching`, `weighted_bipartite_matching`,
-  `isomorphic?`, `subgraph_isomorphic?`, and `to_mermaid` +
-  `to_/from_` wrappers for every new serialization format.
+- **Top-level `Grafi.*` delegations** for every algorithm module (see
+  the "Facade names" table in the `Grafi` moduledoc for the few aliases),
+  plus `to_*`/`from_*`/`from_*!` wrappers for every serialization format.
 
 ### Changed
 - License declaration in `mix.exs` corrected to `Apache-2.0` to match
