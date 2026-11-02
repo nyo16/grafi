@@ -28,13 +28,13 @@ defmodule Grafi.Algo.KShortestPathTest do
 
   defp path_weight(_g, []), do: 0.0
 
-  # Build a random small directed graph on n vertices with random positive weights.
-  defp random_graph(n, edge_prob, seed) when n > 0 do
+  # Build a random small graph on n vertices with random positive weights.
+  defp random_graph(n, edge_prob, seed, type \\ :directed) when n > 0 do
     :rand.seed(:exsss, {seed, seed + 1, seed + 2})
     verts = Enum.to_list(0..(n - 1))
-    g0 = Graph.new(type: :directed) |> Graph.add_vertices(verts)
+    g0 = Graph.new(type: type) |> Graph.add_vertices(verts)
 
-    for u <- verts, v <- verts, u != v, reduce: g0 do
+    for u <- verts, v <- verts, u != v, type == :directed or u < v, reduce: g0 do
       acc ->
         if :rand.uniform() < edge_prob do
           Graph.add_edge(acc, u, v, weight: :rand.uniform(20) / 1)
@@ -42,6 +42,16 @@ defmodule Grafi.Algo.KShortestPathTest do
           acc
         end
     end
+  end
+
+  # Every simple path from the head of `rev` to `target`, by exhaustive DFS.
+  defp simple_paths(_g, target, [target | _] = rev, _seen), do: [Enum.reverse(rev)]
+
+  defp simple_paths(g, target, [u | _] = rev, seen) do
+    for v <- Graph.out_neighbors(g, u),
+        not MapSet.member?(seen, v),
+        path <- simple_paths(g, target, [v | rev], MapSet.put(seen, v)),
+        do: path
   end
 
   # ── Basic correctness ────────────────────────────────────────────────
@@ -75,6 +85,48 @@ defmodule Grafi.Algo.KShortestPathTest do
       assert w1 == 2.0
       assert p2 == [:a, :c, :d]
       assert w2 == 4.0
+    end
+
+    test "undirected diamond a–b–d, a–c–d with k=2 returns both paths" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([
+          {:a, :b, weight: 1.0},
+          {:b, :d, weight: 1.0},
+          {:a, :c, weight: 2.0},
+          {:c, :d, weight: 2.0}
+        ])
+
+      assert KShortestPath.yen(g, :a, :d, 2) ==
+               {:ok, [{[:a, :b, :d], 2.0}, {[:a, :c, :d], 4.0}]}
+    end
+
+    test "undirected: a forbidden edge stays forbidden in both directions" do
+      # Square a–b–d–c–a plus the chord b–c. Four simple a→d paths exist.
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([
+          {:a, :b, weight: 1.0},
+          {:b, :d, weight: 1.0},
+          {:a, :c, weight: 2.0},
+          {:c, :d, weight: 2.0},
+          {:b, :c, weight: 1.0}
+        ])
+
+      assert {:ok, results} = KShortestPath.yen(g, :a, :d, 10)
+
+      assert Enum.sort(results) ==
+               Enum.sort([
+                 {[:a, :b, :d], 2.0},
+                 {[:a, :c, :d], 4.0},
+                 {[:a, :b, :c, :d], 4.0},
+                 {[:a, :c, :b, :d], 4.0}
+               ])
+    end
+
+    test "negative weights: {:error, :negative_weight}" do
+      g = Graph.new() |> Graph.add_edge(:a, :b, weight: -1.0)
+      assert KShortestPath.yen(g, :a, :b, 2) == {:error, :negative_weight}
     end
 
     test "5-vertex graph, top 3 paths in ascending weight order" do
@@ -202,6 +254,35 @@ defmodule Grafi.Algo.KShortestPathTest do
 
           {:error, :no_path} ->
             :ok
+        end
+      end
+    end
+
+    property "returns the k lightest simple paths (directed and undirected)" do
+      check all(
+              type <- member_of([:directed, :undirected]),
+              n <- integer(3..6),
+              prob <- float(min: 0.2, max: 0.8),
+              k <- integer(1..6),
+              seed <- integer(1..10_000)
+            ) do
+        g = random_graph(n, prob, seed, type)
+        {src, tgt} = {0, n - 1}
+
+        expected =
+          g
+          |> simple_paths(tgt, [src], MapSet.new([src]))
+          |> Enum.map(&path_weight(g, &1))
+          |> Enum.sort()
+          |> Enum.take(k)
+
+        case KShortestPath.yen(g, src, tgt, k) do
+          {:ok, results} ->
+            assert Enum.map(results, &elem(&1, 1)) == expected
+            assert results |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> length() == length(results)
+
+          {:error, :no_path} ->
+            assert expected == []
         end
       end
     end
