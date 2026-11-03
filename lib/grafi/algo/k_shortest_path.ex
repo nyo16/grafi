@@ -55,7 +55,7 @@ defmodule Grafi.Algo.KShortestPath do
       not Graph.has_vertex?(g, target) ->
         {:error, :no_such_vertex}
 
-      source == target ->
+      source === target ->
         {:ok, [{[source], 0.0}]}
 
       true ->
@@ -76,7 +76,11 @@ defmodule Grafi.Algo.KShortestPath do
 
   defp yen_loop(g, target, k, [{prev_path, _} | _] = results, count, candidates, seen) do
     [source | after_source] = prev_path
-    candidates = spurs(g, target, after_source, [source], 0.0, results, candidates, seen)
+    # Every yielded path starts at `source`, so each one's tail after the
+    # one-vertex root is live.
+    live = Enum.map(results, fn {[_source | tail], _weight} -> tail end)
+    root = {[source], 0.0, %{}}
+    candidates = spurs(g, target, after_source, root, live, candidates, seen)
 
     case pop_unseen(candidates, seen) do
       :empty ->
@@ -88,22 +92,23 @@ defmodule Grafi.Algo.KShortestPath do
   end
 
   # Takes each vertex of the previous path but the last as the spur node in
-  # turn. `root_rev` is the root path reversed, headed by the spur node, and
-  # `root_weight` its weight; `remaining` is the rest of the previous path.
-  defp spurs(_g, _target, [], _root_rev, _root_weight, _results, candidates, _seen),
-    do: candidates
+  # turn. The root is `{root_rev, root_weight, forbidden_vertices}`: the root
+  # path reversed and headed by the spur node, its weight, and its vertices
+  # other than the spur, which are off limits so the spur path, and so the
+  # full path, stays loopless. `live` holds, for every yielded path that
+  # starts with the root path, its tail after the root, so its head is that
+  # path's edge out of the spur. Advancing the root extends all three and
+  # drops the tails that leave it, so no spur rescans a prefix.
+  defp spurs(_g, _target, [], _root, _live, candidates, _seen), do: candidates
 
-  defp spurs(g, target, [next | rest], [spur | _] = root_rev, root_weight, results, cands, seen) do
-    root_path = Enum.reverse(root_rev)
-    # Root vertices other than the spur are off limits, which keeps the
-    # spur path, and so the full path, loopless.
-    forbidden_vertices = MapSet.new(tl(root_rev))
-    forbidden_edges = forbidden_edges(g, results, root_path, spur)
+  defp spurs(g, target, [next | rest], root, live, cands, seen) do
+    {[spur | _] = root_rev, root_weight, forbidden_vertices} = root
+    forbidden_edges = forbidden_edges(g, live, spur)
 
     cands =
       case spur_dijkstra(g, spur, target, forbidden_vertices, forbidden_edges) do
         {:ok, {[_spur | spur_tail], spur_weight}} ->
-          full_path = root_path ++ spur_tail
+          full_path = Enum.reverse(root_rev, spur_tail)
 
           if MapSet.member?(seen, full_path),
             do: cands,
@@ -114,31 +119,23 @@ defmodule Grafi.Algo.KShortestPath do
       end
 
     step = g.out_edges |> Map.fetch!(spur) |> Map.fetch!(next) |> min_weight()
-    spurs(g, target, rest, [next | root_rev], root_weight + step, results, cands, seen)
+    root = {[next | root_rev], root_weight + step, Map.put(forbidden_vertices, spur, true)}
+    live = for [^next | tail] <- live, do: tail
+    spurs(g, target, rest, root, live, cands, seen)
   end
 
-  # Yen forbids, for every previously yielded path that starts with
-  # `root_path`, its edge out of the spur node. An undirected edge is
-  # forbidden in both orientations, since `out_edges` stores it under both
-  # endpoints.
-  defp forbidden_edges(%Graph{type: type}, results, root_path, spur) do
-    Enum.reduce(results, MapSet.new(), fn {path, _weight}, acc ->
-      case next_after_prefix(path, root_path) do
-        {:ok, next} when type == :undirected ->
-          acc |> MapSet.put({spur, next}) |> MapSet.put({next, spur})
-
-        {:ok, next} ->
-          MapSet.put(acc, {spur, next})
-
-        :error ->
-          acc
-      end
+  # Yen forbids, for every previously yielded path that starts with the root
+  # path, its edge out of the spur node. An undirected edge is forbidden in
+  # both orientations, since `out_edges` stores it under both endpoints.
+  # A yielded path is simple and ends at the target, which the root never
+  # contains, so a live tail is never empty.
+  defp forbidden_edges(%Graph{type: type}, live, spur) do
+    Enum.reduce(live, MapSet.new(), fn [next | _], acc ->
+      if type == :undirected,
+        do: acc |> MapSet.put({spur, next}) |> MapSet.put({next, spur}),
+        else: MapSet.put(acc, {spur, next})
     end)
   end
-
-  defp next_after_prefix([v | path], [v | prefix]), do: next_after_prefix(path, prefix)
-  defp next_after_prefix([next | _], []), do: {:ok, next}
-  defp next_after_prefix(_path, _prefix), do: :error
 
   # Dijkstra from `spur` to `target` on the graph minus the forbidden
   # vertices and edges, skipping them during relaxation instead of building
@@ -160,7 +157,7 @@ defmodule Grafi.Algo.KShortestPath do
           d > Map.fetch!(dists, u) ->
             spur_settle(out, rest, dists, parents, target, forbidden)
 
-          u == target ->
+          u === target ->
             {:ok, {path_to(parents, u, [u]), d}}
 
           true ->
@@ -179,7 +176,7 @@ defmodule Grafi.Algo.KShortestPath do
   defp spur_relax({v, edges}, {heap, dists, parents} = acc, u, d, {vertices, edge_set}) do
     alt = d + min_weight(edges)
 
-    if MapSet.member?(vertices, v) or MapSet.member?(edge_set, {u, v}) or
+    if is_map_key(vertices, v) or MapSet.member?(edge_set, {u, v}) or
          alt >= Map.get(dists, v, :infinity),
        do: acc,
        else: {MinHeap.insert(heap, {alt, v}), Map.put(dists, v, alt), Map.put(parents, v, u)}

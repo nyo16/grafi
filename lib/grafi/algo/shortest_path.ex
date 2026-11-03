@@ -7,10 +7,6 @@ defmodule Grafi.Algo.ShortestPath do
   alias Grafi.Graph
   alias Grafi.NIF
 
-  # Dialyzer reports MapSet's opaque type passed through the A* loop
-  # (`closed`) as a mismatch; the calls are correct.
-  @dialyzer {:no_opaque, do_astar: 7}
-
   @doc """
   Computes the shortest weighted path from `source` to `target` using Dijkstra's
   algorithm.
@@ -81,6 +77,11 @@ defmodule Grafi.Algo.ShortestPath do
   Returns a map of `vertex => distance`. Unreachable vertices are omitted. Runs
   entirely in pure Elixir; intended for the small-graph case.
 
+  Raises `ArgumentError` if `source` is not in the graph, or if `weight_fn`
+  returns a negative cost for an edge reachable from `source` (use
+  `bellman_ford/2` for negative weights). Edges unreachable from `source` are
+  never weighed.
+
   ## Examples
 
       iex> g = Grafi.new() |> Grafi.add_edges([
@@ -94,6 +95,9 @@ defmodule Grafi.Algo.ShortestPath do
   @spec dijkstra_all(Graph.t(), any(), (Edge.t() -> number())) :: %{any() => number()}
   def dijkstra_all(%Graph{} = g, source, weight_fn \\ & &1.weight)
       when is_function(weight_fn, 1) do
+    if not Graph.has_vertex?(g, source),
+      do: raise(ArgumentError, "vertex #{inspect(source)} is not in the graph")
+
     {dists, _} = run_dijkstra(g, source, :all, weight_fn, nil)
     dists
   end
@@ -183,7 +187,7 @@ defmodule Grafi.Algo.ShortestPath do
 
       true ->
         heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source})
-        do_astar(g, target, h, heap, %{source => 0.0}, %{}, MapSet.new())
+        do_astar(g, target, h, heap, %{source => 0.0}, %{}, %{})
     end
   end
 
@@ -204,40 +208,41 @@ defmodule Grafi.Algo.ShortestPath do
   # `{:until, target}`; in the latter case the search returns as soon as
   # `target` is settled, when its distance (and parent chain) is final.
   # `parents` is `nil` when the caller only needs distances.
+  #
+  # `settled` (a map used as a set) settles every vertex once, so the loop
+  # ends after at most |V| expansions whatever the weights; a negative weight
+  # raises as soon as it is weighed, before it can produce a wrong distance.
   defp run_dijkstra(g, source, stop, weight_fn, parents) do
     heap = MinHeap.insert(MinHeap.new(), {0.0, source})
-    settle(g.out_edges, heap, %{source => 0.0}, parents, stop, weight_fn)
+    settle(g.out_edges, heap, {%{source => 0.0}, %{}, parents}, stop, weight_fn)
   end
 
-  defp settle(out, heap, dists, parents, stop, weight_fn) do
+  defp settle(out, heap, {dists, settled, parents} = state, stop, weight_fn) do
     case MinHeap.pop(heap) do
       :empty ->
         {dists, parents}
 
+      # Stale entry: `u` was settled from a shorter, earlier entry.
+      {:ok, {_d, u}, rest} when is_map_key(settled, u) ->
+        settle(out, rest, state, stop, weight_fn)
+
+      {:ok, {_d, u}, _rest} when stop === {:until, u} ->
+        {dists, parents}
+
       {:ok, {d, u}, rest} ->
-        cond do
-          # Stale entry: `u` was re-queued with a shorter distance.
-          d > Map.fetch!(dists, u) ->
-            settle(out, rest, dists, parents, stop, weight_fn)
+        {heap, dists, parents} =
+          out
+          |> Map.get(u, %{})
+          |> Enum.reduce({rest, dists, parents}, &relax(&1, &2, u, d, weight_fn))
 
-          stop == {:until, u} ->
-            {dists, parents}
-
-          true ->
-            {heap, dists, parents} =
-              out
-              |> Map.get(u, %{})
-              |> Enum.reduce({rest, dists, parents}, &relax(&1, &2, u, d, weight_fn))
-
-            settle(out, heap, dists, parents, stop, weight_fn)
-        end
+        settle(out, heap, {dists, Map.put(settled, u, true), parents}, stop, weight_fn)
     end
   end
 
   defp relax({_v, []}, acc, _u, _d, _weight_fn), do: acc
 
   defp relax({v, [e | es]}, {heap, dists, parents} = acc, u, d, weight_fn) do
-    alt = d + min_weight(es, weight_fn.(e), weight_fn)
+    alt = d + min_weight(es, weight!(weight_fn, e), weight_fn)
 
     if alt < Map.get(dists, v, :infinity),
       do: {MinHeap.insert(heap, {alt, v}), Map.put(dists, v, alt), put_parent(parents, v, u)},
@@ -247,8 +252,20 @@ defmodule Grafi.Algo.ShortestPath do
   defp min_weight([], min, _weight_fn), do: min
 
   defp min_weight([e | es], min, weight_fn) do
-    w = weight_fn.(e)
+    w = weight!(weight_fn, e)
     min_weight(es, if(w < min, do: w, else: min), weight_fn)
+  end
+
+  defp weight!(weight_fn, e) do
+    case weight_fn.(e) do
+      w when w < 0 ->
+        raise ArgumentError,
+              "Dijkstra requires non-negative edge weights, got #{inspect(w)} for the edge " <>
+                "#{inspect(e.from)} -> #{inspect(e.to)}; use bellman_ford/2"
+
+      w ->
+        w
+    end
   end
 
   defp put_parent(nil, _v, _u), do: nil
@@ -273,18 +290,18 @@ defmodule Grafi.Algo.ShortestPath do
 
       {:ok, {_, gc, cur}, rest_heap} ->
         cond do
-          cur == target ->
+          cur === target ->
             {:ok, {rebuild_came_from(came_from, cur, [cur]), gc}}
 
-          MapSet.member?(closed, cur) ->
+          is_map_key(closed, cur) ->
             do_astar(g, target, h, rest_heap, g_score, came_from, closed)
 
           true ->
-            closed = MapSet.put(closed, cur)
+            closed = Map.put(closed, cur, true)
 
             {new_heap, g_score, came_from} =
               Graph.out_neighbors(g, cur)
-              |> Enum.reject(&MapSet.member?(closed, &1))
+              |> Enum.reject(&is_map_key(closed, &1))
               |> Enum.reduce({rest_heap, g_score, came_from}, fn n, {heap_acc, gs, cf} ->
                 w = Graph.edges_between(g, cur, n) |> Enum.map(& &1.weight) |> Enum.min()
                 ng = gc + w

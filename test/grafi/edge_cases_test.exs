@@ -196,7 +196,7 @@ defmodule Grafi.EdgeCasesTest do
       # First edge auto-inserts both :a and :b; then :b -> :a should raise
       dag = Grafi.DAG.new() |> Grafi.DAG.add_edge(:a, :b)
 
-      assert_raise Grafi.CycleError, fn ->
+      assert_raise Grafi.CycleError, ~r/:b -> :a would create a cycle/, fn ->
         Grafi.DAG.add_edge(dag, :b, :a)
       end
     end

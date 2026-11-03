@@ -4,6 +4,15 @@ defmodule Grafi.DAGTest do
   alias Grafi.DAG
   alias Grafi.Graph
 
+  # Reductions spent by `fun` in this process: deterministic, unlike wall
+  # clock, so a scaling ratio can be asserted tightly.
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_call} = Process.info(self(), :reductions)
+    after_call - before
+  end
+
   test "topological sort" do
     dag =
       DAG.new()
@@ -98,7 +107,24 @@ defmodule Grafi.DAGTest do
     end
 
     test "rejects unknown edge options" do
-      assert_raise ArgumentError, fn -> DAG.add_edges(DAG.new(), [{:a, :b, colour: :red}]) end
+      assert_raise ArgumentError, ~r/unknown keys \[:colour\]/, fn ->
+        DAG.add_edges(DAG.new(), [{:a, :b, colour: :red}])
+      end
+    end
+
+    # Inserting everything and checking acyclicity once is linear; the base
+    # code checked reachability per edge, quadratic on a path whose edges
+    # arrive back to front.
+    @tag :slow
+    test "a path added back to front scales linearly" do
+      reversed_path = fn n -> for i <- n..1//-1, do: {i - 1, i} end
+      {small, large} = {reversed_path.(2_000), reversed_path.(8_000)}
+
+      r_small = reductions(fn -> DAG.add_edges(DAG.new(), small) end)
+      r_large = reductions(fn -> DAG.add_edges(DAG.new(), large) end)
+
+      # Linear: about 4x. Quadratic: about 16x.
+      assert r_large < 8 * r_small, "4x the edges took #{r_large} vs #{r_small} reductions"
     end
   end
 
@@ -136,16 +162,22 @@ defmodule Grafi.DAGTest do
     end
 
     test "rejects unknown options" do
-      assert_raise ArgumentError, fn -> DAG.add_vertex(DAG.new(), :a, weight: 1) end
+      assert_raise ArgumentError, ~r/unknown keys \[:weight\]/, fn ->
+        DAG.add_vertex(DAG.new(), :a, weight: 1)
+      end
     end
   end
 
   test "add_edge/4 rejects unknown options" do
-    assert_raise ArgumentError, fn -> DAG.add_edge(DAG.new(), :a, :b, colour: :red) end
+    assert_raise ArgumentError, ~r/unknown keys \[:colour\]/, fn ->
+      DAG.add_edge(DAG.new(), :a, :b, colour: :red)
+    end
   end
 
   test "topological_sort/2 rejects unknown options" do
-    assert_raise ArgumentError, fn -> DAG.topological_sort(DAG.new(), bogus: true) end
+    assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn ->
+      DAG.topological_sort(DAG.new(), bogus: true)
+    end
   end
 
   describe "empty DAG" do

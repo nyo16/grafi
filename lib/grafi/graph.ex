@@ -601,16 +601,11 @@ defmodule Grafi.Graph do
     Enum.reduce(map, 0, fn {_, el}, acc -> acc + length(el) end)
   end
 
+  # Every neighbour has an `out_edges`/`in_edges` entry (from `add_vertex`).
   defp strip_target(map, neighbours, v) do
     Enum.reduce(neighbours, map, fn
-      ^v, acc ->
-        acc
-
-      u, acc ->
-        case acc do
-          %{^u => targets} -> Map.put(acc, u, Map.delete(targets, v))
-          _ -> acc
-        end
+      ^v, acc -> acc
+      u, acc -> Map.update!(acc, u, &Map.delete(&1, v))
     end)
   end
 

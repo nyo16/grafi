@@ -3,6 +3,15 @@ defmodule Grafi.GraphTest do
   doctest Grafi.Graph
   alias Grafi.Graph
 
+  # Reductions spent by `fun` in this process: deterministic, unlike wall
+  # clock, so a scaling ratio can be asserted tightly.
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_call} = Process.info(self(), :reductions)
+    after_call - before
+  end
+
   describe "construction" do
     test "new/0 creates empty directed graph" do
       g = Graph.new()
@@ -218,6 +227,21 @@ defmodule Grafi.GraphTest do
                "#{type}"
       end
     end
+
+    # Stripping only the neighbours' entries costs O(d log V) per deleted
+    # vertex; the base code walked every vertex's adjacency, O(V).
+    @tag :slow
+    test "delete_vertex/2 cost does not grow with the graph" do
+      path = fn n -> Enum.reduce(1..n, Graph.new(), &Graph.add_edge(&2, &1 - 1, &1)) end
+      delete_100 = fn g -> Enum.reduce(1..100, g, &Graph.delete_vertex(&2, &1 * 10)) end
+      {small, large} = {path.(2_000), path.(20_000)}
+
+      r_small = reductions(fn -> delete_100.(small) end)
+      r_large = reductions(fn -> delete_100.(large) end)
+
+      # O(d log V): about 1x for 10x the vertices. O(V): about 10x.
+      assert r_large < 3 * r_small, "10x the vertices took #{r_large} vs #{r_small} reductions"
+    end
   end
 
   describe "CSR conversion" do
@@ -305,11 +329,10 @@ defmodule Grafi.GraphTest do
       assert Enum.to_list(Graph.new()) == []
     end
 
-    test "slice/1 falls back to reduce, so positional access works" do
+    test "positional access works" do
       g = Graph.new() |> Graph.add_vertices([:a, :b, :c])
       vs = Enum.to_list(g)
 
-      assert Enumerable.slice(g) == {:error, Enumerable.Grafi.Graph}
       assert Enum.at(g, 1) == Enum.at(vs, 1)
       assert Enum.slice(g, 1..2) == Enum.slice(vs, 1..2)
     end

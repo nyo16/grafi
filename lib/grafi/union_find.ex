@@ -96,12 +96,9 @@ defmodule Grafi.UnionFind do
   end
 
   defp do_find(%__MODULE__{parents: p} = uf, x, path) do
-    parent = Map.fetch!(p, x)
-
-    if parent == x do
-      {x, compress(uf, path, x)}
-    else
-      do_find(uf, parent, [x | path])
+    case Map.fetch!(p, x) do
+      ^x -> {x, compress(uf, path, x)}
+      parent -> do_find(uf, parent, [x | path])
     end
   end
 
@@ -124,7 +121,7 @@ defmodule Grafi.UnionFind do
     {rx, uf} = find(uf, x)
     {ry, uf} = find(uf, y)
 
-    if rx == ry do
+    if rx === ry do
       uf
     else
       # The match also proves `uf` is a struct, so plain map updates suffice
@@ -164,7 +161,7 @@ defmodule Grafi.UnionFind do
       true ->
         {rx, _} = find(%__MODULE__{parents: p, ranks: %{}}, x)
         {ry, _} = find(%__MODULE__{parents: p, ranks: %{}}, y)
-        rx == ry
+        rx === ry
     end
   end
 
@@ -193,6 +190,6 @@ defmodule Grafi.UnionFind do
   """
   @spec count_sets(t()) :: non_neg_integer()
   def count_sets(%__MODULE__{parents: p}) do
-    Enum.count(p, fn {k, v} -> k == v end)
+    Enum.count(p, fn {k, v} -> k === v end)
   end
 end

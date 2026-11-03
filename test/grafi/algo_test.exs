@@ -291,4 +291,31 @@ defmodule Grafi.AlgoTest do
       assert_in_delta scores[:b], 1.0, 1.0e-9
     end
   end
+
+  describe "biconnected components scaling" do
+    # A path is one bridge component per edge. Splitting each one off the
+    # edge stack by its tracked length keeps the run linear; before that fix
+    # it grew superlinearly.
+    @tag :slow
+    test "a path's components cost linear work" do
+      path = fn n ->
+        Enum.reduce(1..n, Grafi.new(type: :undirected), &Grafi.add_edge(&2, &1 - 1, &1))
+      end
+
+      {small, large} = {path.(1_000), path.(16_000)}
+
+      r_small = reductions(fn -> Grafi.Algo.Connectivity.biconnected_components(small) end)
+      r_large = reductions(fn -> Grafi.Algo.Connectivity.biconnected_components(large) end)
+
+      # Linear: about 16x for 16x the edges. The base code took about 64x.
+      assert r_large < 32 * r_small, "16x the edges took #{r_large} vs #{r_small} reductions"
+    end
+  end
+
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_call} = Process.info(self(), :reductions)
+    after_call - before
+  end
 end
