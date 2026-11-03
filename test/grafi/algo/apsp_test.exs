@@ -6,6 +6,7 @@ defmodule Grafi.Algo.APSPTest do
 
   alias Grafi.Algo.APSP
   alias Grafi.Algo.ShortestPath
+  alias Grafi.Test.Generators
 
   # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -170,6 +171,14 @@ defmodule Grafi.Algo.APSPTest do
       assert APSP.reconstruct_path(p, :a, :a) == {:ok, [:a]}
     end
 
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g = Grafi.new() |> Grafi.add_edges([{1, 1.0, weight: 2.0}, {1.0, 1, weight: -1.0}])
+      {:ok, d, p} = APSP.floyd_warshall_with_paths(g)
+      assert APSP.reconstruct_path(p, 1, 1.0) == {:ok, [1, 1.0]}
+      assert d[1][1] == 0.0
+      assert d[1][1.0] == 2.0
+    end
+
     test "no path" do
       g =
         Grafi.new()
@@ -177,15 +186,15 @@ defmodule Grafi.Algo.APSPTest do
         |> Grafi.add_vertex(:c)
 
       {:ok, _d, p} = APSP.floyd_warshall_with_paths(g)
-      assert APSP.reconstruct_path(p, :a, :c) == :no_path
+      assert APSP.reconstruct_path(p, :a, :c) == {:error, :no_path}
     end
 
-    test "matches Grafi.shortest_path/3 on positive-weight graph" do
+    test "matches Grafi.dijkstra/3 on positive-weight graph" do
       g = square_with_diag()
       {:ok, d, p} = APSP.floyd_warshall_with_paths(g)
 
       for u <- Grafi.vertices(g), v <- Grafi.vertices(g), u != v do
-        case Grafi.shortest_path(g, u, v) do
+        case Grafi.dijkstra(g, u, v) do
           {:ok, {_path, dist}} ->
             assert {:ok, fw_path} = APSP.reconstruct_path(p, u, v)
             assert_in_delta dist, d[u][v], 1.0e-9
@@ -193,17 +202,19 @@ defmodule Grafi.Algo.APSPTest do
             fw_dist = path_weight(g, fw_path)
             assert_in_delta dist, fw_dist, 1.0e-9
 
-          :no_path ->
+          {:error, :no_path} ->
             refute Map.has_key?(d[u], v)
-            assert APSP.reconstruct_path(p, u, v) == :no_path
+            assert APSP.reconstruct_path(p, u, v) == {:error, :no_path}
         end
       end
     end
 
-    test "missing 'from' vertex returns :no_path" do
+    test "a vertex missing from the matrix returns {:error, :no_such_vertex}" do
       g = triangle()
       {:ok, _d, p} = APSP.floyd_warshall_with_paths(g)
-      assert APSP.reconstruct_path(p, :ghost, :a) == :no_path
+      assert APSP.reconstruct_path(p, :ghost, :a) == {:error, :no_such_vertex}
+      assert APSP.reconstruct_path(p, :a, :ghost) == {:error, :no_such_vertex}
+      assert APSP.reconstruct_path(p, :ghost, :ghost) == {:error, :no_such_vertex}
     end
   end
 
@@ -303,11 +314,32 @@ defmodule Grafi.Algo.APSPTest do
   # w in 1..1001 gives a positive range of ~0.01..10.01.
   defp positive_weight_graph do
     gen all(
-          verts <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
+          # list_of + uniq: uniq_list_of gives up on the small atom pool.
+          verts <-
+            map(list_of(Generators.vertex_id(:atom), min_length: 1, max_length: 8), &Enum.uniq/1),
           raw <-
             list_of({member_of(verts), member_of(verts), integer(1..1001)}, max_length: 20)
         ) do
       edges = Enum.map(raw, fn {u, v, w} -> {u, v, weight: w / 100} end)
+      Grafi.new() |> Grafi.add_vertices(verts) |> Grafi.add_edges(edges)
+    end
+  end
+
+  # Negative weights without a negative cycle: w(u, v) = p[v] - p[u] + s
+  # with slack s > 0, so every cycle weighs the sum of its slacks. The
+  # potentials are sevenths, so the reweighting runs on rounded floats and
+  # must still hand Dijkstra only non-negative costs.
+  defp potential_weight_graph do
+    gen all(
+          verts <- map(list_of(integer(0..30), min_length: 1, max_length: 8), &Enum.uniq/1),
+          potentials <- fixed_list(Enum.map(verts, fn _ -> integer(-50..50) end)),
+          raw <- list_of({member_of(verts), member_of(verts), integer(1..20)}, max_length: 20)
+        ) do
+      p = verts |> Enum.zip(potentials) |> Map.new(fn {v, q} -> {v, q / 7} end)
+
+      edges =
+        Enum.map(raw, fn {u, v, s} -> {u, v, weight: p[v] - p[u] + s / 10} end)
+
       Grafi.new() |> Grafi.add_vertices(verts) |> Grafi.add_edges(edges)
     end
   end
@@ -321,6 +353,15 @@ defmodule Grafi.Algo.APSPTest do
 
         assert_dist_matrices_equal(fw, jo, 1.0e-6)
         assert_dist_matrices_equal(fw, dj, 1.0e-6)
+      end
+    end
+
+    property "johnson agrees with floyd_warshall on negative weights without negative cycles" do
+      check all(g <- potential_weight_graph()) do
+        {:ok, fw} = APSP.floyd_warshall(g)
+        {:ok, jo} = APSP.johnson(g)
+
+        assert_dist_matrices_equal(fw, jo, 1.0e-6)
       end
     end
   end

@@ -60,7 +60,7 @@ defmodule Grafi.EdgeCasesTest do
         Grafi.new(type: :undirected)
         |> Grafi.add_edges([{:a, :b}, {:c, :d}])
 
-      comps = Grafi.components(g)
+      comps = Grafi.connected_components(g)
       assert length(comps) == 2
 
       comp_sets = Enum.map(comps, &MapSet.new/1)
@@ -68,12 +68,12 @@ defmodule Grafi.EdgeCasesTest do
       assert MapSet.new([:c, :d]) in comp_sets
     end
 
-    test "shortest_path returns :no_path across components" do
+    test "shortest_path returns {:error, :no_path} across components" do
       g =
         Grafi.new()
         |> Grafi.add_edges([{:a, :b}, {:c, :d}])
 
-      assert Grafi.shortest_path(g, :a, :d) == :no_path
+      assert Grafi.dijkstra(g, :a, :d) == {:error, :no_path}
     end
   end
 
@@ -98,7 +98,7 @@ defmodule Grafi.EdgeCasesTest do
   describe "Dijkstra source == target" do
     test "returns path of one vertex with zero distance" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b, weight: 1.0)
-      assert {:ok, {[:a], dist}} = Grafi.shortest_path(g, :a, :a)
+      assert {:ok, {[:a], dist}} = Grafi.dijkstra(g, :a, :a)
       assert dist == 0.0
     end
   end
@@ -106,17 +106,18 @@ defmodule Grafi.EdgeCasesTest do
   describe "Dijkstra with missing vertices" do
     test "missing source returns {:error, :no_such_vertex}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      assert Grafi.shortest_path(g, :missing, :b) == {:error, :no_such_vertex}
+      assert Grafi.dijkstra(g, :missing, :b) == {:error, :no_such_vertex}
     end
 
     test "missing target returns {:error, :no_such_vertex}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
-      assert Grafi.shortest_path(g, :a, :missing) == {:error, :no_such_vertex}
+      assert Grafi.dijkstra(g, :a, :missing) == {:error, :no_such_vertex}
     end
 
     test "A* missing endpoints returns {:error, :no_such_vertex}" do
       g = Grafi.new() |> Grafi.add_edge(:a, :b)
       assert Grafi.a_star(g, :missing, :b, fn _ -> 0 end) == {:error, :no_such_vertex}
+      assert Grafi.a_star(g, :a, :missing, fn _ -> 0 end) == {:error, :no_such_vertex}
     end
   end
 
@@ -195,7 +196,7 @@ defmodule Grafi.EdgeCasesTest do
       # First edge auto-inserts both :a and :b; then :b -> :a should raise
       dag = Grafi.DAG.new() |> Grafi.DAG.add_edge(:a, :b)
 
-      assert_raise Grafi.CycleError, fn ->
+      assert_raise Grafi.CycleError, ~r/:b -> :a would create a cycle/, fn ->
         Grafi.DAG.add_edge(dag, :b, :a)
       end
     end

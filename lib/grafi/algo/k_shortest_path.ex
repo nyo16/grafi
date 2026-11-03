@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.KShortestPath do
-  @dialyzer :no_opaque
-
   @moduledoc """
   K-shortest loopless paths via Yen's algorithm.
 
@@ -25,8 +23,14 @@ defmodule Grafi.Algo.KShortestPath do
 
   Returns `{:ok, [{path, weight}, ...]}` on success — the list may be
   shorter than `k` if fewer loopless paths exist. Returns
-  `{:error, :no_such_vertex}` if either endpoint is missing, or
-  `{:error, :no_path}` when no path exists at all.
+  `{:error, :no_such_vertex}` if either endpoint is missing,
+  `{:error, :no_path}` when no path exists at all, or
+  `{:error, :negative_weight}` if any edge weight is negative.
+
+  Undirected graphs are supported: an undirected edge is forbidden in both
+  directions while a spur path is searched.
+
+  It takes no options yet; unknown options raise `ArgumentError`.
 
   ## Examples
 
@@ -40,9 +44,10 @@ defmodule Grafi.Algo.KShortestPath do
   """
   @spec yen(Graph.t(), any(), any(), pos_integer(), keyword()) ::
           {:ok, [{[any()], number()}]}
-          | {:error, :no_such_vertex}
-          | {:error, :no_path}
-  def yen(%Graph{} = g, source, target, k, _opts \\ []) when is_integer(k) and k > 0 do
+          | {:error, :no_such_vertex | :no_path | :negative_weight}
+  def yen(%Graph{} = g, source, target, k, opts \\ []) when is_integer(k) and k > 0 do
+    _ = Keyword.validate!(opts, [])
+
     cond do
       not Graph.has_vertex?(g, source) ->
         {:error, :no_such_vertex}
@@ -50,148 +55,141 @@ defmodule Grafi.Algo.KShortestPath do
       not Graph.has_vertex?(g, target) ->
         {:error, :no_such_vertex}
 
-      source == target ->
+      source === target ->
         {:ok, [{[source], 0.0}]}
 
       true ->
-        case ShortestPath.dijkstra(g, source, target) do
-          :no_path ->
-            {:error, :no_path}
+        case ShortestPath.dijkstra(g, source, target, engine: :elixir) do
+          {:ok, {path, _weight} = first} ->
+            {:ok, yen_loop(g, target, k, [first], 1, MinHeap.new(), MapSet.new([path]))}
 
           {:error, _} = err ->
             err
-
-          {:ok, {path, weight}} ->
-            results = [{path, weight}]
-            paths = yen_loop(g, source, target, k, results, MinHeap.new(), MapSet.new([path]))
-            {:ok, paths}
         end
     end
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp yen_loop(_g, _s, _t, k, results, _candidates, _seen) when length(results) >= k,
-    do: Enum.reverse(results)
+  # `results` is newest-first and holds `count` paths.
+  defp yen_loop(_g, _target, k, results, k, _candidates, _seen), do: Enum.reverse(results)
 
-  defp yen_loop(g, source, target, k, [{prev_path, _} | _] = results, candidates, seen) do
-    candidates = enqueue_spur_candidates(g, source, target, prev_path, results, candidates, seen)
+  defp yen_loop(g, target, k, [{prev_path, _} | _] = results, count, candidates, seen) do
+    [source | after_source] = prev_path
+    # Every yielded path starts at `source`, so each one's tail after the
+    # one-vertex root is live.
+    live = Enum.map(results, fn {[_source | tail], _weight} -> tail end)
+    root = {[source], 0.0, %{}}
+    candidates = spurs(g, target, after_source, root, live, candidates, seen)
 
     case pop_unseen(candidates, seen) do
       :empty ->
         Enum.reverse(results)
 
       {:ok, {weight, path}, rest} ->
-        seen = MapSet.put(seen, path)
-        results = [{path, weight} | results]
-        yen_loop(g, source, target, k, results, rest, seen)
+        yen_loop(g, target, k, [{path, weight} | results], count + 1, rest, MapSet.put(seen, path))
     end
   end
 
-  # For each spur node along prev_path, compute alternative candidates.
-  defp enqueue_spur_candidates(g, _source, target, prev_path, results, candidates, seen) do
-    # spur indices are 0..(len-2) — the last node has no successor to swap.
-    indices = 0..(length(prev_path) - 2)
+  # Takes each vertex of the previous path but the last as the spur node in
+  # turn. The root is `{root_rev, root_weight, forbidden_vertices}`: the root
+  # path reversed and headed by the spur node, its weight, and its vertices
+  # other than the spur, which are off limits so the spur path, and so the
+  # full path, stays loopless. `live` holds, for every yielded path that
+  # starts with the root path, its tail after the root, so its head is that
+  # path's edge out of the spur. Advancing the root extends all three and
+  # drops the tails that leave it, so no spur rescans a prefix.
+  defp spurs(_g, _target, [], _root, _live, candidates, _seen), do: candidates
 
-    Enum.reduce(indices, candidates, fn i, acc ->
-      {root_path, spur_node} = split_at_spur(prev_path, i)
+  defp spurs(g, target, [next | rest], root, live, cands, seen) do
+    {[spur | _] = root_rev, root_weight, forbidden_vertices} = root
+    forbidden_edges = forbidden_edges(g, live, spur)
 
-      # Edges to forbid: the next-edge of every previously-found path that
-      # shares `root_path` as a prefix. Yen's algorithm derives these solely
-      # from previously *yielded* paths (`results`), so no candidate-heap
-      # scan or list concatenation is needed here.
-      forbidden_edges = forbidden_for_root(results, root_path)
+    cands =
+      case spur_dijkstra(g, spur, target, forbidden_vertices, forbidden_edges) do
+        {:ok, {[_spur | spur_tail], spur_weight}} ->
+          full_path = Enum.reverse(root_rev, spur_tail)
 
-      # Vertices to forbid: all root-path vertices except the spur itself
-      # (otherwise the spur Dijkstra cannot leave its starting node).
-      forbidden_vertices = MapSet.new(root_path) |> MapSet.delete(spur_node)
+          if MapSet.member?(seen, full_path),
+            do: cands,
+            else: MinHeap.insert(cands, {root_weight + spur_weight, full_path})
 
-      modified = build_modified_graph(g, forbidden_vertices, forbidden_edges)
-
-      case ShortestPath.dijkstra(modified, spur_node, target) do
-        {:ok, {spur_path, spur_weight}} ->
-          full_path = root_path ++ tl(spur_path)
-
-          if loopless?(full_path) and not MapSet.member?(seen, full_path) do
-            root_weight = path_weight(g, root_path)
-            total = root_weight + spur_weight
-            MinHeap.insert(acc, {total, full_path})
-          else
-            acc
-          end
-
-        _ ->
-          acc
+        :error ->
+          cands
       end
+
+    step = g.out_edges |> Map.fetch!(spur) |> Map.fetch!(next) |> min_weight()
+    root = {[next | root_rev], root_weight + step, Map.put(forbidden_vertices, spur, true)}
+    live = for [^next | tail] <- live, do: tail
+    spurs(g, target, rest, root, live, cands, seen)
+  end
+
+  # Yen forbids, for every previously yielded path that starts with the root
+  # path, its edge out of the spur node. An undirected edge is forbidden in
+  # both orientations, since `out_edges` stores it under both endpoints.
+  # A yielded path is simple and ends at the target, which the root never
+  # contains, so a live tail is never empty.
+  defp forbidden_edges(%Graph{type: type}, live, spur) do
+    Enum.reduce(live, MapSet.new(), fn [next | _], acc ->
+      if type == :undirected,
+        do: acc |> MapSet.put({spur, next}) |> MapSet.put({next, spur}),
+        else: MapSet.put(acc, {spur, next})
     end)
   end
 
-  # path = [v0, v1, ..., vi, ..., vN].
-  # Spur node is vi; root path is [v0..vi] (inclusive).
-  defp split_at_spur(path, i) do
-    root = Enum.take(path, i + 1)
-    {root, List.last(root)}
+  # Dijkstra from `spur` to `target` on the graph minus the forbidden
+  # vertices and edges, skipping them during relaxation instead of building
+  # a reduced graph. Halts as soon as `target` is settled.
+  defp spur_dijkstra(%Graph{out_edges: out}, spur, target, forbidden_vertices, forbidden_edges) do
+    heap = MinHeap.insert(MinHeap.new(), {0.0, spur})
+    forbidden = {forbidden_vertices, forbidden_edges}
+    spur_settle(out, heap, %{spur => 0.0}, %{}, target, forbidden)
   end
 
-  # For each previously found path sharing `root_path` as prefix, return
-  # the edge {u, v} where u = last(root_path), v = next vertex along that
-  # path. These edges must be removed before the spur Dijkstra runs.
-  defp forbidden_for_root(paths, root_path) do
-    root_len = length(root_path)
-    spur = List.last(root_path)
+  defp spur_settle(out, heap, dists, parents, target, forbidden) do
+    case MinHeap.pop(heap) do
+      :empty ->
+        :error
 
-    Enum.reduce(paths, MapSet.new(), fn {p, _w}, acc ->
-      cond do
-        length(p) <= root_len -> acc
-        Enum.take(p, root_len) != root_path -> acc
-        true -> MapSet.put(acc, {spur, Enum.at(p, root_len)})
-      end
-    end)
+      {:ok, {d, u}, rest} ->
+        cond do
+          # Stale entry: `u` was re-queued with a shorter distance.
+          d > Map.fetch!(dists, u) ->
+            spur_settle(out, rest, dists, parents, target, forbidden)
+
+          u === target ->
+            {:ok, {path_to(parents, u, [u]), d}}
+
+          true ->
+            {heap, dists, parents} =
+              out
+              |> Map.get(u, %{})
+              |> Enum.reduce({rest, dists, parents}, &spur_relax(&1, &2, u, d, forbidden))
+
+            spur_settle(out, heap, dists, parents, target, forbidden)
+        end
+    end
   end
 
-  # Build a graph with given vertices and edges removed. We preserve graph
-  # type and edge weights, and silently drop edges incident to removed
-  # vertices.
-  defp build_modified_graph(g, forbidden_vertices, forbidden_edges) do
-    g
-    |> Graph.vertices()
-    |> Enum.reject(&MapSet.member?(forbidden_vertices, &1))
-    |> Enum.reduce(Graph.new(type: g.type), fn v, acc -> Graph.add_vertex(acc, v) end)
-    |> add_filtered_edges(g, forbidden_vertices, forbidden_edges)
+  defp spur_relax({_v, []}, acc, _u, _d, _forbidden), do: acc
+
+  defp spur_relax({v, edges}, {heap, dists, parents} = acc, u, d, {vertices, edge_set}) do
+    alt = d + min_weight(edges)
+
+    if is_map_key(vertices, v) or MapSet.member?(edge_set, {u, v}) or
+         alt >= Map.get(dists, v, :infinity),
+       do: acc,
+       else: {MinHeap.insert(heap, {alt, v}), Map.put(dists, v, alt), Map.put(parents, v, u)}
   end
 
-  defp add_filtered_edges(acc, g, forbidden_vertices, forbidden_edges) do
-    Enum.reduce(g.out_edges, acc, fn {from, targets}, acc1 ->
-      if MapSet.member?(forbidden_vertices, from),
-        do: acc1,
-        else: add_targets(acc1, from, targets, forbidden_vertices, forbidden_edges)
-    end)
+  defp path_to(parents, v, acc) do
+    case Map.get(parents, v) do
+      nil -> acc
+      u -> path_to(parents, u, [u | acc])
+    end
   end
 
-  defp add_targets(acc, from, targets, forbidden_vertices, forbidden_edges) do
-    Enum.reduce(targets, acc, fn {to, edge_list}, acc2 ->
-      if MapSet.member?(forbidden_vertices, to) or
-           MapSet.member?(forbidden_edges, {from, to}) do
-        acc2
-      else
-        Enum.reduce(edge_list, acc2, fn e, a ->
-          Graph.add_edge(a, from, to, weight: e.weight, label: e.label)
-        end)
-      end
-    end)
-  end
-
-  # Sum of minimum edge weights between consecutive vertices on a path.
-  defp path_weight(_g, [_only]), do: 0.0
-
-  defp path_weight(g, [u, v | rest]) do
-    w = g |> Graph.edges_between(u, v) |> Enum.map(& &1.weight) |> Enum.min()
-    w + path_weight(g, [v | rest])
-  end
-
-  defp path_weight(_g, []), do: 0.0
-
-  defp loopless?(path), do: length(path) == path |> MapSet.new() |> MapSet.size()
+  defp min_weight([e | es]), do: Enum.reduce(es, e.weight, &min(&1.weight, &2))
 
   defp pop_unseen(heap, seen) do
     case MinHeap.pop(heap) do

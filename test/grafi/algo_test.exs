@@ -16,9 +16,9 @@ defmodule Grafi.AlgoTest do
   end
 
   test "BFS order", %{g: g} do
-    order = Grafi.bfs(g, :a) |> Enum.to_list()
-    assert hd(order) == :a
-    assert length(order) == 4
+    # Siblings (:b, :c) come in map order; depth order is fixed.
+    assert [:a, s1, s2, :d] = Grafi.bfs(g, :a) |> Enum.to_list()
+    assert Enum.sort([s1, s2]) == [:b, :c]
   end
 
   test "DFS visits all", %{g: g} do
@@ -27,14 +27,14 @@ defmodule Grafi.AlgoTest do
   end
 
   test "Dijkstra shortest path", %{g: g} do
-    assert {:ok, {path, dist}} = Grafi.shortest_path(g, :a, :d)
+    assert {:ok, {path, dist}} = Grafi.dijkstra(g, :a, :d)
     assert path == [:a, :b, :c, :d]
     assert dist == 4.0
   end
 
   test "Dijkstra no path" do
     g = Grafi.new() |> Grafi.add_vertices([:a, :b])
-    assert Grafi.shortest_path(g, :a, :b) == :no_path
+    assert Grafi.dijkstra(g, :a, :b) == {:error, :no_path}
   end
 
   test "PageRank" do
@@ -59,8 +59,10 @@ defmodule Grafi.AlgoTest do
 
   test "find_cycle" do
     g = Grafi.new() |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
-    assert {:ok, cycle} = Grafi.find_cycle(g)
-    assert length(cycle) >= 3
+    assert {:ok, [first | _] = cycle} = Grafi.find_cycle(g)
+    assert List.last(cycle) == first
+    assert length(cycle) == 4
+    assert Enum.all?(Enum.zip(cycle, tl(cycle)), fn {u, v} -> Grafi.Graph.has_edge?(g, u, v) end)
   end
 
   test "SCC" do
@@ -68,7 +70,7 @@ defmodule Grafi.AlgoTest do
       Grafi.new()
       |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:d, :c}])
 
-    sccs = Grafi.scc(g)
+    sccs = Grafi.strongly_connected_components(g)
     big_scc = Enum.find(sccs, &(length(&1) == 3))
     assert big_scc != nil
     assert MapSet.new(big_scc) == MapSet.new([:a, :b, :c])
@@ -80,8 +82,11 @@ defmodule Grafi.AlgoTest do
       |> Grafi.add_edges([{:a, :b}, {:b, :a}, {:b, :c}])
 
     cg = Grafi.condensation(g)
-    # The cycle {:a, :b} should be contracted
-    assert Grafi.Graph.num_vertices(cg) == 2
+    # The cycle {:a, :b} is contracted to vertex 0, {:c} is vertex 1.
+    assert Enum.sort(Grafi.Graph.vertices(cg)) == [0, 1]
+    assert Grafi.Graph.label(cg, 0) == [:a, :b]
+    assert Grafi.Graph.label(cg, 1) == [:c]
+    assert Enum.map(Grafi.Graph.edges(cg), &{&1.from, &1.to}) == [{0, 1}]
   end
 
   test "Bellman-Ford" do
@@ -134,7 +139,7 @@ defmodule Grafi.AlgoTest do
     # a->b->c->d = 1+2+1 = 4 beats a->c->d = 5+1 = 6.
     assert {:ok, {[:a, :b, :c, :d], 4.0}} = Grafi.a_star(g, :a, :d, fn _ -> 0 end)
     # Must agree with Dijkstra on the same graph.
-    assert Grafi.a_star(g, :a, :d, fn _ -> 0 end) == Grafi.shortest_path(g, :a, :d)
+    assert Grafi.a_star(g, :a, :d, fn _ -> 0 end) == Grafi.dijkstra(g, :a, :d)
   end
 
   test "A* with an admissible heuristic still finds the optimal path", %{g: g} do
@@ -149,9 +154,9 @@ defmodule Grafi.AlgoTest do
     assert {:ok, {[:a, :b, :c, :d], 4.0}} = Grafi.a_star(g, :a, :d, heur)
   end
 
-  test "A* returns :no_path when target is unreachable" do
+  test "A* returns {:error, :no_path} when target is unreachable" do
     g = Grafi.new() |> Grafi.add_vertices([:a, :b]) |> Grafi.add_edge(:a, :a)
-    assert Grafi.a_star(g, :a, :b, fn _ -> 0 end) == :no_path
+    assert Grafi.a_star(g, :a, :b, fn _ -> 0 end) == {:error, :no_path}
   end
 
   test "A* trivial path from a vertex to itself", %{g: g} do
@@ -285,5 +290,32 @@ defmodule Grafi.AlgoTest do
       # From :b → :a is 2.0, :b → :c is 2.0; harmonic = 1/2 + 1/2 = 1.0
       assert_in_delta scores[:b], 1.0, 1.0e-9
     end
+  end
+
+  describe "biconnected components scaling" do
+    # A path is one bridge component per edge. Splitting each one off the
+    # edge stack by its tracked length keeps the run linear; before that fix
+    # it grew superlinearly.
+    @tag :slow
+    test "a path's components cost linear work" do
+      path = fn n ->
+        Enum.reduce(1..n, Grafi.new(type: :undirected), &Grafi.add_edge(&2, &1 - 1, &1))
+      end
+
+      {small, large} = {path.(1_000), path.(16_000)}
+
+      r_small = reductions(fn -> Grafi.Algo.Connectivity.biconnected_components(small) end)
+      r_large = reductions(fn -> Grafi.Algo.Connectivity.biconnected_components(large) end)
+
+      # Linear: about 16x for 16x the edges. The base code took about 64x.
+      assert r_large < 32 * r_small, "16x the edges took #{r_large} vs #{r_small} reductions"
+    end
+  end
+
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_call} = Process.info(self(), :reductions)
+    after_call - before
   end
 end

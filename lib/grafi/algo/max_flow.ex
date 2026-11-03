@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.MaxFlow do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Maximum s-t flow and minimum s-t cut algorithms — Edmonds-Karp,
   Dinic's algorithm, and minimum cut extraction via Max-Flow Min-Cut.
@@ -25,7 +23,8 @@ defmodule Grafi.Algo.MaxFlow do
 
   ## Return shape
 
-  `edmonds_karp/4` and `dinic/4` both return
+  `edmonds_karp/4`, `dinic/4` and `max_flow/4` (which dispatches to one
+  of the two by its `:algo` option) return
   `{:ok, %{flow: total_flow, flows: %{{u, v} => flow}}}` on success.
   `flows` records the net flow pushed along each original directed edge
   (omitting edges that carry zero flow). For undirected graphs the flow
@@ -65,7 +64,9 @@ defmodule Grafi.Algo.MaxFlow do
   """
   @spec edmonds_karp(Graph.t(), any(), any(), keyword()) ::
           {:ok, result()} | {:error, :no_such_vertex | :negative_capacity}
-  def edmonds_karp(%Graph{} = g, source, sink, _opts \\ []) do
+  def edmonds_karp(%Graph{} = g, source, sink, opts \\ []) do
+    _ = Keyword.validate!(opts, [])
+
     with :ok <- validate(g, source, sink) do
       run(g, source, sink, &edmonds_karp_loop/3)
     end
@@ -90,9 +91,42 @@ defmodule Grafi.Algo.MaxFlow do
   """
   @spec dinic(Graph.t(), any(), any(), keyword()) ::
           {:ok, result()} | {:error, :no_such_vertex | :negative_capacity}
-  def dinic(%Graph{} = g, source, sink, _opts \\ []) do
+  def dinic(%Graph{} = g, source, sink, opts \\ []) do
+    _ = Keyword.validate!(opts, [])
+
     with :ok <- validate(g, source, sink) do
       run(g, source, sink, &dinic_loop/3)
+    end
+  end
+
+  @doc """
+  Maximum s-t flow with the algorithm chosen by `:algo`.
+
+  ## Options
+
+    * `:algo` — `:dinic` (the default, `dinic/4`) or `:edmonds_karp`
+      (`edmonds_karp/4`). Any other value raises `ArgumentError`.
+
+  Returns the same shapes as `dinic/4`.
+
+  ## Examples
+
+      iex> g = Grafi.new() |> Grafi.add_edges([
+      ...>   {:s, :a, weight: 3}, {:s, :b, weight: 2},
+      ...>   {:a, :b, weight: 2}, {:a, :t, weight: 2}, {:b, :t, weight: 3}
+      ...> ])
+      iex> {:ok, %{flow: f}} = Grafi.Algo.MaxFlow.max_flow(g, :s, :t, algo: :edmonds_karp)
+      iex> f
+      5
+  """
+  @spec max_flow(Graph.t(), any(), any(), keyword()) ::
+          {:ok, result()} | {:error, :no_such_vertex | :negative_capacity}
+  def max_flow(%Graph{} = g, source, sink, opts \\ []) do
+    opts = Keyword.validate!(opts, algo: :dinic)
+    algo_fn = algo!(opts)
+
+    with :ok <- validate(g, source, sink) do
+      run(g, source, sink, algo_fn)
     end
   end
 
@@ -100,7 +134,7 @@ defmodule Grafi.Algo.MaxFlow do
   Minimum s-t cut via the Max-Flow Min-Cut theorem.
 
   Computes a maximum flow (using `:dinic` by default, switchable via
-  the `:algo` option to `:edmonds_karp`), then BFS-walks the residual
+  the `:algo` option to `:edmonds_karp`, as in `max_flow/4`), then BFS-walks the residual
   graph from `source` along edges with strictly positive residual
   capacity. Vertices reached form the `source_side`; the remaining
   vertices form the `sink_side`. Original edges crossing from source
@@ -131,16 +165,10 @@ defmodule Grafi.Algo.MaxFlow do
            }}
           | {:error, :no_such_vertex | :negative_capacity}
   def min_cut(%Graph{} = g, source, sink, opts \\ []) do
-    algo = Keyword.get(opts, :algo, :dinic)
+    opts = Keyword.validate!(opts, algo: :dinic)
+    run_fn = algo!(opts)
 
     with :ok <- validate(g, source, sink) do
-      run_fn =
-        case algo do
-          :dinic -> &dinic_loop/3
-          :edmonds_karp -> &edmonds_karp_loop/3
-          other -> raise ArgumentError, "unknown :algo #{inspect(other)}"
-        end
-
       all_v = MapSet.new(Graph.vertices(g))
 
       if source == sink do
@@ -170,6 +198,20 @@ defmodule Grafi.Algo.MaxFlow do
   end
 
   # ── Validation ────────────────────────────────────────────────────────
+
+  defp algo!(opts) do
+    case Keyword.fetch!(opts, :algo) do
+      :dinic ->
+        &dinic_loop/3
+
+      :edmonds_karp ->
+        &edmonds_karp_loop/3
+
+      other ->
+        raise ArgumentError,
+              "expected :algo to be :dinic or :edmonds_karp, got: #{inspect(other)}"
+    end
+  end
 
   defp validate(g, source, sink) do
     cond do

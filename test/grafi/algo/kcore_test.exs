@@ -75,8 +75,7 @@ defmodule Grafi.Algo.KCoreTest do
 
       sub = KCore.k_core(g, 2)
       assert Enum.sort(Graph.vertices(sub)) == [:a, :b, :c]
-      # `Graph.edges/1` lists each undirected edge once.
-      assert length(Graph.edges(sub)) == 3
+      assert Graph.num_edges(sub) == 3
       assert sub.type == :undirected
     end
 
@@ -133,7 +132,11 @@ defmodule Grafi.Algo.KCoreTest do
   describe "property: core number bounded by degree" do
     property "every vertex's core number <= its degree" do
       check all(
-              vs <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 10),
+              vs <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 10
+                ),
               edges <- list_of({member_of(vs), member_of(vs)}, max_length: 20)
             ) do
         g =
@@ -148,6 +151,71 @@ defmodule Grafi.Algo.KCoreTest do
                  "core #{c} > degree #{Graph.degree(g, v)} for #{inspect(v)}"
         end
       end
+    end
+  end
+
+  describe "property: matches a naive peeling reference" do
+    property "core numbers equal repeated removal of vertices of degree < k" do
+      check all(g <- Grafi.Test.Generators.graph(max_vertices: 12, max_edges: 30)) do
+        assert KCore.core_numbers(g) == naive_cores(g)
+      end
+    end
+  end
+
+  describe "scaling" do
+    # Batagelj–Zaversnik is O(V + E): 4x the leaves takes about 4-5x as
+    # long. The old peeling rewrote a degree-indexed tuple per decrement,
+    # O(V · Δ), so a star went quadratic (16x; over 60 s at 100k leaves).
+    # Wall-clock, not reductions: `put_elem/3` copies the tuple for a single
+    # reduction, so the old code scaled linearly in reductions (5x). The
+    # margin sits between the two (10x). Best of 3.
+    @tag :slow
+    test "core numbers of a star scale linearly up to 100k leaves" do
+      # One input alive at a time, so timed runs don't GC the other.
+      best = fn n ->
+        g = Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1))
+        cores = KCore.core_numbers(g)
+        assert map_size(cores) == n + 1
+        assert Enum.all?(cores, fn {_v, c} -> c == 1 end)
+
+        Enum.min(
+          for _ <- 1..3 do
+            :erlang.garbage_collect()
+            elem(:timer.tc(KCore, :core_numbers, [g]), 0)
+          end
+        )
+      end
+
+      {t_small, t_large} = {best.(25_000), best.(100_000)}
+      assert t_large < 10 * t_small, "4x the leaves took #{Float.round(t_large / t_small, 1)}x"
+    end
+  end
+
+  # Core number of v = the largest k such that v survives repeatedly deleting
+  # every vertex with fewer than k distinct non-self neighbours.
+  defp naive_cores(g) do
+    adj =
+      Map.new(Graph.vertices(g), fn v ->
+        {v, g |> Graph.neighbors(v) |> List.delete(v) |> MapSet.new()}
+      end)
+
+    Map.new(adj, fn {v, _} ->
+      {v, Enum.find(0..map_size(adj), fn k -> not Map.has_key?(k_survivors(adj, k + 1), v) end)}
+    end)
+  end
+
+  defp k_survivors(adj, k) do
+    drop = for {v, ns} <- adj, MapSet.size(ns) < k, do: v
+
+    if drop == [] do
+      adj
+    else
+      gone = MapSet.new(drop)
+
+      adj
+      |> Map.drop(drop)
+      |> Map.new(fn {v, ns} -> {v, MapSet.difference(ns, gone)} end)
+      |> k_survivors(k)
     end
   end
 end

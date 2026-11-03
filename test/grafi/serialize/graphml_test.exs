@@ -71,7 +71,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graphml>
       """
 
-      g = GraphML.from_graphml(xml)
+      {:ok, g} = GraphML.from_graphml(xml)
       assert g.type == :directed
       assert Graph.has_edge?(g, "a", "b")
     end
@@ -88,7 +88,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graphml>
       """
 
-      g = GraphML.from_graphml(xml)
+      {:ok, g} = GraphML.from_graphml(xml)
       assert Graph.has_vertex?(g, "a&b")
       assert Graph.has_edge?(g, "a&b", "c")
     end
@@ -111,7 +111,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         |> Graph.add_edge("a", "c", weight: 7.0, label: "diagonal")
 
       xml = GraphML.to_graphml(g)
-      g2 = GraphML.from_graphml(xml)
+      {:ok, g2} = GraphML.from_graphml(xml)
 
       assert g2.type == :directed
       assert Graph.num_vertices(g2) == 3
@@ -128,7 +128,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         |> Graph.add_edge("x", "y", weight: 1.5)
 
       xml = GraphML.to_graphml(g)
-      g2 = GraphML.from_graphml(xml)
+      {:ok, g2} = GraphML.from_graphml(xml)
 
       assert g2.type == :undirected
       assert Graph.has_edge?(g2, "x", "y")
@@ -142,7 +142,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         |> Graph.add_edge("a", "b", weight: 2.0)
 
       xml = GraphML.to_graphml(g)
-      g2 = GraphML.from_graphml(xml)
+      {:ok, g2} = GraphML.from_graphml(xml)
 
       assert Graph.num_edges(g2) == 2
       assert length(Graph.edges_between(g2, "a", "b")) == 2
@@ -154,7 +154,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         |> Graph.add_edge("a<b", "c&d>e")
 
       xml = GraphML.to_graphml(g)
-      g2 = GraphML.from_graphml(xml)
+      {:ok, g2} = GraphML.from_graphml(xml)
 
       assert Graph.has_edge?(g2, "a<b", "c&d>e")
     end
@@ -162,7 +162,7 @@ defmodule Grafi.Serialize.GraphMLTest do
     test "vertex labels round-trip" do
       g = Graph.new() |> Graph.add_vertex("a", label: "Hello & World")
       xml = GraphML.to_graphml(g)
-      g2 = GraphML.from_graphml(xml)
+      {:ok, g2} = GraphML.from_graphml(xml)
 
       assert Graph.label(g2, "a") == "Hello & World"
     end
@@ -180,7 +180,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graphml>
       """
 
-      g = GraphML.from_graphml(xml)
+      {:ok, g} = GraphML.from_graphml(xml)
       assert Enum.sort(Graph.vertices(g)) == ["a", "b"]
       assert Graph.has_edge?(g, "a", "b")
     end
@@ -199,7 +199,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graphml>
       """
 
-      g = GraphML.from_graphml(xml)
+      {:ok, g} = GraphML.from_graphml(xml)
       assert Graph.label(g, "a") == nil
       assert Graph.label(g, "b") == "Bee"
       assert [%{weight: 4.0, label: "x"}] = Graph.edges_between(g, "a", "b")
@@ -214,7 +214,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graphml>
       """
 
-      assert GraphML.from_graphml(xml).type == :directed
+      assert GraphML.from_graphml!(xml).type == :directed
     end
 
     test "single-quoted attributes and numeric character references" do
@@ -226,7 +226,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graphml>
       """
 
-      g = GraphML.from_graphml(xml)
+      {:ok, g} = GraphML.from_graphml(xml)
       assert g.type == :undirected
       assert Graph.label(g, "A1") == "Bee"
     end
@@ -265,7 +265,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graph>
       """
 
-      g = GraphML.from_graphml(xml)
+      {:ok, g} = GraphML.from_graphml(xml)
       assert Graph.vertices(g) == ["a"]
       assert Graph.label(g, "a") == ~s(</node><edge source="a" target="b"/> &amp;)
     end
@@ -280,7 +280,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       </graph>
       """
 
-      assert Graph.label(GraphML.from_graphml(xml), "a") == "A"
+      assert Graph.label(GraphML.from_graphml!(xml), "a") == "A"
     end
 
     test "a data element without its end tag is an error" do
@@ -301,7 +301,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         ~s(<graph edgedefault="directed"><node id="a"><data key="vlabel">#{label}</data></node>) <>
           padding <> "</graph>"
 
-      decoded = Graph.label(GraphML.from_graphml(xml), "a")
+      decoded = Graph.label(GraphML.from_graphml!(xml), "a")
       assert decoded == label
       assert :binary.referenced_byte_size(decoded) < 100_000
     end
@@ -330,7 +330,7 @@ defmodule Grafi.Serialize.GraphMLTest do
       xml = GraphML.to_graphml(g)
 
       refute xml =~ ~r/(id|source)="a[\t\n\r]b"/
-      g2 = GraphML.from_graphml(xml)
+      {:ok, g2} = GraphML.from_graphml(xml)
       assert Enum.sort(Graph.vertices(g2)) == Enum.sort(["z" | ids])
       for id <- ids, do: assert(Graph.has_edge?(g2, id, "z"))
     end
@@ -338,7 +338,7 @@ defmodule Grafi.Serialize.GraphMLTest do
     test "CR in data text is a character reference" do
       xml = GraphML.to_graphml(Graph.add_vertex(Graph.new(), "a", label: "x\ry"))
       refute xml =~ "\r"
-      assert Graph.label(GraphML.from_graphml(xml), "a") == "x\ry"
+      assert Graph.label(GraphML.from_graphml!(xml), "a") == "x\ry"
     end
   end
 
@@ -355,7 +355,7 @@ defmodule Grafi.Serialize.GraphMLTest do
           |> Graph.add_edge("v#{i}", "z", label: label)
         end)
 
-      g2 = g |> GraphML.to_graphml() |> GraphML.from_graphml()
+      g2 = g |> GraphML.to_graphml() |> GraphML.from_graphml!()
 
       for {label, i} <- Enum.with_index(labels) do
         assert Graph.label(g2, "v#{i}") == label
@@ -374,7 +374,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         |> Graph.add_edge("b", "c", weight: 3.0, label: "bc")
         |> Graph.add_edge("c", "d")
 
-      g2 = g |> GraphML.to_graphml() |> GraphML.from_graphml()
+      g2 = g |> GraphML.to_graphml() |> GraphML.from_graphml!()
 
       for v <- ["a", "b", "c", "d"], do: assert(Graph.label(g2, v) == Graph.label(g, v))
       assert [%{weight: 2.0, label: nil}] = Graph.edges_between(g2, "a", "b")
@@ -401,7 +401,7 @@ defmodule Grafi.Serialize.GraphMLTest do
         )
       end
 
-      g2 = GraphML.from_graphml(large)
+      {:ok, g2} = GraphML.from_graphml(large)
       assert Graph.num_vertices(g2) == 20_000
       assert Graph.num_edges(g2) == 100_000
       assert Graph.label(g2, "v0") == "L0"
@@ -424,7 +424,7 @@ defmodule Grafi.Serialize.GraphMLTest do
 
     test "accepts input within the limit" do
       xml = GraphML.to_graphml(Graph.new() |> Graph.add_edge(:a, :b))
-      g = GraphML.from_graphml(xml, max_bytes: byte_size(xml))
+      {:ok, g} = GraphML.from_graphml(xml, max_bytes: byte_size(xml))
       assert Graph.has_edge?(g, "a", "b")
     end
 

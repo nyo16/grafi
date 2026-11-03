@@ -19,7 +19,7 @@ defmodule Grafi.Serialize.VerticesAsAtomsTest do
         _ = @decode.("warm up", vertices_as_atoms: true)
 
         before = :erlang.system_info(:atom_count)
-        g = @decode.("ok " <> token, vertices_as_atoms: true)
+        {:ok, g} = @decode.("ok " <> token, vertices_as_atoms: true)
         after_count = :erlang.system_info(:atom_count)
 
         assert after_count == before

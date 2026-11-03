@@ -19,11 +19,13 @@ defmodule Grafi.Algo.Bidirectional do
 
   @doc """
   Bidirectional Dijkstra shortest path. Returns the same shapes as
-  `Grafi.shortest_path/3`:
+  `Grafi.Algo.ShortestPath.dijkstra/4`:
 
     * `{:ok, {path, weight}}` on success
-    * `:no_path` if no path exists
+    * `{:error, :no_path}` if no path exists
     * `{:error, :no_such_vertex}` if either endpoint is missing
+
+  It takes no options yet; unknown options raise `ArgumentError`.
 
   Edge weights must be non-negative. For undirected graphs the backward
   frontier walks the same adjacency as the forward one; for directed
@@ -38,8 +40,10 @@ defmodule Grafi.Algo.Bidirectional do
       {:ok, {[:a, :b, :c], 3.0}}
   """
   @spec dijkstra(Graph.t(), any(), any(), keyword()) ::
-          {:ok, {[any()], number()}} | :no_path | {:error, :no_such_vertex}
-  def dijkstra(%Graph{} = g, source, target, _opts \\ []) do
+          {:ok, {[any()], number()}} | {:error, :no_path | :no_such_vertex}
+  def dijkstra(%Graph{} = g, source, target, opts \\ []) do
+    _ = Keyword.validate!(opts, [])
+
     cond do
       not Graph.has_vertex?(g, source) ->
         {:error, :no_such_vertex}
@@ -47,7 +51,7 @@ defmodule Grafi.Algo.Bidirectional do
       not Graph.has_vertex?(g, target) ->
         {:error, :no_such_vertex}
 
-      source == target ->
+      source === target ->
         {:ok, {[source], 0.0}}
 
       true ->
@@ -74,7 +78,7 @@ defmodule Grafi.Algo.Bidirectional do
 
     case loop(g, fwd, bwd, @inf, nil) do
       {:no_path} ->
-        :no_path
+        {:error, :no_path}
 
       {:ok, meet, total, fwd_final, bwd_final} ->
         path =

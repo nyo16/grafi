@@ -20,22 +20,22 @@ graph =
 
 IO.puts("Road network: #{Grafi.num_vertices(graph)} cities, #{Grafi.num_edges(graph)} roads\n")
 
-case Grafi.shortest_path(graph, "Athens", "Olympia") do
+case Grafi.dijkstra(graph, "Athens", "Olympia") do
   {:ok, {path, cost}} ->
     IO.puts("Shortest route Athens → Olympia:")
     IO.puts("  " <> Enum.join(path, " → "))
     IO.puts("  total: #{cost} km")
 
-  :no_path ->
+  {:error, :no_path} ->
     IO.puts("No route from Athens to Olympia.")
 end
 
 IO.puts("")
 
-case Grafi.shortest_path(graph, "Athens", "Heraklion") do
+case Grafi.dijkstra(graph, "Athens", "Heraklion") do
   {:ok, {path, cost}} ->
     IO.puts("Athens → Heraklion: #{Enum.join(path, " → ")} (#{cost} km)")
 
-  :no_path ->
-    IO.puts("Athens → Heraklion: :no_path (Crete is an island)")
+  {:error, :no_path} ->
+    IO.puts("Athens → Heraklion: no path (Crete is an island)")
 end

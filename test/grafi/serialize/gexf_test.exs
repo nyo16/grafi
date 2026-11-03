@@ -72,7 +72,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      g = GEXF.from_gexf(xml)
+      {:ok, g} = GEXF.from_gexf(xml)
       assert g.type == :directed
       assert Graph.has_edge?(g, "a", "b")
     end
@@ -93,7 +93,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      g = GEXF.from_gexf(xml)
+      {:ok, g} = GEXF.from_gexf(xml)
       assert Graph.has_edge?(g, "a&b", "c")
     end
 
@@ -115,7 +115,7 @@ defmodule Grafi.Serialize.GEXFTest do
         |> Graph.add_edge("a", "c", weight: 7.0, label: "diagonal")
 
       xml = GEXF.to_gexf(g)
-      g2 = GEXF.from_gexf(xml)
+      {:ok, g2} = GEXF.from_gexf(xml)
 
       assert g2.type == :directed
       assert Graph.num_vertices(g2) == 3
@@ -132,7 +132,7 @@ defmodule Grafi.Serialize.GEXFTest do
         |> Graph.add_edge("x", "y", weight: 1.5)
 
       xml = GEXF.to_gexf(g)
-      g2 = GEXF.from_gexf(xml)
+      {:ok, g2} = GEXF.from_gexf(xml)
 
       assert g2.type == :undirected
       assert Graph.has_edge?(g2, "x", "y")
@@ -146,7 +146,7 @@ defmodule Grafi.Serialize.GEXFTest do
         |> Graph.add_edge("a", "b", weight: 2.0)
 
       xml = GEXF.to_gexf(g)
-      g2 = GEXF.from_gexf(xml)
+      {:ok, g2} = GEXF.from_gexf(xml)
 
       assert Graph.num_edges(g2) == 2
       assert length(Graph.edges_between(g2, "a", "b")) == 2
@@ -155,14 +155,14 @@ defmodule Grafi.Serialize.GEXFTest do
     test "vertex with XML special chars round-trips" do
       g = Graph.new() |> Graph.add_edge("a<b", "c&d>e")
       xml = GEXF.to_gexf(g)
-      g2 = GEXF.from_gexf(xml)
+      {:ok, g2} = GEXF.from_gexf(xml)
       assert Graph.has_edge?(g2, "a<b", "c&d>e")
     end
 
     test "vertex labels round-trip" do
       g = Graph.new() |> Graph.add_vertex("a", label: "Hello & World")
       xml = GEXF.to_gexf(g)
-      g2 = GEXF.from_gexf(xml)
+      {:ok, g2} = GEXF.from_gexf(xml)
       assert Graph.label(g2, "a") == "Hello & World"
     end
   end
@@ -183,7 +183,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      g = GEXF.from_gexf(xml)
+      {:ok, g} = GEXF.from_gexf(xml)
       assert Enum.sort(Graph.vertices(g)) == ["a", "b"]
       assert Graph.label(g, "a") == "id='admin'"
       assert [%{label: "source='admin' target='admin'"}] = Graph.edges_between(g, "a", "b")
@@ -198,7 +198,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      assert GEXF.from_gexf(xml).type == :directed
+      assert GEXF.from_gexf!(xml).type == :directed
     end
 
     test "single-quoted attributes and numeric character references" do
@@ -210,7 +210,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      g = GEXF.from_gexf(xml)
+      {:ok, g} = GEXF.from_gexf(xml)
       assert g.type == :undirected
       assert Graph.label(g, "A1") == "Bee"
     end
@@ -230,7 +230,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      g = GEXF.from_gexf(xml)
+      {:ok, g} = GEXF.from_gexf(xml)
       assert Graph.label(g, "a") == "A"
       assert Graph.label(g, "b") == nil
       assert [%{weight: 2.0}] = Graph.edges_between(g, "a", "b")
@@ -270,7 +270,7 @@ defmodule Grafi.Serialize.GEXFTest do
       </gexf>
       """
 
-      g = GEXF.from_gexf(xml)
+      {:ok, g} = GEXF.from_gexf(xml)
       assert Enum.sort(Graph.vertices(g)) == ["a", "b"]
       assert Graph.num_edges(g) == 0
     end
@@ -303,7 +303,7 @@ defmodule Grafi.Serialize.GEXFTest do
       xml = GEXF.to_gexf(g)
       refute xml =~ ~r/"a[\t\n\r]b"/
 
-      g2 = GEXF.from_gexf(xml)
+      {:ok, g2} = GEXF.from_gexf(xml)
       assert Enum.sort(Graph.vertices(g2)) == Enum.sort(["z" | ids])
 
       for id <- ids do
@@ -325,7 +325,7 @@ defmodule Grafi.Serialize.GEXFTest do
         |> Graph.add_edge("b", "c", weight: 3.0, label: "bc")
         |> Graph.add_edge("c", "d")
 
-      g2 = g |> GEXF.to_gexf() |> GEXF.from_gexf()
+      g2 = g |> GEXF.to_gexf() |> GEXF.from_gexf!()
 
       for v <- ["a", "b", "c", "d"], do: assert(Graph.label(g2, v) == Graph.label(g, v))
       assert [%{weight: 2.0, label: nil}] = Graph.edges_between(g2, "a", "b")
@@ -352,7 +352,7 @@ defmodule Grafi.Serialize.GEXFTest do
         )
       end
 
-      g2 = GEXF.from_gexf(large)
+      {:ok, g2} = GEXF.from_gexf(large)
       assert Graph.num_vertices(g2) == 20_000
       assert Graph.num_edges(g2) == 100_000
       assert Graph.label(g2, "v0") == "L0"
@@ -375,7 +375,7 @@ defmodule Grafi.Serialize.GEXFTest do
 
     test "accepts input within the limit" do
       xml = GEXF.to_gexf(Graph.new() |> Graph.add_edge(:a, :b))
-      g = GEXF.from_gexf(xml, max_bytes: byte_size(xml))
+      {:ok, g} = GEXF.from_gexf(xml, max_bytes: byte_size(xml))
       assert Graph.has_edge?(g, "a", "b")
     end
 

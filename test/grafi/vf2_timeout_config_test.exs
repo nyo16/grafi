@@ -20,7 +20,10 @@ defmodule Grafi.VF2TimeoutConfigTest do
 
   # The VF2 timeout fixture from `Grafi.EngineErrorsTest`: a dense host and a
   # K14 pattern take seconds to refute exhaustively.
-  defp hard_instance, do: {Generators.erdos_renyi(40, 0.5, seed: 42), Generators.complete(14)}
+  defp hard_instance,
+    do:
+      {Generators.erdos_renyi(40, 0.5, seed: 42, type: :undirected),
+       Generators.complete(14, type: :undirected)}
 
   test "a finite config value bounds the search when :timeout is absent" do
     Application.put_env(:grafi, :vf2_timeout, 20)
@@ -36,8 +39,8 @@ defmodule Grafi.VF2TimeoutConfigTest do
     Application.put_env(:grafi, :vf2_timeout, :bogus)
 
     assert Isomorphism.subgraph_isomorphic?(
-             Generators.complete(4),
-             Generators.complete(3),
+             Generators.complete(4, type: :undirected),
+             Generators.complete(3, type: :undirected),
              engine: :elixir,
              timeout: :infinity
            ) == true
@@ -47,7 +50,9 @@ defmodule Grafi.VF2TimeoutConfigTest do
     Application.put_env(:grafi, :vf2_timeout, :bogus)
 
     assert_raise ArgumentError, ~r/vf2_timeout/, fn ->
-      Isomorphism.subgraph_isomorphic?(Generators.complete(4), Generators.complete(3),
+      Isomorphism.subgraph_isomorphic?(
+        Generators.complete(4, type: :undirected),
+        Generators.complete(3, type: :undirected),
         engine: :elixir
       )
     end

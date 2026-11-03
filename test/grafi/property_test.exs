@@ -4,12 +4,15 @@ defmodule Grafi.PropertyTest do
 
   alias Grafi.Graph
 
-  # Generator for a list of unique atom vertex names
+  # Generator for a list of unique vertex names (strings: atoms would grow
+  # the atom table)
   defp vertex_list do
-    gen all(names <- uniq_list_of(atom(:alphanumeric), min_length: 0, max_length: 20)) do
+    gen all(names <- uniq_list_of(vertex_name(), min_length: 0, max_length: 20)) do
       names
     end
   end
+
+  defp vertex_name, do: string(:alphanumeric, min_length: 1, max_length: 8)
 
   # Generator for a graph with random vertices and weighted edges, returned
   # with the vertex list and the `{u, v, weight}` edge list in insertion
@@ -20,7 +23,7 @@ defmodule Grafi.PropertyTest do
   defp graph_with_vertices do
     gen all(
           type <- member_of([:directed, :undirected]),
-          verts <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 15),
+          verts <- uniq_list_of(vertex_name(), min_length: 1, max_length: 15),
           edges <-
             list_of({member_of(verts), member_of(verts), member_of([1.0, 2.0, 5.0])},
               max_length: 30
@@ -176,6 +179,20 @@ defmodule Grafi.PropertyTest do
           assert_matches_model(g, m, op)
           {g, m}
         end)
+      end
+    end
+
+    property "delete_vertex(g, v) equals the graph built without v" do
+      check all(
+              {g, verts, edges} <- graph_with_vertices(),
+              v <- member_of(verts)
+            ) do
+        kept = for {a, b, w} <- edges, a != v and b != v, do: {a, b, weight: w}
+
+        expected =
+          Graph.new(type: g.type) |> Graph.add_vertices(verts -- [v]) |> Graph.add_edges(kept)
+
+        assert Graph.delete_vertex(g, v) == expected
       end
     end
 

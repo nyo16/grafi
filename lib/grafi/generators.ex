@@ -1,22 +1,20 @@
 defmodule Grafi.Generators do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Synthetic graph generators — classical (complete, cycle, path, grid)
   and random (Erdős–Rényi, Barabási–Albert, Watts–Strogatz, random
   regular).
 
-  Every generator returns a `%Grafi.Graph{}`. Default direction is
-  `:undirected`; pass `directed: true` for a directed version. Edge
-  weights default to `1.0`; pass `weighted: true` to make that
-  explicit (the default constructor already assigns `1.0`, this option
-  is reserved for future use). Vertices are integers `0..n-1` except
-  for `grid/3`, whose vertices are `{i, j}` tuples.
+  Every generator returns a `%Grafi.Graph{}`. Like `Grafi.Graph.new/1`,
+  generators build a directed graph by default; pass `type: :undirected`
+  for the undirected version. Edge weights are `1.0`. Vertices are
+  integers `0..n-1` except for `grid/3`, whose vertices are `{i, j}`
+  tuples. Unknown options raise `ArgumentError`.
 
   Random generators accept a `:seed` option; when present, the
   generator-local `:rand` state is seeded with `{:exsss, seed}` for
   reproducible runs. Without a seed, generators draw from the calling
-  process's `:rand` state.
+  process's `:rand` state. A `:seed` that is not an integer raises
+  `ArgumentError`.
   """
 
   alias Grafi.Graph
@@ -27,20 +25,20 @@ defmodule Grafi.Generators do
   Complete graph K_n on integer vertices `0..n-1`.
 
   ## Options
-    * `:directed` — `true` for a directed complete graph (with both
-      `(i, j)` and `(j, i)` for every distinct pair). Default `false`.
-    * `:weighted` — reserved; weights are always `1.0`.
+    * `:type` — `:directed` (default; both `(i, j)` and `(j, i)` for every
+      distinct pair) or `:undirected`.
 
   ## Examples
 
-      iex> g = Grafi.Generators.complete(4)
+      iex> g = Grafi.Generators.complete(4, type: :undirected)
       iex> {Grafi.Graph.num_vertices(g), Grafi.Graph.num_edges(g)}
       {4, 6}
   """
   @spec complete(non_neg_integer(), keyword()) :: Graph.t()
   def complete(n, opts \\ []) when is_integer(n) and n >= 0 do
+    opts = opts!(opts, [])
     g = new_graph(n, opts)
-    directed? = Keyword.get(opts, :directed, false)
+    directed? = opts[:type] == :directed
 
     Enum.reduce(0..(n - 1)//1, g, fn i, acc ->
       Enum.reduce((i + 1)..(n - 1)//1, acc, fn j, a ->
@@ -52,7 +50,7 @@ defmodule Grafi.Generators do
 
   @doc """
   Cycle graph C_n on integer vertices `0..n-1`. Edges connect each `i`
-  to `i+1 mod n`.
+  to `i+1 mod n`. Option: `:type` (default `:directed`).
 
   ## Examples
 
@@ -62,13 +60,13 @@ defmodule Grafi.Generators do
   """
   @spec cycle(non_neg_integer(), keyword()) :: Graph.t()
   def cycle(n, opts \\ []) when is_integer(n) and n >= 0 do
-    g = new_graph(n, opts)
+    g = new_graph(n, opts!(opts, []))
     if n < 2, do: g, else: Enum.reduce(0..(n - 1)//1, g, &Graph.add_edge(&2, &1, rem(&1 + 1, n)))
   end
 
   @doc """
   Path graph P_n on integer vertices `0..n-1`. Edges connect each `i`
-  to `i+1`.
+  to `i+1`. Option: `:type` (default `:directed`).
 
   ## Examples
 
@@ -78,13 +76,15 @@ defmodule Grafi.Generators do
   """
   @spec path(non_neg_integer(), keyword()) :: Graph.t()
   def path(n, opts \\ []) when is_integer(n) and n >= 0 do
-    g = new_graph(n, opts)
+    g = new_graph(n, opts!(opts, []))
     if n < 2, do: g, else: Enum.reduce(0..(n - 2)//1, g, &Graph.add_edge(&2, &1, &1 + 1))
   end
 
   @doc """
   m × n grid graph. Vertices are `{i, j}` tuples with `0 ≤ i < m` and
-  `0 ≤ j < n`. Each vertex is connected to its four-axis neighbors.
+  `0 ≤ j < n`. Each vertex is connected to its four-axis neighbors (in
+  increasing `i`/`j` direction when directed). Option: `:type` (default
+  `:directed`).
 
   ## Examples
 
@@ -94,8 +94,7 @@ defmodule Grafi.Generators do
   """
   @spec grid(non_neg_integer(), non_neg_integer(), keyword()) :: Graph.t()
   def grid(m, n, opts \\ []) when is_integer(m) and is_integer(n) and m >= 0 and n >= 0 do
-    type = if Keyword.get(opts, :directed, false), do: :directed, else: :undirected
-    g = Graph.new(type: type)
+    g = Graph.new(type: opts!(opts, [])[:type])
 
     verts = for i <- 0..(m - 1)//1, j <- 0..(n - 1)//1, do: {i, j}
     g = Enum.reduce(verts, g, &Graph.add_vertex(&2, &1))
@@ -117,7 +116,8 @@ defmodule Grafi.Generators do
 
   ## Options
     * `:seed` — integer seed for reproducibility (uses `:exsss`).
-    * `:directed` — `true` for directed `G(n, p)`. Default `false`.
+    * `:type` — `:directed` (default; each ordered pair independently) or
+      `:undirected`.
 
   ## Examples
 
@@ -128,9 +128,10 @@ defmodule Grafi.Generators do
   @spec erdos_renyi(non_neg_integer(), float(), keyword()) :: Graph.t()
   def erdos_renyi(n, p, opts \\ [])
       when is_integer(n) and n >= 0 and is_number(p) and p >= 0 and p <= 1 do
+    opts = opts!(opts, seed: nil)
     _ = seed_rand(opts)
     g = new_graph(n, opts)
-    directed? = Keyword.get(opts, :directed, false)
+    directed? = opts[:type] == :directed
 
     Enum.reduce(0..(n - 1)//1, g, fn i, acc ->
       js = if directed?, do: 0..(n - 1)//1, else: (i + 1)..(n - 1)//1
@@ -154,6 +155,8 @@ defmodule Grafi.Generators do
 
   ## Options
     * `:seed` — integer seed for reproducibility.
+    * `:type` — `:directed` (default; each new vertex points at its `m`
+      targets) or `:undirected`.
 
   ## Examples
 
@@ -164,8 +167,9 @@ defmodule Grafi.Generators do
   @spec barabasi_albert(pos_integer(), pos_integer(), keyword()) :: Graph.t()
   def barabasi_albert(n, m, opts \\ [])
       when is_integer(n) and is_integer(m) and m >= 1 and n > m do
+    opts = opts!(opts, seed: nil)
     _ = seed_rand(opts)
-    g = complete(m + 1, opts)
+    g = complete(m + 1, type: opts[:type])
 
     # `targets` is the multiset (as a list) used for preferential attachment;
     # each vertex appears once per incident edge.
@@ -201,6 +205,11 @@ defmodule Grafi.Generators do
 
   ## Options
     * `:seed` — integer seed for reproducibility.
+    * `:type` — `:directed` (default) or `:undirected`. The lattice and
+      rewiring are undirected; a directed graph orients each resulting edge
+      from its smaller vertex to its larger one, so in- and out-degrees vary
+      (with `p = 0.0`, vertex `i` points at `i+1..i+k/2` except where the
+      ring wraps past `n - 1`).
 
   ## Examples
 
@@ -212,6 +221,7 @@ defmodule Grafi.Generators do
   def watts_strogatz(n, k, p, opts \\ [])
       when is_integer(n) and is_integer(k) and is_number(p) and n > k and k >= 2 and
              rem(k, 2) == 0 and p >= 0 and p <= 1 do
+    opts = opts!(opts, seed: nil)
     _ = seed_rand(opts)
 
     # Initial ring lattice: connect each i to i+1, i+2, ..., i+k/2 (mod n).
@@ -252,6 +262,11 @@ defmodule Grafi.Generators do
 
   ## Options
     * `:seed` — integer seed for reproducibility.
+    * `:type` — `:directed` (default) or `:undirected`. The pairing is
+      undirected; a directed graph orients each edge from its smaller vertex
+      to its larger one. Every vertex then has total (in + out) degree `d`,
+      but its in- and out-degrees vary, so the graph is not regular in the
+      directed sense.
 
   ## Examples
 
@@ -263,6 +278,7 @@ defmodule Grafi.Generators do
   def random_regular(n, d, opts \\ [])
       when is_integer(n) and is_integer(d) and n > 0 and d >= 0 and
              rem(n * d, 2) == 0 and d < n do
+    opts = opts!(opts, seed: nil)
     _ = seed_rand(opts)
     attempt_regular(n, d, opts, 100)
   end
@@ -276,7 +292,7 @@ defmodule Grafi.Generators do
     half_edges = for v <- 0..(n - 1), _ <- 1..d, do: v
     shuffled = Enum.shuffle(half_edges)
 
-    case pair_off(shuffled, MapSet.new(), []) do
+    case pair_off(shuffled, %{}, []) do
       :retry ->
         attempt_regular(n, d, opts, tries - 1)
 
@@ -293,16 +309,28 @@ defmodule Grafi.Generators do
 
     cond do
       a == b -> :retry
-      MapSet.member?(seen, e) -> :retry
-      true -> pair_off(rest, MapSet.put(seen, e), [e | acc])
+      is_map_key(seen, e) -> :retry
+      true -> pair_off(rest, Map.put(seen, e, true), [e | acc])
     end
   end
 
   # ── Internal helpers ─────────────────────────────────────────────────
 
+  # Validates `opts` (`:type` plus the generator's own `extra` keys, with
+  # defaults) and returns them with defaults filled in.
+  defp opts!(opts, extra) do
+    opts = Keyword.validate!(opts, [type: :directed] ++ extra)
+
+    unless opts[:type] in [:directed, :undirected] do
+      raise ArgumentError,
+            "expected :type to be :directed or :undirected, got: #{inspect(opts[:type])}"
+    end
+
+    opts
+  end
+
   defp new_graph(n, opts) do
-    type = if Keyword.get(opts, :directed, false), do: :directed, else: :undirected
-    g = Graph.new(type: type)
+    g = Graph.new(type: opts[:type])
     if n == 0, do: g, else: Graph.add_vertices(g, Enum.to_list(0..(n - 1)))
   end
 
@@ -314,23 +342,28 @@ defmodule Grafi.Generators do
       seed when is_integer(seed) ->
         _ = :rand.seed(:exsss, {seed, seed, seed})
         :ok
+
+      other ->
+        raise ArgumentError, "expected :seed to be an integer, got: #{inspect(other)}"
     end
   end
 
+  # `picked` is a map `%{vertex => true}`; its keys come out in the same
+  # order MapSet.to_list/1 would give, keeping seeded output unchanged.
   defp sample_distinct(pool, count) do
-    do_sample(pool, MapSet.new(), count)
+    do_sample(pool, %{}, count)
   end
 
-  defp do_sample(_pool, picked, 0), do: MapSet.to_list(picked)
+  defp do_sample(_pool, picked, 0), do: Map.keys(picked)
 
-  defp do_sample([], picked, _count), do: MapSet.to_list(picked)
+  defp do_sample([], picked, _count), do: Map.keys(picked)
 
   defp do_sample(pool, picked, count) do
     candidate = Enum.random(pool)
 
-    if MapSet.member?(picked, candidate),
+    if is_map_key(picked, candidate),
       do: do_sample(pool, picked, count),
-      else: do_sample(pool, MapSet.put(picked, candidate), count - 1)
+      else: do_sample(pool, Map.put(picked, candidate, true), count - 1)
   end
 
   defp pick_new_target(a, b, n, es) do

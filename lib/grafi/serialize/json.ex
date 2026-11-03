@@ -52,7 +52,7 @@ defmodule Grafi.Serialize.JSON do
     * `:max_bytes` — maximum input size in bytes (default 64 MiB, or
       `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
-  Returns the graph on success, or `{:error, reason}`:
+  Returns `{:ok, graph}` on success, or `{:error, reason}`:
 
     * `:malformed_json` — the input is not valid JSON or does not match the
       expected shape (missing `"type"`, `"vertices"`, or `"edges"`, or those
@@ -64,9 +64,18 @@ defmodule Grafi.Serialize.JSON do
     * `{:invalid_label, value}` — a vertex or edge `"label"` is an array or
       an object; labels must be scalars.
     * `{:too_large, size, max}` — see `:max_bytes`.
+
+  Unknown options raise `ArgumentError`.
+
+  ## Examples
+
+      iex> json = ~s({"type": "directed", "vertices": [], "edges": [{"from": 1, "to": 2}]})
+      iex> {:ok, g} = Grafi.Serialize.JSON.from_json(json)
+      iex> Grafi.Graph.num_edges(g)
+      1
   """
   @spec from_json(String.t(), keyword()) ::
-          Graph.t()
+          {:ok, Graph.t()}
           | {:error,
              :malformed_json
              | {:invalid_weight, term()}
@@ -75,12 +84,24 @@ defmodule Grafi.Serialize.JSON do
   def from_json(json, opts \\ [])
 
   def from_json(json, opts) when is_binary(json) do
+    opts = Keyword.validate!(opts, [:max_bytes])
+
     with :ok <- Util.check_size(json, opts) do
       decode(json)
     end
   end
 
-  def from_json(_, _), do: {:error, :malformed_json}
+  def from_json(_, opts) do
+    _ = Keyword.validate!(opts, [:max_bytes])
+    {:error, :malformed_json}
+  end
+
+  @doc """
+  Like `from_json/2`, but returns the graph and raises `ArgumentError`
+  with the reason on failure.
+  """
+  @spec from_json!(String.t(), keyword()) :: Graph.t()
+  def from_json!(json, opts \\ []), do: json |> from_json(opts) |> Util.unwrap!("JSON")
 
   defp decode(json) do
     with {:ok, data} <- JSON.decode(json),
@@ -105,9 +126,8 @@ defmodule Grafi.Serialize.JSON do
   end
 
   defp build_graph(type, vertices, edges) do
-    with {:ok, g} <- reduce_vertices(Graph.new(type: type), vertices),
-         {:ok, g} <- reduce_edges(g, edges) do
-      g
+    with {:ok, g} <- reduce_vertices(Graph.new(type: type), vertices) do
+      reduce_edges(g, edges)
     end
   end
 

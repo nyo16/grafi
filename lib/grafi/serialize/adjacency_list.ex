@@ -53,9 +53,10 @@ defmodule Grafi.Serialize.AdjacencyList do
   """
   @spec to_adjacency_list(Graph.t(), keyword()) :: String.t()
   def to_adjacency_list(%Graph{} = g, opts \\ []) do
-    sep = Keyword.get(opts, :separator, " ")
+    opts = Keyword.validate!(opts, separator: " ", collapse_multi_edges: true)
+    sep = opts[:separator]
     token = &LineIds.vertex_token!(&1, sep, "an adjacency list")
-    collapse? = Keyword.get(opts, :collapse_multi_edges, true)
+    collapse? = opts[:collapse_multi_edges]
 
     Graph.vertices(g)
     |> Enum.map(fn v ->
@@ -76,7 +77,7 @@ defmodule Grafi.Serialize.AdjacencyList do
   Parses an adjacency-list string into a `Grafi.Graph`.
 
   ## Options
-    * `:directed` — `true` (default) or `false`.
+    * `:type` — `:directed` (default) or `:undirected`.
     * `:separator` — token separator. By default tokens are separated by
       any run of whitespace. When given, each line is split on exactly this
       string and every token is trimmed of surrounding whitespace, so
@@ -89,31 +90,45 @@ defmodule Grafi.Serialize.AdjacencyList do
     * `:max_bytes` — maximum input size in bytes (default 64 MiB, or
       `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
-  Returns the graph on success or `{:error, reason}`, e.g.
+  Returns `{:ok, graph}` on success or `{:error, reason}`, e.g.
   `{:malformed_line, line}` for an empty token under a custom separator
-  (the `line` cut to its first 200 bytes).
+  (the `line` cut to its first 200 bytes). Unknown options raise
+  `ArgumentError`.
 
   ## Examples
 
-      iex> g = Grafi.Serialize.AdjacencyList.from_adjacency_list("a b\\nb")
+      iex> {:ok, g} = Grafi.Serialize.AdjacencyList.from_adjacency_list("a b\\nb")
       iex> {Grafi.Graph.num_vertices(g), Grafi.Graph.num_edges(g)}
       {2, 1}
   """
-  @spec from_adjacency_list(String.t(), keyword()) :: Graph.t() | {:error, term()}
+  @spec from_adjacency_list(String.t(), keyword()) :: {:ok, Graph.t()} | {:error, term()}
   def from_adjacency_list(text, opts \\ []) when is_binary(text) do
-    with :ok <- Util.check_size(text, opts) do
-      parse(text, opts)
+    opts =
+      Keyword.validate!(opts, [:max_bytes, :separator, type: :directed, vertices_as_atoms: false])
+
+    empty = Graph.new(type: opts[:type])
+
+    with :ok <- Util.check_size(text, opts),
+         %Graph{} = g <- parse(text, empty, opts) do
+      {:ok, g}
     end
   end
 
+  @doc """
+  Like `from_adjacency_list/2`, but returns the graph and raises
+  `ArgumentError` with the reason on failure.
+  """
+  @spec from_adjacency_list!(String.t(), keyword()) :: Graph.t()
+  def from_adjacency_list!(text, opts \\ []),
+    do: text |> from_adjacency_list(opts) |> Util.unwrap!("adjacency list")
+
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp parse(text, opts) do
-    type = if Keyword.get(opts, :directed, true), do: :directed, else: :undirected
-    atoms? = Keyword.get(opts, :vertices_as_atoms, false)
-    split = Util.field_splitter(Keyword.get(opts, :separator))
+  defp parse(text, empty, opts) do
+    atoms? = opts[:vertices_as_atoms]
+    split = Util.field_splitter(opts[:separator])
 
-    Util.reduce_lines(text, Graph.new(type: type), "#", fn line, g ->
+    Util.reduce_lines(text, empty, "#", fn line, g ->
       # A non-empty line always splits into at least one token.
       [source | neighbors] = tokens = split.(line)
 

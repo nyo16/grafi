@@ -35,7 +35,7 @@ defmodule Grafi.Serialize.DOT do
   """
   @spec to_dot(Graph.t(), keyword()) :: String.t()
   def to_dot(%Graph{} = g, opts \\ []) do
-    name = opts |> Keyword.get(:name, "G") |> quote_name()
+    name = quote_name(Keyword.validate!(opts, name: "G")[:name])
     {keyword, arrow} = if g.type == :directed, do: {"digraph", "->"}, else: {"graph", "--"}
 
     vertex_lines =

@@ -7,49 +7,55 @@ defmodule Grafi.Algo.Cycles do
   > `Grafi.CycleError` on any edge that would close a cycle.
   """
 
+  alias Grafi.Algo.Traversal
   alias Grafi.Args
   alias Grafi.Graph
   alias Grafi.NIF
 
-  @doc "Returns true if the graph contains at least one cycle."
-  @spec has_cycle?(Graph.t()) :: boolean()
-  def has_cycle?(%Graph{} = g) do
-    vs = Graph.vertices(g)
-    colors = Map.new(vs, &{&1, :white})
+  @doc """
+  Returns true if the graph contains at least one cycle.
 
-    Enum.reduce_while(vs, colors, fn v, c ->
-      if c[v] == :white do
-        case dfs_check(g, v, c) do
-          :cycle -> {:halt, :cycle}
+  Directed graphs: a directed cycle (a self-loop counts). Undirected graphs:
+  a DFS that skips the tree edge to the parent once, so a single edge is not
+  a cycle but a self-loop, a parallel pair or a triangle is. Same DFS as
+  `find_cycle/1`.
+  """
+  @spec has_cycle?(Graph.t()) :: boolean()
+  def has_cycle?(%Graph{} = g), do: match?({:ok, _}, find_cycle(g))
+
+  @doc """
+  Finds one cycle, as a closed walk `[v0, v1, ..., v0]` along real edges, or
+  returns `{:error, :no_cycle}`. See `has_cycle?/1` for the undirected rules.
+
+  ## Examples
+
+      iex> Grafi.new(type: :undirected)
+      ...> |> Grafi.add_edge(:a, :b)
+      ...> |> Grafi.Algo.Cycles.find_cycle()
+      {:error, :no_cycle}
+
+      iex> Grafi.new()
+      ...> |> Grafi.add_edges([{:a, :b}, {:b, :a}])
+      ...> |> Grafi.Algo.Cycles.find_cycle()
+      {:ok, [:a, :b, :a]}
+  """
+  @spec find_cycle(Graph.t()) :: {:ok, [any()]} | {:error, :no_cycle}
+  def find_cycle(%Graph{} = g) do
+    undirected? = g.type == :undirected
+
+    Enum.reduce_while(g |> Graph.vertices() |> Enum.sort(), %{}, fn v, c ->
+      if Map.has_key?(c, v) do
+        {:cont, c}
+      else
+        case dfs_find(g, undirected?, v, :root, c, []) do
+          {:cycle, path} -> {:halt, {:ok, path}}
           c2 -> {:cont, c2}
         end
-      else
-        {:cont, c}
       end
-    end) == :cycle
-  end
-
-  @doc "Finds and returns one cycle, or :no_cycle if none exists."
-  @spec find_cycle(Graph.t()) :: {:ok, [any()]} | :no_cycle
-  def find_cycle(%Graph{} = g) do
-    vs = Graph.vertices(g)
-    colors = Map.new(vs, &{&1, :white})
-
-    result =
-      Enum.reduce_while(vs, {colors, nil}, fn v, {c, _} ->
-        if c[v] == :white do
-          case dfs_find(g, v, c, []) do
-            {:cycle, path, _} -> {:halt, {:found, path}}
-            c2 -> {:cont, {c2, nil}}
-          end
-        else
-          {:cont, {c, nil}}
-        end
-      end)
-
-    case result do
-      {:found, p} -> {:ok, p}
-      _ -> :no_cycle
+    end)
+    |> case do
+      {:ok, _} = found -> found
+      _colors -> {:error, :no_cycle}
     end
   end
 
@@ -67,6 +73,7 @@ defmodule Grafi.Algo.Cycles do
   """
   @spec strongly_connected_components(Graph.t(), keyword()) :: [[any()]]
   def strongly_connected_components(%Graph{} = g, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
 
     case NIF.engine(g, opts) do
@@ -109,37 +116,64 @@ defmodule Grafi.Algo.Cycles do
     state.sccs
   end
 
-  @doc "Returns all connected components via BFS (ignores edge direction)."
+  @doc """
+  Returns the connected components, ignoring edge direction: for a directed
+  graph these are the weakly connected components.
+
+  The output is canonical: each component is sorted by term order, and
+  components are ordered by their smallest vertex.
+
+  ## Examples
+
+      iex> Grafi.new()
+      ...> |> Grafi.add_edges([{:b, :a}, {:c, :a}])
+      ...> |> Grafi.Algo.Cycles.connected_components()
+      [[:a, :b, :c]]
+  """
   @spec connected_components(Graph.t()) :: [[any()]]
   def connected_components(%Graph{} = g) do
     {comps, _} =
-      Enum.reduce(Graph.vertices(g), {[], MapSet.new()}, fn v, {cs, vis} ->
-        if MapSet.member?(vis, v),
-          do: {cs, vis},
-          else:
-            (
-              comp = Grafi.Algo.Traversal.bfs(g, v) |> Enum.to_list()
-              {[comp | cs], Enum.reduce(comp, vis, &MapSet.put(&2, &1))}
-            )
+      Enum.reduce(Graph.vertices(g), {[], %{}}, fn v, {cs, vis} ->
+        if is_map_key(vis, v) do
+          {cs, vis}
+        else
+          comp = g |> Traversal.weak_bfs(v) |> Enum.to_list()
+          {[Enum.sort(comp) | cs], Enum.reduce(comp, vis, &Map.put(&2, &1, true))}
+        end
       end)
 
-    Enum.reverse(comps)
+    Enum.sort_by(comps, &hd/1)
   end
 
-  @doc "Returns the condensation DAG where each SCC is collapsed into a single vertex."
+  @doc """
+  Returns the condensation DAG, where each SCC is collapsed into a single
+  vertex.
+
+  Vertex ids are the integers `0..k-1`, the SCC's index in the canonical
+  `strongly_connected_components/1` order, and each vertex's label is its
+  sorted member list. There is one edge `i -> j` whenever some edge leads
+  from SCC `i` to SCC `j` (`i != j`).
+
+  ## Examples
+
+      iex> c = Grafi.new()
+      ...>     |> Grafi.add_edges([{:a, :b}, {:b, :a}, {:b, :c}])
+      ...>     |> Grafi.Algo.Cycles.condensation()
+      iex> {Grafi.Graph.label(c, 0), Grafi.Graph.label(c, 1), Grafi.Graph.has_edge?(c, 0, 1)}
+      {[:a, :b], [:c], true}
+  """
   @spec condensation(Graph.t()) :: Graph.t()
   def condensation(%Graph{} = g) do
-    sccs = strongly_connected_components(g)
+    indexed = g |> strongly_connected_components() |> Enum.with_index()
 
     v2scc =
-      Enum.reduce(sccs, %{}, fn scc, acc ->
-        key = Enum.sort(scc)
-        Enum.reduce(scc, acc, &Map.put(&2, &1, key))
+      Enum.reduce(indexed, %{}, fn {scc, i}, acc ->
+        Enum.reduce(scc, acc, &Map.put(&2, &1, i))
       end)
 
     sg =
-      Enum.reduce(sccs, Graph.new(type: :directed), fn scc, s ->
-        Graph.add_vertex(s, Enum.sort(scc))
+      Enum.reduce(indexed, Graph.new(type: :directed), fn {scc, i}, s ->
+        Graph.add_vertex(s, i, label: scc)
       end)
 
     Graph.edges(g)
@@ -152,56 +186,50 @@ defmodule Grafi.Algo.Cycles do
 
   # ── Internal ──────────────────────────────────────────────────────────
 
-  defp dfs_check(g, v, c) do
-    c = Map.put(c, v, :gray)
-
-    result =
-      Enum.reduce_while(Graph.out_neighbors(g, v), c, fn n, c2 ->
-        case c2[n] do
-          :gray ->
-            {:halt, :cycle}
-
-          :white ->
-            case dfs_check(g, n, c2) do
-              :cycle -> {:halt, :cycle}
-              c3 -> {:cont, c3}
-            end
-
-          :black ->
-            {:cont, c2}
-        end
-      end)
-
-    if result == :cycle, do: :cycle, else: Map.put(result, v, :black)
-  end
-
-  defp dfs_find(g, v, c, path) do
+  # Colour-marking DFS shared by has_cycle?/1 and find_cycle/1. `parent` is
+  # the vertex we arrived from (`:root` at a tree root); undirected graphs
+  # skip that tree edge once, so only a second (parallel) edge to the parent
+  # closes a cycle. A gray neighbour closes a cycle; black ones are finished.
+  # Returns the updated colours, or `{:cycle, closed_walk}`.
+  defp dfs_find(g, undirected?, v, parent, c, path) do
     c = Map.put(c, v, :gray)
     path = [v | path]
 
-    result =
-      Enum.reduce_while(Graph.out_neighbors(g, v), c, fn n, c2 ->
-        case c2[n] do
-          :gray ->
-            rev_path = Enum.reverse(path)
-            start = Enum.find_index(rev_path, &(&1 == n))
-            {:halt, {:cycle, Enum.slice(rev_path, start..-1//1) ++ [n], c2}}
+    g.out_edges
+    |> Map.get(v, %{})
+    |> Enum.reduce_while(c, fn
+      {_n, []}, c2 ->
+        {:cont, c2}
 
-          :white ->
-            case dfs_find(g, n, c2, path) do
-              {:cycle, _, _} = cy -> {:halt, cy}
+      {n, [_single]}, c2 when undirected? and parent === {:parent, n} ->
+        {:cont, c2}
+
+      {n, _el}, c2 ->
+        case c2 do
+          %{^n => :gray} ->
+            {:halt, {:cycle, close_cycle(path, n)}}
+
+          %{^n => :black} ->
+            {:cont, c2}
+
+          _white ->
+            case dfs_find(g, undirected?, n, {:parent, v}, c2, path) do
+              {:cycle, _} = cy -> {:halt, cy}
               c3 -> {:cont, c3}
             end
-
-          :black ->
-            {:cont, c2}
         end
-      end)
-
-    case result do
-      {:cycle, _, _} = cy -> cy
+    end)
+    |> case do
+      {:cycle, _} = cy -> cy
       c2 -> Map.put(c2, v, :black)
     end
+  end
+
+  # `path` is the DFS stack, newest first; `n` is on it. The cycle is the
+  # stack from `n` up to the current vertex, closed back at `n`.
+  defp close_cycle(path, n) do
+    {up_to_n, [^n | _]} = Enum.split_while(path, &(&1 !== n))
+    [n | Enum.reverse(up_to_n)] ++ [n]
   end
 
   defp tarjan(g, v, st) do
@@ -240,6 +268,6 @@ defmodule Grafi.Algo.Cycles do
   defp pop_scc([w | r], os, v, scc) do
     os = MapSet.delete(os, w)
     scc = [w | scc]
-    if w == v, do: {Enum.reverse(scc), r, os}, else: pop_scc(r, os, v, scc)
+    if w === v, do: {Enum.reverse(scc), r, os}, else: pop_scc(r, os, v, scc)
   end
 end

@@ -22,7 +22,8 @@ the etymological ancestor of the English word "graph." Returning the word to its
   detection (Louvain, Leiden, label propagation) runs in pure Elixir;
   those three return `{:error, :nif_not_available}`
 - **Serialization** — DOT, JSON, GraphML, GEXF, Pajek, edge-list,
-  adjacency-list, Matrix Market, and Mermaid (with Livebook/Kino glue)
+  adjacency-list, Matrix Market, and Mermaid; with the optional `kino`
+  dependency, a graph renders as a Mermaid diagram in Livebook
 - **Layout & viz** — Sugiyama DAG layout and a Graphviz shelling
   helper for direct SVG/PNG/PDF rendering
 
@@ -159,7 +160,7 @@ g = Grafi.new()
   ])
 
 # Shortest path
-Grafi.shortest_path(g, :athens, :olympia)
+Grafi.dijkstra(g, :athens, :olympia)
 #=> {:ok, {[:athens, :corinth, :olympia], 230.0}}
 
 # PageRank — exact values depend on damping factor and iteration count

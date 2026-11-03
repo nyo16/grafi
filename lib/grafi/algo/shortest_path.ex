@@ -1,10 +1,9 @@
 defmodule Grafi.Algo.ShortestPath do
-  @dialyzer :no_opaque
-
   @moduledoc "Dijkstra, Bellman-Ford, A* — with igraph NIF acceleration."
 
   alias Grafi.Algo.MinHeap
   alias Grafi.Args
+  alias Grafi.Edge
   alias Grafi.Graph
   alias Grafi.NIF
 
@@ -12,23 +11,32 @@ defmodule Grafi.Algo.ShortestPath do
   Computes the shortest weighted path from `source` to `target` using Dijkstra's
   algorithm.
 
-  Returns `{:ok, {path, distance}}` on success, `:no_path` if no path exists,
-  `{:error, :no_such_vertex}` if either endpoint is not in the graph, or
+  Returns `{:ok, {path, distance}}` on success, `{:error, :no_path}` if no path
+  exists, `{:error, :no_such_vertex}` if either endpoint is not in the graph, or
   `{:error, :negative_weight}` if any edge weight is negative (Dijkstra is
   undefined there; use `bellman_ford/2`).
+
+  The Elixir engine stops as soon as `target` is settled, so a nearby target
+  costs only the part of the graph closer to `source` than it.
 
   ## Options
     - `:engine` — `:auto | :nif | :elixir`, see `Grafi.NIF`. With `:auto`,
       graphs above the configured `:nif_threshold` (default `500` vertices) run
       in igraph on a dirty scheduler. `engine: :nif` without the NIF returns
       `{:error, :nif_not_available}`.
+
+  Unknown options raise `ArgumentError`.
   """
   @spec dijkstra(Graph.t(), any(), any(), keyword()) ::
           {:ok, {[any()], number()}}
-          | :no_path
           | {:error,
-             :no_such_vertex | :negative_weight | :nif_not_available | {:igraph, String.t()}}
+             :no_path
+             | :no_such_vertex
+             | :negative_weight
+             | :nif_not_available
+             | {:igraph, String.t()}}
   def dijkstra(%Graph{} = g, source, target, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
 
     cond do
@@ -52,6 +60,7 @@ defmodule Grafi.Algo.ShortestPath do
 
     case NIF.call(NIF.nif_dijkstra(csr, Map.fetch!(idx, source), Map.fetch!(idx, target))) do
       {:ok, path_indices, dist} -> {:ok, {Enum.map(path_indices, &elem(csr.vertices, &1)), dist}}
+      :no_path -> {:error, :no_path}
       other -> other
     end
   end
@@ -60,12 +69,36 @@ defmodule Grafi.Algo.ShortestPath do
   Computes shortest-path distances from `source` to every reachable vertex via
   Dijkstra's algorithm.
 
+  `weight_fn` maps each `%Grafi.Edge{}` to its cost, which must be
+  non-negative; it defaults to the edge's `:weight`. Between parallel edges
+  the cheapest wins. Johnson's algorithm (`Grafi.Algo.APSP.johnson/1`) passes
+  its reweighting here instead of building a reweighted graph.
+
   Returns a map of `vertex => distance`. Unreachable vertices are omitted. Runs
   entirely in pure Elixir; intended for the small-graph case.
+
+  Raises `ArgumentError` if `source` is not in the graph, or if `weight_fn`
+  returns a negative cost for an edge reachable from `source` (use
+  `bellman_ford/2` for negative weights). Edges unreachable from `source` are
+  never weighed.
+
+  ## Examples
+
+      iex> g = Grafi.new() |> Grafi.add_edges([
+      ...>   {:a, :b, weight: 1.0}, {:b, :c, weight: 2.0}, {:a, :c, weight: 5.0}
+      ...> ])
+      iex> Grafi.Algo.ShortestPath.dijkstra_all(g, :a)
+      %{a: 0.0, b: 1.0, c: 3.0}
+      iex> Grafi.Algo.ShortestPath.dijkstra_all(g, :a, fn _edge -> 1 end)
+      %{a: 0.0, b: 1.0, c: 1.0}
   """
-  @spec dijkstra_all(Graph.t(), any()) :: %{any() => number()}
-  def dijkstra_all(%Graph{} = g, source) do
-    {dists, _} = do_dijkstra(g, source)
+  @spec dijkstra_all(Graph.t(), any(), (Edge.t() -> number())) :: %{any() => number()}
+  def dijkstra_all(%Graph{} = g, source, weight_fn \\ & &1.weight)
+      when is_function(weight_fn, 1) do
+    if not Graph.has_vertex?(g, source),
+      do: raise(ArgumentError, "vertex #{inspect(source)} is not in the graph")
+
+    {dists, _} = run_dijkstra(g, source, :all, weight_fn, nil)
     dists
   end
 
@@ -74,42 +107,52 @@ defmodule Grafi.Algo.ShortestPath do
   which supports negative edge weights.
 
   Returns `{:ok, dists}` where `dists` is a map of `vertex => distance` (with
-  unreachable vertices omitted), or `{:error, :negative_cycle}` if any negative
-  cycle is reachable from `source`. O(|V|·|E|).
+  unreachable vertices omitted), `{:error, :negative_cycle}` if any negative
+  cycle is reachable from `source`, or `{:error, :no_such_vertex}` if `source`
+  is not in the graph. O(|V|·|E|) in the worst case; it stops after the first
+  round of relaxations that changes nothing, so graphs whose shortest paths
+  have few edges finish in a few rounds.
 
   On undirected graphs every edge is relaxed in both directions, so a
   negative-weight undirected edge reachable from `source` is itself a
   negative cycle (`u → v → u`) and yields `{:error, :negative_cycle}`, as in
   NetworkX.
   """
-  @spec bellman_ford(Graph.t(), any()) :: {:ok, %{any() => number()}} | {:error, :negative_cycle}
+  @spec bellman_ford(Graph.t(), any()) ::
+          {:ok, %{any() => number()}} | {:error, :negative_cycle | :no_such_vertex}
   def bellman_ford(%Graph{} = g, source) do
-    # TODO(perf): the inner Enum.reduce rebuilds a map of size |V| at every
-    # edge relaxation, giving O(|V|·|E|·log|V|) instead of O(|V|·|E|).
-    # For >1k vertices switch to an :array of distances indexed by the
-    # vertex-id integer map, or wire up the NIF Bellman-Ford wrapper.
-    vs = Graph.vertices(g)
-    n = length(vs)
-    dist = Map.new(vs, &{&1, if(&1 == source, do: 0.0, else: :infinity)})
-    arcs = relaxation_arcs(g)
+    if Graph.has_vertex?(g, source) do
+      relax_rounds(relaxation_arcs(g), %{source => 0.0}, Graph.num_vertices(g))
+    else
+      {:error, :no_such_vertex}
+    end
+  end
 
-    dist =
-      Enum.reduce(1..(n - 1)//1, dist, fn _, d ->
-        Enum.reduce(arcs, d, fn {from, to, w}, d2 ->
-          if d2[from] != :infinity and d2[from] + w < Map.get(d2, to, :infinity),
-            do: Map.put(d2, to, d2[from] + w),
-            else: d2
-        end)
-      end)
+  # Without a reachable negative cycle a shortest path has at most |V| - 1
+  # edges, so the distances stop changing within |V| - 1 rounds and the
+  # next round changes nothing. A round that still changes something after
+  # that means a negative cycle. Any unchanged round ends the search early.
+  defp relax_rounds(_arcs, _dist, 0), do: {:error, :negative_cycle}
 
-    neg =
-      Enum.any?(arcs, fn {from, to, w} ->
-        dist[from] != :infinity and dist[from] + w < dist[to]
-      end)
+  defp relax_rounds(arcs, dist, rounds_left) do
+    case relax_round(arcs, dist) do
+      {dist, false} -> {:ok, dist}
+      {dist, true} -> relax_rounds(arcs, dist, rounds_left - 1)
+    end
+  end
 
-    if neg,
-      do: {:error, :negative_cycle},
-      else: {:ok, Map.reject(dist, fn {_, v} -> v == :infinity end)}
+  # Unreached vertices are absent from `dist` (distance infinity).
+  defp relax_round(arcs, dist) do
+    Enum.reduce(arcs, {dist, false}, fn {from, to, w}, {d, _changed?} = acc ->
+      case d do
+        %{^from => df} ->
+          alt = df + w
+          if alt < Map.get(d, to, :infinity), do: {Map.put(d, to, alt), true}, else: acc
+
+        _ ->
+          acc
+      end
+    end)
   end
 
   # `{from, to, weight}` arcs to relax. An undirected edge can be traversed
@@ -128,12 +171,12 @@ defmodule Grafi.Algo.ShortestPath do
   A* search for the shortest path from `source` to `target` guided by the
   admissible heuristic `h`, a function `vertex -> estimated_cost_to_target`.
 
-  Returns `{:ok, {path, cost}}` on success, `:no_path` if `target` is
+  Returns `{:ok, {path, cost}}` on success, `{:error, :no_path}` if `target` is
   unreachable, or `{:error, :no_such_vertex}` if either endpoint is missing.
   With `h.(_) == 0`, A* degenerates to Dijkstra.
   """
   @spec a_star(Graph.t(), any(), any(), (any() -> number())) ::
-          {:ok, {[any()], number()}} | :no_path | {:error, :no_such_vertex}
+          {:ok, {[any()], number()}} | {:error, :no_path | :no_such_vertex}
   def a_star(%Graph{} = g, source, target, h) do
     cond do
       not Graph.has_vertex?(g, source) ->
@@ -144,52 +187,89 @@ defmodule Grafi.Algo.ShortestPath do
 
       true ->
         heap = MinHeap.new() |> MinHeap.insert({h.(source), 0.0, source})
-        do_astar(g, target, h, heap, %{source => 0.0}, %{}, MapSet.new())
+        do_astar(g, target, h, heap, %{source => 0.0}, %{}, %{})
     end
   end
 
   # ── Internal ──────────────────────────────────────────────────────────
 
   defp dijkstra_elixir(g, source, target) do
-    {dists, parents} = do_dijkstra(g, source)
+    {dists, parents} = run_dijkstra(g, source, {:until, target}, & &1.weight, %{})
 
-    case Map.get(dists, target) do
-      nil -> :no_path
-      d -> {:ok, {rebuild(parents, source, target, [target]), d}}
+    case Map.fetch(dists, target) do
+      {:ok, d} -> {:ok, {rebuild(parents, source, target, [target]), d}}
+      :error -> {:error, :no_path}
     end
   end
 
-  defp do_dijkstra(g, source) do
-    heap = MinHeap.new() |> MinHeap.insert({0.0, source})
-    loop(g, heap, %{source => 0.0}, %{}, MapSet.new())
+  # Lazy-deletion Dijkstra over the raw adjacency map. An undirected graph
+  # stores each edge under both endpoints in `out_edges`, so a walk over
+  # `out_edges[u]` relaxes it both ways. `stop` is `:all` or
+  # `{:until, target}`; in the latter case the search returns as soon as
+  # `target` is settled, when its distance (and parent chain) is final.
+  # `parents` is `nil` when the caller only needs distances.
+  #
+  # `settled` (a map used as a set) settles every vertex once, so the loop
+  # ends after at most |V| expansions whatever the weights; a negative weight
+  # raises as soon as it is weighed, before it can produce a wrong distance.
+  defp run_dijkstra(g, source, stop, weight_fn, parents) do
+    heap = MinHeap.insert(MinHeap.new(), {0.0, source})
+    settle(g.out_edges, heap, {%{source => 0.0}, %{}, parents}, stop, weight_fn)
   end
 
-  defp loop(g, heap, dists, parents, vis) do
+  defp settle(out, heap, {dists, settled, parents} = state, stop, weight_fn) do
     case MinHeap.pop(heap) do
       :empty ->
         {dists, parents}
 
-      {:ok, {d, u}, rest_heap} ->
-        if MapSet.member?(vis, u) do
-          loop(g, rest_heap, dists, parents, vis)
-        else
-          vis = MapSet.put(vis, u)
+      # Stale entry: `u` was settled from a shorter, earlier entry.
+      {:ok, {_d, u}, rest} when is_map_key(settled, u) ->
+        settle(out, rest, state, stop, weight_fn)
 
-          {heap2, dists, parents} =
-            Graph.out_neighbors(g, u)
-            |> Enum.reduce({rest_heap, dists, parents}, fn v, {h, ds, ps} ->
-              w = Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.min()
-              alt = d + w
+      {:ok, {_d, u}, _rest} when stop === {:until, u} ->
+        {dists, parents}
 
-              if alt < Map.get(ds, v, :infinity),
-                do: {MinHeap.insert(h, {alt, v}), Map.put(ds, v, alt), Map.put(ps, v, u)},
-                else: {h, ds, ps}
-            end)
+      {:ok, {d, u}, rest} ->
+        {heap, dists, parents} =
+          out
+          |> Map.get(u, %{})
+          |> Enum.reduce({rest, dists, parents}, &relax(&1, &2, u, d, weight_fn))
 
-          loop(g, heap2, dists, parents, vis)
-        end
+        settle(out, heap, {dists, Map.put(settled, u, true), parents}, stop, weight_fn)
     end
   end
+
+  defp relax({_v, []}, acc, _u, _d, _weight_fn), do: acc
+
+  defp relax({v, [e | es]}, {heap, dists, parents} = acc, u, d, weight_fn) do
+    alt = d + min_weight(es, weight!(weight_fn, e), weight_fn)
+
+    if alt < Map.get(dists, v, :infinity),
+      do: {MinHeap.insert(heap, {alt, v}), Map.put(dists, v, alt), put_parent(parents, v, u)},
+      else: acc
+  end
+
+  defp min_weight([], min, _weight_fn), do: min
+
+  defp min_weight([e | es], min, weight_fn) do
+    w = weight!(weight_fn, e)
+    min_weight(es, if(w < min, do: w, else: min), weight_fn)
+  end
+
+  defp weight!(weight_fn, e) do
+    case weight_fn.(e) do
+      w when w < 0 ->
+        raise ArgumentError,
+              "Dijkstra requires non-negative edge weights, got #{inspect(w)} for the edge " <>
+                "#{inspect(e.from)} -> #{inspect(e.to)}; use bellman_ford/2"
+
+      w ->
+        w
+    end
+  end
+
+  defp put_parent(nil, _v, _u), do: nil
+  defp put_parent(parents, v, u), do: Map.put(parents, v, u)
 
   defp rebuild(_, s, s, path), do: path
 
@@ -206,22 +286,22 @@ defmodule Grafi.Algo.ShortestPath do
   defp do_astar(g, target, h, heap, g_score, came_from, closed) do
     case MinHeap.pop(heap) do
       :empty ->
-        :no_path
+        {:error, :no_path}
 
       {:ok, {_, gc, cur}, rest_heap} ->
         cond do
-          cur == target ->
+          cur === target ->
             {:ok, {rebuild_came_from(came_from, cur, [cur]), gc}}
 
-          MapSet.member?(closed, cur) ->
+          is_map_key(closed, cur) ->
             do_astar(g, target, h, rest_heap, g_score, came_from, closed)
 
           true ->
-            closed = MapSet.put(closed, cur)
+            closed = Map.put(closed, cur, true)
 
             {new_heap, g_score, came_from} =
               Graph.out_neighbors(g, cur)
-              |> Enum.reject(&MapSet.member?(closed, &1))
+              |> Enum.reject(&is_map_key(closed, &1))
               |> Enum.reduce({rest_heap, g_score, came_from}, fn n, {heap_acc, gs, cf} ->
                 w = Graph.edges_between(g, cur, n) |> Enum.map(& &1.weight) |> Enum.min()
                 ng = gc + w

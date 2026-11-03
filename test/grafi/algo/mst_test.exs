@@ -19,10 +19,11 @@ defmodule Grafi.Algo.MSTTest do
   defp edge_set(edges), do: edges |> Enum.map(&edge_key/1) |> MapSet.new()
 
   # Build a random connected undirected graph on n vertices. The RNG state is
-  # threaded explicitly via :rand.uniform_s/2 (seeded with :rand.seed_s/2)
-  # rather than the process-global :rand.seed/2 — the latter mutates shared
-  # state and is unsafe under `async: true`. We grow a spanning tree first to
-  # guarantee connectivity, then sprinkle in extra random edges.
+  # threaded explicitly via :rand.uniform_s/2 (seeded with :rand.seed_s/2), so
+  # the graph is a pure function of `seed`. (:rand.seed/2 would also be safe
+  # under `async: true`, as its state lives in the test process's own
+  # dictionary.) We grow a spanning tree first to guarantee connectivity, then
+  # sprinkle in extra random edges.
   defp random_connected_graph(n, extra, seed) when n > 0 do
     rng = :rand.seed_s(:exsss, {seed, seed + 1, seed + 2})
     verts = Enum.to_list(0..(n - 1))
@@ -70,7 +71,23 @@ defmodule Grafi.Algo.MSTTest do
 
   # ── Kruskal: small classics ───────────────────────────────────────────
 
+  # An undirected triangle on 1, 1.0 and :x: `1` and `1.0` are distinct
+  # vertices, so the 1–1.0 edge is a real edge, not a self-loop.
+  defp int_float_triangle do
+    Graph.new(type: :undirected)
+    |> Graph.add_edges([{1, 1.0, weight: 1.0}, {1.0, :x, weight: 2.0}, {:x, 1, weight: 5.0}])
+  end
+
+  defp edge_pairs(edges), do: edges |> Enum.map(&{&1.from, &1.to}) |> MapSet.new()
+
   describe "kruskal/1" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      {edges, total} = MST.kruskal(int_float_triangle())
+      assert total == 3.0
+      assert length(edges) == 2
+      refute Enum.any?(edges, &(&1.weight == 5.0))
+    end
+
     test "triangle 1-2-3 → MST weight 3" do
       g =
         Graph.new(type: :undirected)
@@ -176,13 +193,64 @@ defmodule Grafi.Algo.MSTTest do
         Graph.new(type: :undirected)
         |> Graph.add_edges([{:a, :b, weight: 1.0}, {:c, :d, weight: 2.0}])
 
-      assert_raise DisconnectedError, fn -> MST.kruskal!(g) end
+      assert_raise DisconnectedError, ~r/spanning forest has 2 edges/, fn -> MST.kruskal!(g) end
+    end
+  end
+
+  describe "kruskal_tree/1" do
+    test "connected graph: {:ok, result of kruskal/1}" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b, weight: 1.0}, {:b, :c, weight: 2.0}, {:a, :c, weight: 3.0}])
+
+      assert MST.kruskal_tree(g) == {:ok, MST.kruskal(g)}
+      assert {:ok, {edges, 3.0}} = MST.kruskal_tree(g)
+      assert length(edges) == 2
+    end
+
+    test "disconnected graph: {:error, :disconnected}" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b, weight: 1.0}, {:c, :d, weight: 2.0}])
+
+      assert MST.kruskal_tree(g) == {:error, :disconnected}
+
+      assert MST.kruskal_tree(Graph.add_vertex(Graph.new(), :a) |> Graph.add_vertex(:b)) ==
+               {:error, :disconnected}
+    end
+
+    test "empty and single-vertex graphs have the empty tree" do
+      assert MST.kruskal_tree(Graph.new()) == {:ok, {[], 0}}
+      assert MST.kruskal_tree(Graph.add_vertex(Graph.new(), :a)) == {:ok, {[], 0}}
+    end
+  end
+
+  describe "Grafi.DisconnectedError" do
+    test "takes a binary message" do
+      assert DisconnectedError.exception("no tree here").message == "no tree here"
+
+      assert_raise DisconnectedError, "no tree here", fn ->
+        raise DisconnectedError, "no tree here"
+      end
+    end
+
+    test "takes a keyword list, with a default message" do
+      assert DisconnectedError.exception(message: "custom").message == "custom"
+      assert DisconnectedError.exception([]).message == "graph is disconnected"
     end
   end
 
   # ── Prim ──────────────────────────────────────────────────────────────
 
   describe "prim/2" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      for start <- [1, 1.0, :x] do
+        {edges, total} = MST.prim(int_float_triangle(), start)
+        assert {length(edges), total} == {2, 3.0}, inspect(start)
+        assert edge_pairs(edges) |> MapSet.size() == 2
+      end
+    end
+
     test "triangle 1-2-3 → MST weight 3" do
       g =
         Graph.new(type: :undirected)
@@ -230,7 +298,7 @@ defmodule Grafi.Algo.MSTTest do
 
     test "raises on unknown start" do
       g = Graph.new(type: :undirected) |> Graph.add_vertex(:a)
-      assert_raise ArgumentError, fn -> MST.prim(g, :nope) end
+      assert_raise ArgumentError, ~r/:nope is not in the graph/, fn -> MST.prim(g, :nope) end
     end
 
     test "multi-edges: uses the minimum-weight parallel edge" do

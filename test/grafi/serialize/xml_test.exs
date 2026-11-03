@@ -87,7 +87,7 @@ defmodule Grafi.Serialize.XMLTest do
             ~s(<node id="a"><data key="note"><![CDATA[</node><edge source="a" target="admin"/>]]></data></node>)
           )
 
-        g = decode(@format, xml)
+        {:ok, g} = decode(@format, xml)
         assert Graph.vertices(g) == ["a"]
         assert Graph.num_edges(g) == 0
       end
@@ -97,7 +97,7 @@ defmodule Grafi.Serialize.XMLTest do
           ~s(<!-- <graph #{type_attr(@format)}="undirected"> -->) <>
             doc(@format, ~s(<!-- <node id="ghost"/> --><?pi <node id="pi"/> ?><node id="a"/>))
 
-        g = decode(@format, xml)
+        {:ok, g} = decode(@format, xml)
         assert g.type == :directed
         assert Graph.vertices(g) == ["a"]
       end
@@ -110,14 +110,14 @@ defmodule Grafi.Serialize.XMLTest do
               ~s(<edge-x source="x" target="y"/><node\tid="a"/>)
           )
 
-        g = decode(@format, xml)
+        {:ok, g} = decode(@format, xml)
         assert Graph.vertices(g) == ["a"]
         assert Graph.num_edges(g) == 0
       end
 
       test "attribute names are whole XML names" do
         xml = doc(@format, ~s(<edge source="a" target="b" ñtarget="admin" x.target="c"/>))
-        g = decode(@format, xml)
+        {:ok, g} = decode(@format, xml)
         assert Enum.sort(Graph.vertices(g)) == ["a", "b"]
         assert Graph.has_edge?(g, "a", "b")
       end
@@ -129,7 +129,8 @@ defmodule Grafi.Serialize.XMLTest do
 
       test "> inside a quoted attribute value is part of the value" do
         xml = doc(@format, ~s(<edge note=">" source="x" target='y>'/>))
-        assert Graph.has_edge?(decode(@format, xml), "x", "y>")
+        assert {:ok, g} = decode(@format, xml)
+        assert Graph.has_edge?(g, "x", "y>")
       end
 
       test "<!DOCTYPE is rejected" do
@@ -172,7 +173,8 @@ defmodule Grafi.Serialize.XMLTest do
       test "decoded ids do not reference the input" do
         id = String.duplicate("v", 100)
         xml = doc(@format, ~s(<node id="#{id}"/>) <> String.duplicate(" ", 100_000))
-        [decoded] = Graph.vertices(decode(@format, xml))
+        {:ok, g} = decode(@format, xml)
+        [decoded] = Graph.vertices(g)
         assert decoded == id
         assert :binary.referenced_byte_size(decoded) < 100_000
       end

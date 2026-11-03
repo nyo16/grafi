@@ -159,6 +159,16 @@ defmodule Grafi.Serialize.Util do
   end
 
   @doc """
+  The body of every `from_x!/2`: the graph of an `{:ok, graph}` decoder
+  result, or an `ArgumentError` naming the `format` and the reason.
+  """
+  @spec unwrap!({:ok, Grafi.Graph.t()} | {:error, term()}, String.t()) :: Grafi.Graph.t()
+  def unwrap!({:ok, graph}, _format), do: graph
+
+  def unwrap!({:error, reason}, format),
+    do: raise(ArgumentError, "invalid #{format} input: #{inspect(reason)}")
+
+  @doc """
   Applies the `:max_bytes` option (default 64 MiB, or `:infinity`) to a
   decoder's input. Raises `ArgumentError` for an invalid option value.
   """

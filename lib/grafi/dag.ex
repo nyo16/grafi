@@ -14,6 +14,7 @@ defmodule Grafi.DAG do
       {:ok, [:compile, :test, :deploy]}
   """
 
+  alias Grafi.Algo.Traversal
   alias Grafi.Args
   alias Grafi.Graph
   alias Grafi.NIF
@@ -41,19 +42,35 @@ defmodule Grafi.DAG do
     end
   end
 
-  @doc "Like from_graph/1 but raises on cycle or undirected input."
+  @doc """
+  Like `from_graph/1` but raises: `ArgumentError` for an undirected graph,
+  `Grafi.CycleError` for a cyclic one.
+  """
   @spec from_graph!(Graph.t()) :: t()
   def from_graph!(g) do
     case from_graph(g) do
-      {:ok, dag} -> dag
-      {:error, r} -> raise Grafi.CycleError, message: "cannot create DAG: #{r}"
+      {:ok, dag} ->
+        dag
+
+      {:error, :must_be_directed} ->
+        raise ArgumentError, "cannot create DAG: the graph must be directed"
+
+      {:error, :has_cycle} ->
+        raise Grafi.CycleError, message: "cannot create DAG: has_cycle"
     end
   end
 
-  @doc "Adds a vertex to the DAG, optionally with a label."
+  @doc """
+  Adds a vertex to the DAG.
+
+  ## Options
+    * `:label` — arbitrary label
+  """
   @spec add_vertex(t(), any(), keyword()) :: t()
-  def add_vertex(%__MODULE__{graph: g} = dag, v, opts \\ []),
-    do: %{dag | graph: Graph.add_vertex(g, v, opts)}
+  def add_vertex(%__MODULE__{graph: g} = dag, v, opts \\ []) do
+    opts = Keyword.validate!(opts, [:label])
+    %{dag | graph: Graph.add_vertex(g, v, opts)}
+  end
 
   @doc """
   Adds an edge to the DAG, auto-creating missing vertices.
@@ -79,12 +96,12 @@ defmodule Grafi.DAG do
   """
   @spec add_edge(t(), any(), any(), keyword()) :: t()
   def add_edge(%__MODULE__{graph: g} = dag, v1, v2, opts \\ []) do
-    if v1 == v2,
-      do: raise(Grafi.CycleError, message: "self-loop: #{inspect(v1)}")
+    opts = Keyword.validate!(opts, [:weight, :label])
+    no_self_loop!(v1, v2)
 
     g_with_verts = g |> Graph.add_vertex(v1) |> Graph.add_vertex(v2)
 
-    if Grafi.Algo.Traversal.reachable?(g_with_verts, v2, v1),
+    if Traversal.reachable?(g_with_verts, v2, v1),
       do:
         raise(Grafi.CycleError,
           message: "#{inspect(v1)} -> #{inspect(v2)} would create a cycle"
@@ -93,14 +110,49 @@ defmodule Grafi.DAG do
     %{dag | graph: Graph.add_edge(g_with_verts, v1, v2, opts)}
   end
 
-  @doc "Adds multiple edges to the DAG, raising CycleError if any would create a cycle."
+  @doc """
+  Adds multiple edges (`{from, to}` or `{from, to, opts}`, with the options
+  of `add_edge/4`) to the DAG.
+
+  All edges are inserted first and acyclicity is checked once, in
+  O(|V|+|E|) total. Raises `Grafi.CycleError` naming an offending edge
+  (`"u -> v would create a cycle"`) if the result has a cycle, or on a
+  self-loop. The DAG is never left half-updated: on error nothing is
+  returned.
+  """
   @spec add_edges(t(), list()) :: t()
-  def add_edges(%__MODULE__{} = dag, edges) do
-    Enum.reduce(edges, dag, fn
-      {a, b}, acc -> add_edge(acc, a, b)
-      {a, b, o}, acc -> add_edge(acc, a, b, o)
-    end)
+  def add_edges(%__MODULE__{graph: g} = dag, edges) do
+    {g2, new} =
+      Enum.reduce(edges, {g, MapSet.new()}, fn edge, {acc, new} ->
+        {a, b, o} = normalize_edge(edge)
+        no_self_loop!(a, b)
+
+        {Graph.add_edge(acc, a, b, Keyword.validate!(o, [:weight, :label])),
+         MapSet.put(new, {a, b})}
+      end)
+
+    case topological_sort_graph(g2, []) do
+      {:ok, _} ->
+        %{dag | graph: g2}
+
+      {:error, :has_cycle} ->
+        {:ok, cycle} = Grafi.Algo.Cycles.find_cycle(g2)
+
+        {a, b} =
+          cycle |> Enum.zip(tl(cycle)) |> Enum.find(&MapSet.member?(new, &1))
+
+        raise Grafi.CycleError, message: "#{inspect(a)} -> #{inspect(b)} would create a cycle"
+
+      {:error, reason} ->
+        raise Grafi.NIFError, reason: reason
+    end
   end
+
+  defp normalize_edge({a, b}), do: {a, b, []}
+  defp normalize_edge({_, _, _} = e), do: e
+
+  defp no_self_loop!(v, v), do: raise(Grafi.CycleError, message: "self-loop: #{inspect(v)}")
+  defp no_self_loop!(_, _), do: :ok
 
   @doc """
   Returns a topological ordering of the DAG's vertices via Kahn's algorithm.
@@ -129,6 +181,7 @@ defmodule Grafi.DAG do
           {:ok, [any()]}
           | {:error, :has_cycle | :nif_not_available | {:igraph, String.t()}}
   def topological_sort(%__MODULE__{graph: g}, opts \\ []) do
+    opts = Keyword.validate!(opts, engine: :auto)
     Args.engine!(opts)
     topological_sort_graph(g, opts)
   end
@@ -145,10 +198,10 @@ defmodule Grafi.DAG do
             layer =
               if preds == [], do: 0, else: (Enum.map(preds, &Map.get(vl, &1, 0)) |> Enum.max()) + 1
 
-            {Map.update(lm, layer, [v], &(&1 ++ [v])), Map.put(vl, v, layer)}
+            {Map.update(lm, layer, [v], &[v | &1]), Map.put(vl, v, layer)}
           end)
 
-        layer_map
+        Map.new(layer_map, fn {l, vs} -> {l, Enum.reverse(vs)} end)
 
       _ ->
         %{}
@@ -242,43 +295,10 @@ defmodule Grafi.DAG do
         end
 
       :elixir ->
-        kahn(g)
+        Traversal.topological_sort(g)
 
       {:error, _} = error ->
         error
-    end
-  end
-
-  # Kahn's algorithm with ties broken by vertex term order, which is exactly
-  # igraph_topological_sorting's order on the CSR built by Graph.to_csr/1
-  # (vertex index = term order). Degrees count distinct neighbours, matching
-  # one decrement per distinct successor.
-  defp kahn(g) do
-    vs = g |> Graph.vertices() |> Enum.sort()
-    in_deg = Map.new(vs, &{&1, Graph.in_degree(g, &1)})
-    sources = Enum.filter(vs, &(in_deg[&1] == 0))
-    do_kahn(g, :queue.from_list(sources), in_deg, [], length(vs))
-  end
-
-  defp do_kahn(g, q, in_deg, acc, remaining) do
-    case :queue.out(q) do
-      {:empty, _} when remaining == 0 ->
-        {:ok, Enum.reverse(acc)}
-
-      {:empty, _} ->
-        {:error, :has_cycle}
-
-      {{:value, v}, q} ->
-        {q, in_deg} =
-          g
-          |> Graph.out_neighbors(v)
-          |> Enum.sort()
-          |> Enum.reduce({q, in_deg}, fn n, {q, d} ->
-            d = Map.update!(d, n, &(&1 - 1))
-            if d[n] == 0, do: {:queue.in(n, q), d}, else: {q, d}
-          end)
-
-        do_kahn(g, q, in_deg, [v | acc], remaining - 1)
     end
   end
 
@@ -286,11 +306,23 @@ defmodule Grafi.DAG do
   defp rebuild_path(parent, v, path), do: rebuild_path(parent, Map.get(parent, v), [v | path])
 
   defimpl Inspect do
-    def inspect(%Grafi.DAG{graph: g}, _),
-      do: "#Grafi.DAG<V: #{g.num_vertices}, E: #{g.num_edges}>"
-  end
-end
+    import Inspect.Algebra
 
-defmodule Grafi.CycleError do
-  defexception [:message]
+    def inspect(%Grafi.DAG{graph: g}, opts) do
+      concat([
+        "#Grafi.DAG<V: ",
+        to_doc(g.num_vertices, opts),
+        ", E: ",
+        to_doc(g.num_edges, opts),
+        ">"
+      ])
+    end
+  end
+
+  defimpl Enumerable do
+    def count(%Grafi.DAG{graph: g}), do: Enumerable.count(g)
+    def member?(%Grafi.DAG{graph: g}, v), do: Enumerable.member?(g, v)
+    def reduce(%Grafi.DAG{graph: g}, acc, fun), do: Enumerable.reduce(g, acc, fun)
+    def slice(_), do: {:error, __MODULE__}
+  end
 end

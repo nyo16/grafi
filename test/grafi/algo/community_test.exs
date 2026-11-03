@@ -65,6 +65,56 @@ defmodule Grafi.Algo.CommunityTest do
       xyz_labels = Enum.map([:x, :y, :z], &result.membership[&1]) |> MapSet.new()
       assert MapSet.disjoint?(abc_labels, xyz_labels)
     end
+
+    # A sweep that changes nothing ends propagation. Without that early exit
+    # this call would run all 1e8 sweeps and hit the 10 s test timeout.
+    @tag timeout: 10_000
+    test "stops at the first sweep with no change, however large :max_iter is" do
+      g =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}, {:c, :d}, {:x, :y}, {:y, :z}, {:z, :x}])
+        |> Graph.add_vertex(:lonely)
+
+      result = Community.label_propagation_simple(g, max_iter: 100_000_000)
+
+      # The result is a fixpoint: every vertex with neighbours holds a label
+      # that is most common among them, which forces each triangle to agree.
+      for v <- Graph.vertices(g), ns = Graph.neighbors(g, v), ns != [] do
+        freqs = Enum.frequencies_by(ns, &result.membership[&1])
+        assert freqs[result.membership[v]] == Enum.max(Map.values(freqs))
+      end
+
+      assert result.n_communities == 3
+      assert result.membership[:a] == result.membership[:b]
+      assert result.membership[:x] == result.membership[:z]
+    end
+
+    test ":max_iter replaces :iterations and must be a positive integer" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:iterations\]/, fn ->
+        Community.label_propagation_simple(g, iterations: 5)
+      end
+
+      assert_raise ArgumentError, ~r/:max_iter/, fn ->
+        Community.label_propagation_simple(g, max_iter: 0)
+      end
+    end
+  end
+
+  describe "options" do
+    test "every function with options rejects an unknown key" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+
+      for fun <- [
+            &Community.louvain/2,
+            &Community.leiden/2,
+            &Community.label_propagation/2,
+            &Community.label_propagation_simple/2
+          ] do
+        assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn -> fun.(g, bogus: 1) end
+      end
+    end
   end
 
   describe "NIF-backed functions without the NIF engine" do

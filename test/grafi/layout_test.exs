@@ -168,4 +168,30 @@ defmodule Grafi.LayoutTest do
       assert {:ok, %{only: 0}} = Layout.levels(g)
     end
   end
+
+  describe "undirected input" do
+    test "an undirected tree is laid out from its smallest vertex" do
+      g = Grafi.new(type: :undirected) |> Grafi.add_edges([{:b, :a}, {:b, :c}, {:c, :d}])
+      assert Layout.levels(g) == {:ok, %{a: 0, b: 1, c: 2, d: 3}}
+      assert {:ok, pos} = Layout.sugiyama(g)
+      assert y_of(pos, :d) == 3.0
+    end
+
+    test "an undirected cycle is rejected" do
+      g = Grafi.new(type: :undirected) |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
+      assert Layout.levels(g) == {:error, :has_cycle}
+      assert Layout.sugiyama(g) == {:error, :has_cycle}
+    end
+  end
+
+  test "sugiyama/2 rejects unknown options" do
+    assert_raise ArgumentError, ~r/unknown keys \[:spacing\]/, fn ->
+      Layout.sugiyama(Grafi.new(), spacing: 2.0)
+    end
+  end
+
+  test "levels follow the longest path on a DAG with a shortcut" do
+    g = Grafi.new() |> Grafi.add_edges([{:a, :b}, {:b, :c}, {:a, :c}])
+    assert Layout.levels(g) == {:ok, %{a: 0, b: 1, c: 2}}
+  end
 end

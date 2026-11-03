@@ -22,9 +22,9 @@ defmodule Grafi.Serialize.JSONTest do
     end
 
     test "numeric weights are kept and a missing weight defaults to 1.0" do
-      assert [%{weight: 3}] = GJSON.from_json(edge_json(~s(, "weight": 3))) |> edges_ab()
-      assert [%{weight: -0.5}] = GJSON.from_json(edge_json(~s(, "weight": -0.5))) |> edges_ab()
-      assert [%{weight: 1.0}] = GJSON.from_json(edge_json("")) |> edges_ab()
+      assert [%{weight: 3}] = GJSON.from_json!(edge_json(~s(, "weight": 3))) |> edges_ab()
+      assert [%{weight: -0.5}] = GJSON.from_json!(edge_json(~s(, "weight": -0.5))) |> edges_ab()
+      assert [%{weight: 1.0}] = GJSON.from_json!(edge_json("")) |> edges_ab()
     end
 
     test "integer weights outside the float range are rejected" do
@@ -47,7 +47,7 @@ defmodule Grafi.Serialize.JSONTest do
 
     test "the largest integer that still fits a float is kept" do
       max = trunc(1.797_693_134_862_315_7e308)
-      assert [%{weight: ^max}] = GJSON.from_json(edge_json(~s(, "weight": #{max}))) |> edges_ab()
+      assert [%{weight: ^max}] = GJSON.from_json!(edge_json(~s(, "weight": #{max}))) |> edges_ab()
     end
   end
 
@@ -63,14 +63,14 @@ defmodule Grafi.Serialize.JSONTest do
     end
 
     test "scalar labels are kept; null and false mean no label" do
-      g = GJSON.from_json(edge_json(~s(, "label": "knows")))
+      {:ok, g} = GJSON.from_json(edge_json(~s(, "label": "knows")))
       assert [%{label: "knows"}] = edges_ab(g)
 
-      assert [%{label: nil}] = GJSON.from_json(edge_json(~s(, "label": null))) |> edges_ab()
-      assert [%{label: nil}] = GJSON.from_json(edge_json(~s(, "label": false))) |> edges_ab()
+      assert [%{label: nil}] = GJSON.from_json!(edge_json(~s(, "label": null))) |> edges_ab()
+      assert [%{label: nil}] = GJSON.from_json!(edge_json(~s(, "label": false))) |> edges_ab()
 
       json = ~s({"type": "directed", "vertices": [{"id": "a", "label": 7}], "edges": []})
-      assert Graph.label(GJSON.from_json(json), "a") == 7
+      assert Graph.label(GJSON.from_json!(json), "a") == 7
     end
   end
 
@@ -80,8 +80,8 @@ defmodule Grafi.Serialize.JSONTest do
       size = byte_size(json)
 
       assert GJSON.from_json(json, max_bytes: size - 1) == {:error, {:too_large, size, size - 1}}
-      assert %Graph{} = GJSON.from_json(json, max_bytes: size)
-      assert %Graph{} = GJSON.from_json(json, max_bytes: :infinity)
+      assert {:ok, %Graph{}} = GJSON.from_json(json, max_bytes: size)
+      assert {:ok, %Graph{}} = GJSON.from_json(json, max_bytes: :infinity)
     end
   end
 

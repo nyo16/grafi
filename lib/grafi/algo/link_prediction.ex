@@ -13,8 +13,12 @@ defmodule Grafi.Algo.LinkPrediction do
   in- and out-neighbors. The returned map is keyed by `{u, v}` in the
   same order the pair was supplied; for default-generated candidates
   the canonical order matches `Enum.sort([u, v])`.
+
+  Every scorer raises `ArgumentError` if a candidate pair names a vertex
+  that is not in the graph.
   """
 
+  alias Grafi.Algo.Neighborhood
   alias Grafi.Graph
 
   @type pair :: {any(), any()}
@@ -30,7 +34,7 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec jaccard(Graph.t(), [pair()] | nil) :: scores()
   def jaccard(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn _g, _u, _v, n_u, n_v ->
+    score_pairs(g, candidates, :endpoints, fn n_u, n_v, _sets ->
       union = MapSet.union(n_u, n_v) |> MapSet.size()
 
       if union == 0,
@@ -51,10 +55,10 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec adamic_adar(Graph.t(), [pair()] | nil) :: scores()
   def adamic_adar(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn g, _u, _v, n_u, n_v ->
+    score_pairs(g, candidates, :with_neighbors, fn n_u, n_v, sets ->
       MapSet.intersection(n_u, n_v)
       |> Enum.reduce(0.0, fn z, acc ->
-        d = undirected_degree(g, z)
+        d = degree(sets, z)
         if d > 1, do: acc + 1.0 / :math.log(d), else: acc
       end)
     end)
@@ -71,10 +75,10 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec resource_allocation(Graph.t(), [pair()] | nil) :: scores()
   def resource_allocation(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn g, _u, _v, n_u, n_v ->
+    score_pairs(g, candidates, :with_neighbors, fn n_u, n_v, sets ->
       MapSet.intersection(n_u, n_v)
       |> Enum.reduce(0.0, fn z, acc ->
-        d = undirected_degree(g, z)
+        d = degree(sets, z)
         if d > 0, do: acc + 1.0 / d, else: acc
       end)
     end)
@@ -88,8 +92,8 @@ defmodule Grafi.Algo.LinkPrediction do
   """
   @spec preferential_attachment(Graph.t(), [pair()] | nil) :: scores()
   def preferential_attachment(%Graph{} = g, candidates \\ nil) do
-    score_pairs(g, candidates, fn g, u, v, _n_u, _n_v ->
-      undirected_degree(g, u) * undirected_degree(g, v) * 1.0
+    score_pairs(g, candidates, :endpoints, fn n_u, n_v, _sets ->
+      MapSet.size(n_u) * MapSet.size(n_v) * 1.0
     end)
   end
 
@@ -109,39 +113,64 @@ defmodule Grafi.Algo.LinkPrediction do
 
   # ── Internals ─────────────────────────────────────────────────────────
 
-  defp score_pairs(g, candidates, score_fun) do
-    pairs = candidates || default_candidates(g)
+  # Neighbour sets (self-loops dropped) are built once per call, so each
+  # pair costs one set operation instead of two neighbourhood rebuilds plus
+  # one per common neighbour. Without candidates every vertex is scored, so
+  # every set is built; with candidates only the endpoints' sets are, plus
+  # their neighbours' when the score needs common-neighbour degrees
+  # (`:with_neighbors`).
+  defp score_pairs(g, nil, _scope, score_fun) do
+    sets = Neighborhood.sets(g, self_loops: :drop)
+    score_with(sets, default_candidates(sets), score_fun)
+  end
 
+  defp score_pairs(g, candidates, scope, score_fun) do
+    endpoints = Enum.flat_map(candidates, fn {u, v} -> [u, v] end)
+
+    case Enum.reject(endpoints, &Graph.has_vertex?(g, &1)) do
+      [] -> :ok
+      [v | _] -> raise ArgumentError, "vertex #{inspect(v)} is not in the graph"
+    end
+
+    sets = add_sets(%{}, g, endpoints)
+
+    sets =
+      case scope do
+        :endpoints -> sets
+        :with_neighbors -> add_sets(sets, g, Enum.flat_map(sets, fn {_v, ns} -> ns end))
+      end
+
+    score_with(sets, candidates, score_fun)
+  end
+
+  defp score_with(sets, pairs, score_fun) do
     Map.new(pairs, fn {u, v} ->
-      n_u = neighbor_set(g, u)
-      n_v = neighbor_set(g, v)
-      {{u, v}, score_fun.(g, u, v, n_u, n_v)}
+      {{u, v}, score_fun.(neighbors(sets, u), neighbors(sets, v), sets)}
     end)
   end
 
-  defp default_candidates(%Graph{} = g) do
-    vs = Graph.vertices(g) |> Enum.sort()
+  defp add_sets(sets, g, vertices) do
+    Enum.reduce(vertices, sets, fn v, acc ->
+      if Map.has_key?(acc, v),
+        do: acc,
+        else: Map.put(acc, v, MapSet.new(Neighborhood.neighbors(g, v, self_loops: :drop)))
+    end)
+  end
 
-    for u <- vs,
-        v <- vs,
-        u < v,
-        not adjacent?(g, u, v),
+  # Unordered pairs by position in the sorted vertex list, not by `<`,
+  # which would drop a pair of distinct but equal-comparing ids (`1`, `1.0`).
+  defp default_candidates(sets) do
+    indexed = sets |> Map.keys() |> Enum.sort() |> Enum.with_index()
+
+    for {u, i} <- indexed,
+        n_u = Map.fetch!(sets, u),
+        {v, j} <- indexed,
+        i < j,
+        not MapSet.member?(n_u, v),
         do: {u, v}
   end
 
-  defp adjacent?(g, u, v) do
-    Graph.has_edge?(g, u, v) or Graph.has_edge?(g, v, u)
-  end
+  defp neighbors(sets, v), do: Map.get(sets, v, MapSet.new())
 
-  defp neighbor_set(g, v) do
-    if Graph.has_vertex?(g, v),
-      do: Graph.neighbors(g, v) |> Enum.reject(&(&1 == v)) |> MapSet.new(),
-      else: MapSet.new()
-  end
-
-  defp undirected_degree(g, v) do
-    if Graph.has_vertex?(g, v),
-      do: Graph.neighbors(g, v) |> Enum.reject(&(&1 == v)) |> length(),
-      else: 0
-  end
+  defp degree(sets, v), do: sets |> neighbors(v) |> MapSet.size()
 end

@@ -48,7 +48,8 @@ defmodule Grafi.Serialize.Pajek do
       true
   """
   @spec to_pajek(Graph.t(), keyword()) :: String.t()
-  def to_pajek(%Graph{} = g, _opts \\ []) do
+  def to_pajek(%Graph{} = g, opts \\ []) do
+    _ = Keyword.validate!(opts, [])
     vertices = Graph.vertices(g)
     n = length(vertices)
     index = vertices |> Enum.with_index(1) |> Map.new()
@@ -96,16 +97,19 @@ defmodule Grafi.Serialize.Pajek do
     * `:max_bytes` - the largest accepted input, in bytes (default 64 MiB,
       or `:infinity`). Larger input returns `{:error, {:too_large, size, max}}`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure, e.g.
+  Returns `{:ok, graph}` on success or `{:error, reason}` on parse failure, e.g.
   `{:error, {:unsupported_section, line}}`, `{:error, {:invalid_weight, token}}`,
   `{:error, {:malformed_vertex_line, line}}`,
   `{:error, {:malformed_edge_line, line}}`, `{:error, :unexpected_section}`
   (a section header before all declared vertex lines) or
   `{:error, :unexpected_eof}` (fewer vertex lines than declared). The
-  `line` or `token` in an error is cut to its first 200 bytes.
+  `line` or `token` in an error is cut to its first 200 bytes. Unknown
+  options raise `ArgumentError`.
   """
-  @spec from_pajek(String.t(), keyword()) :: Graph.t() | {:error, term()}
+  @spec from_pajek(String.t(), keyword()) :: {:ok, Graph.t()} | {:error, term()}
   def from_pajek(text, opts \\ []) when is_binary(text) do
+    opts = Keyword.validate!(opts, [:max_bytes])
+
     # Two passes over the lines: the graph type depends on every section
     # header, so the first pass reads the vertices and the sections, and
     # the second one adds the edges.
@@ -121,6 +125,13 @@ defmodule Grafi.Serialize.Pajek do
       read_edges(text, n, g, ids)
     end
   end
+
+  @doc """
+  Like `from_pajek/2`, but returns the graph and raises `ArgumentError`
+  with the reason on failure.
+  """
+  @spec from_pajek!(String.t(), keyword()) :: Graph.t()
+  def from_pajek!(text, opts \\ []), do: text |> from_pajek(opts) |> Util.unwrap!("Pajek")
 
   # ── Parsing helpers ──────────────────────────────────────────────────
 
@@ -278,7 +289,7 @@ defmodule Grafi.Serialize.Pajek do
         end
     end)
     |> case do
-      {0, _section, g} -> g
+      {0, _section, g} -> {:ok, g}
       {:error, _} = error -> error
     end
   end

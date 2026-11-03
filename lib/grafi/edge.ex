@@ -22,12 +22,19 @@ defmodule Grafi.Edge do
           label: any()
         }
 
+  @enforce_keys [:from, :to]
   defstruct [:from, :to, weight: 1.0, label: nil]
 
   defimpl Inspect do
-    def inspect(%Grafi.Edge{from: f, to: t, weight: w, label: l}, _opts) do
-      label_str = if l, do: ", label: #{inspect(l)}", else: ""
-      "#Grafi.Edge<#{inspect(f)} -> #{inspect(t)}, w: #{w}#{label_str}>"
+    import Inspect.Algebra
+
+    def inspect(%Grafi.Edge{from: f, to: t, weight: w, label: l}, opts) do
+      label = if l == nil, do: [], else: [", label: ", to_doc(l, opts)]
+
+      concat(
+        ["#Grafi.Edge<", to_doc(f, opts), " -> ", to_doc(t, opts), ", w: ", to_doc(w, opts)] ++
+          label ++ [">"]
+      )
     end
   end
 end

@@ -19,8 +19,9 @@ defmodule Grafi.Layout do
 
   This v0.1.0 implementation:
 
-    * **Phase 1** is skipped — `sugiyama/2` requires a DAG and returns
-      `{:error, :has_cycle}` for cyclic input.
+    * **Phase 1** is skipped — `sugiyama/2` requires a DAG (or an
+      undirected forest, oriented away from the smallest vertex of each
+      tree) and returns `{:error, :has_cycle}` for cyclic input.
     * **Phase 2** uses longest-path layering: each vertex's layer is
       `1 + max(layer of predecessors)`, with sources at layer 0.
     * **Phase 3** uses the **barycenter method** with up to four
@@ -43,6 +44,7 @@ defmodule Grafi.Layout do
       {0.0, 1.0, 2.0}
   """
 
+  alias Grafi.Algo.Traversal
   alias Grafi.Graph
 
   @type vertex :: any()
@@ -62,7 +64,8 @@ defmodule Grafi.Layout do
   position within a layer and `y` is the layer index (0 = top) times
   `:layer_spacing`.
 
-  Returns `{:error, :has_cycle}` if the graph contains a cycle.
+  Returns `{:error, :has_cycle}` if the graph contains a cycle (for an
+  undirected graph: anything but a forest).
 
   ## Options
 
@@ -86,13 +89,21 @@ defmodule Grafi.Layout do
   @spec sugiyama(Graph.t(), keyword()) ::
           {:ok, layout()} | {:error, :has_cycle}
   def sugiyama(%Graph{} = g, opts \\ []) do
+    opts =
+      Keyword.validate!(opts,
+        layer_spacing: @default_layer_spacing,
+        vertex_spacing: @default_vertex_spacing,
+        crossings: :default
+      )
+
     if Grafi.Algo.Cycles.has_cycle?(g) do
       {:error, :has_cycle}
     else
-      layer_spacing = Keyword.get(opts, :layer_spacing, @default_layer_spacing)
-      vertex_spacing = Keyword.get(opts, :vertex_spacing, @default_vertex_spacing)
-      crossings = Keyword.get(opts, :crossings, :default)
+      layer_spacing = opts[:layer_spacing]
+      vertex_spacing = opts[:vertex_spacing]
+      crossings = opts[:crossings]
 
+      g = orient(g)
       layer_of = longest_path_layers(g)
       layers = group_by_layer(layer_of)
 
@@ -109,7 +120,8 @@ defmodule Grafi.Layout do
   @doc """
   Return only the layer assignment for a DAG as `%{vertex => layer_index}`.
 
-  Returns `{:error, :has_cycle}` if the graph contains a cycle.
+  Returns `{:error, :has_cycle}` if the graph contains a cycle. An
+  undirected forest is laid out from the smallest vertex of each tree.
 
   ## Examples
 
@@ -125,70 +137,72 @@ defmodule Grafi.Layout do
     if Grafi.Algo.Cycles.has_cycle?(g) do
       {:error, :has_cycle}
     else
-      {:ok, longest_path_layers(g)}
+      {:ok, g |> orient() |> longest_path_layers()}
     end
   end
 
   # ── Phase 2: layer assignment (longest path) ──────────────────────────
 
-  defp longest_path_layers(g) do
-    # Topologically sort the vertices, then assign each vertex's layer
-    # as `1 + max(layer of predecessors)`. Sources have layer 0.
-    case topological_sort(g) do
-      {:ok, sorted} ->
-        Enum.reduce(sorted, %{}, fn v, acc ->
-          preds = Graph.in_neighbors(g, v)
+  # An acyclic undirected graph is a forest. Orient it away from the
+  # smallest vertex (term order) of each tree, so roots sit at layer 0 and
+  # every vertex's layer is its BFS depth.
+  defp orient(%Graph{type: :directed} = g), do: g
 
-          layer =
-            case preds do
-              [] -> 0
-              _ -> 1 + Enum.max(Enum.map(preds, &Map.get(acc, &1, 0)))
-            end
+  defp orient(%Graph{} = g) do
+    base = Enum.reduce(Graph.vertices(g), Graph.new(type: :directed), &Graph.add_vertex(&2, &1))
 
-          Map.put(acc, v, layer)
-        end)
-
-      _ ->
-        # Should never happen — has_cycle?/1 already passed.
-        %{}
-    end
+    g
+    |> Graph.vertices()
+    |> Enum.sort()
+    |> Enum.reduce({base, MapSet.new()}, fn root, {dg, seen} ->
+      if MapSet.member?(seen, root),
+        do: {dg, seen},
+        else: orient_tree(g, :queue.from_list([root]), dg, MapSet.put(seen, root))
+    end)
+    |> elem(0)
   end
 
-  defp topological_sort(g) do
-    in_deg =
-      Graph.vertices(g)
-      |> Map.new(&{&1, Graph.in_degree(g, &1)})
-
-    queue = for {v, 0} <- in_deg, do: v
-    kahn(g, :queue.from_list(queue), in_deg, [])
-  end
-
-  defp kahn(g, q, in_deg, result) do
+  defp orient_tree(g, q, dg, seen) do
     case :queue.out(q) do
       {:empty, _} ->
-        if Enum.any?(in_deg, fn {_, d} -> d > 0 end),
-          do: {:error, :has_cycle},
-          else: {:ok, Enum.reverse(result)}
+        {dg, seen}
 
-      {{:value, v}, rest_q} ->
-        {adds, in_deg} =
-          Graph.out_neighbors(g, v)
-          |> Enum.reduce({[], in_deg}, fn n, {a, d} ->
-            nd = d[n] - 1
-            d = Map.put(d, n, nd)
-            if nd == 0, do: {[n | a], d}, else: {a, d}
+      {{:value, v}, q} ->
+        {q, dg, seen} =
+          g
+          |> Graph.out_neighbors(v)
+          |> Enum.reject(&MapSet.member?(seen, &1))
+          |> Enum.reduce({q, dg, seen}, fn n, {q, dg, seen} ->
+            {:queue.in(n, q), Graph.add_edge(dg, v, n), MapSet.put(seen, n)}
           end)
 
-        new_q = Enum.reduce(Enum.reverse(adds), rest_q, fn n, q -> :queue.in(n, q) end)
-        kahn(g, new_q, Map.put(in_deg, v, -1), [v | result])
+        orient_tree(g, q, dg, seen)
     end
   end
 
+  defp longest_path_layers(g) do
+    # Topologically sort the vertices, then assign each vertex's layer
+    # as `1 + max(layer of predecessors)`. Sources have layer 0. The
+    # callers have already rejected cyclic graphs.
+    {:ok, sorted} = Traversal.topological_sort(g)
+
+    Enum.reduce(sorted, %{}, fn v, acc ->
+      layer =
+        case Graph.in_neighbors(g, v) do
+          [] -> 0
+          preds -> 1 + Enum.max(Enum.map(preds, &Map.fetch!(acc, &1)))
+        end
+
+      Map.put(acc, v, layer)
+    end)
+  end
+
+  # Vertices within a layer start in term order (barycenter sweeps reorder
+  # them afterwards).
   defp group_by_layer(layer_of) do
     layer_of
-    |> Enum.reduce(%{}, fn {v, l}, acc ->
-      Map.update(acc, l, [v], &(&1 ++ [v]))
-    end)
+    |> Enum.sort()
+    |> Enum.group_by(&elem(&1, 1), &elem(&1, 0))
   end
 
   # ── Phase 3: crossing reduction (barycenter method) ───────────────────
@@ -204,7 +218,7 @@ defmodule Grafi.Layout do
       after_down = sweep_down(g, current, max_layer)
       after_up = sweep_up(g, after_down, max_layer)
 
-      if after_up == current and pass > 1,
+      if after_up === current and pass > 1,
         do: {:halt, after_up},
         else: {:cont, after_up}
     end)

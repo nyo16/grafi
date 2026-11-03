@@ -1,6 +1,4 @@
 defmodule Grafi.Graph do
-  @dialyzer :no_opaque
-
   @moduledoc """
   An immutable graph data structure — the heart of Grafi.
 
@@ -15,6 +13,28 @@ defmodule Grafi.Graph do
       iex> Grafi.Graph.new()
       ...>   |> Grafi.Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
       #Grafi.Graph<directed, V: 3, E: 3>
+
+  ## Memory
+
+  Measured with `:erts_debug.size` on random graphs (2,000 integer
+  vertices, 20,000 edges, 8-byte words):
+
+    * a directed edge costs about 17 words (~135 bytes): one `Grafi.Edge`
+      struct, shared by the `out_edges` and `in_edges` maps, plus an entry
+      in each map;
+    * an undirected edge costs about 33 words (~265 bytes), since it is
+      stored once per direction;
+    * a parallel edge between an already-connected pair costs about 12
+      words directed and 24 undirected;
+    * a vertex costs about 18 words before any edge. Its id is a key in
+      `vertices`, `out_edges`, `in_edges`, `out_degrees` and `in_degrees`
+      (and `vertex_labels` when labelled), so large ids are referenced
+      five times; the cached degree maps trade that duplication for O(log
+      V) `out_degree/2` and `in_degree/2`.
+
+  Copying a graph to another process or to ETS flattens the shared edge
+  structs (`:erts_debug.flat_size`): about 40 words per directed edge
+  and 80 per undirected edge.
   """
 
   alias Grafi.Edge
@@ -67,7 +87,8 @@ defmodule Grafi.Graph do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    type = Keyword.get(opts, :type, :directed)
+    opts = Keyword.validate!(opts, type: :directed)
+    type = opts[:type]
 
     if type not in [:directed, :undirected],
       do: raise(ArgumentError, "type must be :directed or :undirected")
@@ -80,6 +101,8 @@ defmodule Grafi.Graph do
   @doc "Adds a vertex to the graph, optionally with a label."
   @spec add_vertex(t(), vertex_id(), keyword()) :: t()
   def add_vertex(%__MODULE__{} = g, v, opts \\ []) do
+    opts = Keyword.validate!(opts, [:label])
+
     if Map.has_key?(g.vertices, v) do
       maybe_set_label(g, v, opts)
     else
@@ -106,7 +129,13 @@ defmodule Grafi.Graph do
     end)
   end
 
-  @doc "Removes a vertex and all its incident edges from the graph."
+  @doc """
+  Removes a vertex and all its incident edges from the graph.
+
+  Only the vertex's neighbours are touched, so the cost is O(d log V) for a
+  vertex with `d` distinct neighbours. Deleting a missing vertex returns
+  the graph unchanged.
+  """
   @spec delete_vertex(t(), vertex_id()) :: t()
   def delete_vertex(%__MODULE__{} = g, v) do
     if not Map.has_key?(g.vertices, v) do
@@ -127,8 +156,10 @@ defmodule Grafi.Graph do
       out_targets = Map.keys(out)
       in_sources = Map.keys(ine)
 
-      out_edges = g.out_edges |> Map.delete(v) |> strip_target(v)
-      in_edges = g.in_edges |> Map.delete(v) |> strip_target(v)
+      # Each in-source s stores v under out_edges[s], and each out-target t
+      # stores v under in_edges[t]; no other vertex refers to v.
+      out_edges = g.out_edges |> Map.delete(v) |> strip_target(in_sources, v)
+      in_edges = g.in_edges |> Map.delete(v) |> strip_target(out_targets, v)
 
       # For directed: each out-target loses an in-edge from v; each in-source loses an out-edge to v.
       # For undirected: out_targets == in_sources; decrement both sides once.
@@ -182,12 +213,13 @@ defmodule Grafi.Graph do
   """
   @spec add_edge(t(), vertex_id(), vertex_id(), keyword()) :: t()
   def add_edge(%__MODULE__{} = g, v1, v2, opts \\ []) do
-    weight = Keyword.get(opts, :weight, 1.0)
+    opts = Keyword.validate!(opts, weight: 1.0, label: nil)
+    weight = opts[:weight]
 
     if not is_number(weight),
       do: raise(ArgumentError, "expected :weight to be a number, got: #{inspect(weight)}")
 
-    label = Keyword.get(opts, :label)
+    label = opts[:label]
     edge = %Edge{from: v1, to: v2, weight: weight, label: label}
 
     g = g |> add_vertex(v1) |> add_vertex(v2)
@@ -569,8 +601,12 @@ defmodule Grafi.Graph do
     Enum.reduce(map, 0, fn {_, el}, acc -> acc + length(el) end)
   end
 
-  defp strip_target(map, v) do
-    Map.new(map, fn {from, targets} -> {from, Map.delete(targets, v)} end)
+  # Every neighbour has an `out_edges`/`in_edges` entry (from `add_vertex`).
+  defp strip_target(map, neighbours, v) do
+    Enum.reduce(neighbours, map, fn
+      ^v, acc -> acc
+      u, acc -> Map.update!(acc, u, &Map.delete(&1, v))
+    end)
   end
 
   defp has_neighbor_entry?(adj, from, to) do
@@ -583,8 +619,18 @@ defmodule Grafi.Graph do
   # ── Protocols ─────────────────────────────────────────────────────────
 
   defimpl Inspect do
-    def inspect(%Grafi.Graph{} = g, _opts) do
-      "#Grafi.Graph<#{g.type}, V: #{g.num_vertices}, E: #{g.num_edges}>"
+    import Inspect.Algebra
+
+    def inspect(%Grafi.Graph{} = g, opts) do
+      concat([
+        "#Grafi.Graph<",
+        Atom.to_string(g.type),
+        ", V: ",
+        to_doc(g.num_vertices, opts),
+        ", E: ",
+        to_doc(g.num_edges, opts),
+        ">"
+      ])
     end
   end
 

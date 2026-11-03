@@ -20,6 +20,39 @@ defmodule Grafi.EngineErrorsTest do
     Graph.new(type: type) |> Graph.add_edges([{:a, :b, weight: -1.0}, {:b, :c, weight: 2.0}])
   end
 
+  # A non-isomorphic pair whose search takes seconds on the given engine;
+  # see the "VF2 timeout" tests.
+  defp hard_isomorphism_pair(:nif) do
+    {Generators.random_regular(200, 3, seed: 1, type: :undirected),
+     Generators.random_regular(200, 3, seed: 2, type: :undirected)}
+  end
+
+  defp hard_isomorphism_pair(:elixir) do
+    {srg_union([:shrikhande, :shrikhande, :shrikhande]),
+     srg_union([:shrikhande, :shrikhande, :rook])}
+  end
+
+  # Disjoint copies of the Shrikhande graph and the 4x4 rook's graph, both
+  # on Z4 x Z4.
+  defp srg_union(kinds) do
+    cells = for a <- 0..3, b <- 0..3, do: {a, b}
+
+    edges =
+      for {kind, copy} <- Enum.with_index(kinds),
+          {a, b} = u <- cells,
+          {c, d} = v <- cells,
+          u < v,
+          srg_adjacent?(kind, {Integer.mod(c - a, 4), Integer.mod(d - b, 4)}, a == c, b == d),
+          do: {{copy, a, b}, {copy, c, d}}
+
+    undirected(edges)
+  end
+
+  defp srg_adjacent?(:shrikhande, diff, _same_row, _same_col),
+    do: diff in [{0, 1}, {0, 3}, {1, 0}, {3, 0}, {1, 1}, {3, 3}]
+
+  defp srg_adjacent?(:rook, _diff, same_row, same_col), do: same_row != same_col
+
   describe "invalid options raise ArgumentError on both engines" do
     for engine <- @engines do
       @engine engine
@@ -30,9 +63,9 @@ defmodule Grafi.EngineErrorsTest do
         end
       end
 
-      test "pagerank iterations: 0 (#{engine})" do
-        assert_raise ArgumentError, ~r/:iterations/, fn ->
-          Centrality.pagerank(two_k4s(), iterations: 0, engine: @engine)
+      test "pagerank max_iter: 0 (#{engine})" do
+        assert_raise ArgumentError, ~r/:max_iter/, fn ->
+          Centrality.pagerank(two_k4s(), max_iter: 0, engine: @engine)
         end
       end
 
@@ -216,7 +249,10 @@ defmodule Grafi.EngineErrorsTest do
   describe "VF2 timeout" do
     # A dense host and a K14 pattern take seconds to refute exhaustively.
     setup do
-      %{host: Generators.erdos_renyi(40, 0.5, seed: 42), pattern: Generators.complete(14)}
+      %{
+        host: Generators.erdos_renyi(40, 0.5, seed: 42, type: :undirected),
+        pattern: Generators.complete(14, type: :undirected)
+      }
     end
 
     for engine <- @engines do
@@ -234,17 +270,24 @@ defmodule Grafi.EngineErrorsTest do
         assert Isomorphism.count_subgraph_isomorphisms(host, pattern, opts) == {:error, :timeout}
       end
 
-      # Two random 3-regular graphs share vertex count, edge count and degree
-      # sequence, so no invariant short-circuits the search. VF2 refutation
-      # time on such pairs is heavy-tailed: in a 2026-11 probe (igraph 1.0.1,
-      # OTP 28) seeds 1/2 ran for more than 3 s on both engines, while n = 80
-      # was refuted by igraph in 1 ms. If an igraph, OTP or generator change
-      # makes this instance easy, try a larger n or other seeds.
+      # NIF: two random 3-regular graphs share vertex count, edge count and
+      # degree sequence, so no invariant short-circuits the search. VF2
+      # refutation time on such pairs is heavy-tailed: in a 2026-11 probe
+      # (igraph 1.0.1, OTP 28) seeds 1/2 ran for more than 3 s on both
+      # engines, while n = 80 was refuted by igraph in 1 ms. If an igraph,
+      # OTP or generator change makes this instance easy, try a larger n or
+      # other seeds.
+      #
+      # Elixir: colour refinement refutes such pairs at once, so it gets
+      # three Shrikhande graphs against two plus the 4x4 rook's graph. Both
+      # are srg(16, 6, 2, 2), which refinement cannot tell apart, and the
+      # search retries every embedding of the earlier components before it
+      # gives up (more than 20 s in a 2026-11 probe; one Shrikhande graph
+      # against the rook's graph takes about 0.3 s).
       if engine == :nif, do: @tag(:nif)
 
       test "isomorphic?/3 and isomorphism/3 time out (#{engine})" do
-        a = Generators.random_regular(200, 3, seed: 1)
-        b = Generators.random_regular(200, 3, seed: 2)
+        {a, b} = hard_isomorphism_pair(@engine)
         opts = [timeout: 20, engine: @engine]
 
         assert_raise Grafi.TimeoutError, ~r/20 ms/, fn -> Isomorphism.isomorphic?(a, b, opts) end
@@ -260,7 +303,7 @@ defmodule Grafi.EngineErrorsTest do
     # "the check actually runs" (no wall-clock assertion).
     @tag :nif
     test "raw VF2 NIF honours the largest deadline and treats anything above it as none" do
-      g = Generators.erdos_renyi(1500, 4 / 1500, seed: 1)
+      g = Generators.erdos_renyi(1500, 4 / 1500, seed: 1, type: :undirected)
       assert Graph.num_vertices(g) > 1024
       {_, csr} = Graph.to_csr(g)
 

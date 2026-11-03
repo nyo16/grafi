@@ -53,7 +53,7 @@ defmodule Grafi.Serialize.GraphML do
   """
   @spec to_graphml(Graph.t(), keyword()) :: String.t()
   def to_graphml(%Graph{} = g, opts \\ []) do
-    name = Keyword.get(opts, :name, "G")
+    name = Keyword.validate!(opts, name: "G")[:name]
     edgedefault = if g.type == :directed, do: "directed", else: "undirected"
 
     node_lines =
@@ -121,7 +121,7 @@ defmodule Grafi.Serialize.GraphML do
   @doc """
   Parses a GraphML string into a `Grafi.Graph`.
 
-  Returns the graph on success or `{:error, reason}` on parse failure:
+  Returns `{:ok, graph}` on success or `{:error, reason}` on parse failure:
     * `{:invalid_weight, text}` for an `eweight` that is not a finite number;
     * `:missing_graph_element` without a `<graph>` whose `edgedefault` is
       `"directed"` or `"undirected"`;
@@ -138,14 +138,25 @@ defmodule Grafi.Serialize.GraphML do
     * `:max_bytes` — reject input larger than this many bytes with
       `{:error, {:too_large, size, max}}` before parsing. Defaults to 64 MiB;
       pass `:infinity` to disable the limit.
+
+  Unknown options raise `ArgumentError`.
   """
-  @spec from_graphml(String.t(), keyword()) :: Graph.t() | {:error, term()}
+  @spec from_graphml(String.t(), keyword()) :: {:ok, Graph.t()} | {:error, term()}
   def from_graphml(xml, opts \\ []) when is_binary(xml) do
+    opts = Keyword.validate!(opts, [:max_bytes])
+
     with :ok <- Util.check_size(xml, opts),
          {:ok, type, vertices, edges} <- XML.parse(xml, "edgedefault", &vertex/2, &edge/2) do
       XML.build_graph(type, vertices, edges)
     end
   end
+
+  @doc """
+  Like `from_graphml/2`, but returns the graph and raises `ArgumentError`
+  with the reason on failure.
+  """
+  @spec from_graphml!(String.t(), keyword()) :: Graph.t()
+  def from_graphml!(xml, opts \\ []), do: xml |> from_graphml(opts) |> Util.unwrap!("GraphML")
 
   defp vertex(attrs, data), do: {attrs["id"], data["vlabel"]}
 

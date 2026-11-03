@@ -1,22 +1,4 @@
-defmodule Grafi.DisconnectedError do
-  @moduledoc """
-  Raised by `Grafi.Algo.MST.kruskal!/1` (and friends) when a minimum
-  spanning *tree* is requested but the input graph has more than one
-  connected component (i.e. only a spanning *forest* exists).
-  """
-  defexception [:message]
-
-  @impl true
-  def exception(opts) when is_list(opts) do
-    %__MODULE__{message: Keyword.get(opts, :message, "graph is disconnected")}
-  end
-
-  def exception(msg) when is_binary(msg), do: %__MODULE__{message: msg}
-end
-
 defmodule Grafi.Algo.MST do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Minimum Spanning Tree / Forest algorithms — Kruskal's and Prim's.
 
@@ -33,8 +15,8 @@ defmodule Grafi.Algo.MST do
   components, and Prim returns a spanning tree of the component
   containing the start vertex.
 
-  Use the `kruskal!/1` variant if you want a hard error on
-  disconnected input.
+  Use `kruskal_tree/1` (or its raising form `kruskal!/1`) when only a
+  spanning tree will do.
   """
 
   alias Grafi.Algo.MinHeap
@@ -78,7 +60,7 @@ defmodule Grafi.Algo.MST do
         {ru, uf_acc} = UnionFind.find(uf_acc, edge.from)
         {rv, uf_acc} = UnionFind.find(uf_acc, edge.to)
 
-        if ru == rv do
+        if ru === rv do
           {acc, uf_acc}
         else
           {[edge | acc], UnionFind.union(uf_acc, edge.from, edge.to)}
@@ -91,29 +73,61 @@ defmodule Grafi.Algo.MST do
   end
 
   @doc """
-  Like `kruskal/1` but raises `Grafi.DisconnectedError` when the input
-  graph is disconnected (i.e. the result is a forest, not a tree).
+  Computes a minimum spanning *tree* using Kruskal's algorithm.
 
-  Returns `{tree_edges, total_weight}` on success.
+  Returns `{:ok, {tree_edges, total_weight}}` (the shape of `kruskal/1`)
+  when the graph is connected, or `{:error, :disconnected}` when only a
+  spanning forest exists. The empty graph has the empty tree.
+
+  ## Examples
+
+      iex> g = Grafi.new(type: :undirected) |> Grafi.add_edges([
+      ...>   {:a, :b, weight: 1.0}, {:b, :c, weight: 2.0}
+      ...> ])
+      iex> {:ok, {_edges, total}} = Grafi.Algo.MST.kruskal_tree(g)
+      iex> total
+      3.0
+      iex> Grafi.Algo.MST.kruskal_tree(Grafi.add_vertex(g, :d))
+      {:error, :disconnected}
+  """
+  @spec kruskal_tree(Graph.t()) :: {:ok, {[Edge.t()], number()}} | {:error, :disconnected}
+  def kruskal_tree(%Graph{} = g) do
+    case spanning_tree(g) do
+      {:ok, _tree} = ok -> ok
+      {:disconnected, _forest} -> {:error, :disconnected}
+    end
+  end
+
+  @doc """
+  Like `kruskal_tree/1` but returns `{tree_edges, total_weight}` directly
+  and raises `Grafi.DisconnectedError` when the input graph is
+  disconnected (i.e. the result is a forest, not a tree).
   """
   @spec kruskal!(Graph.t()) :: {[Edge.t()], number()}
   def kruskal!(%Graph{} = g) do
-    {forest, total} = kruskal(g)
-    v = Graph.num_vertices(g)
+    case spanning_tree(g) do
+      {:ok, tree} ->
+        tree
 
-    cond do
-      v == 0 ->
-        {forest, total}
+      {:disconnected, {forest, _total}} ->
+        v = Graph.num_vertices(g)
 
-      length(forest) == v - 1 ->
-        {forest, total}
-
-      true ->
         raise DisconnectedError,
           message:
             "graph is disconnected: spanning forest has #{length(forest)} edges " <>
               "(expected #{v - 1} for a spanning tree over #{v} vertices)"
     end
+  end
+
+  # A spanning forest is a tree iff it has V - 1 edges (vacuously so for
+  # the empty graph).
+  defp spanning_tree(g) do
+    {forest, _total} = result = kruskal(g)
+    v = Graph.num_vertices(g)
+
+    if v == 0 or length(forest) == v - 1,
+      do: {:ok, result},
+      else: {:disconnected, result}
   end
 
   @doc """
@@ -207,7 +221,7 @@ defmodule Grafi.Algo.MST do
   defp unique_undirected_edges(%Graph{out_edges: out}) do
     Enum.reduce(out, %{}, fn {from, targets}, acc ->
       Enum.reduce(targets, acc, fn {to, edges}, acc2 ->
-        if from == to do
+        if from === to do
           acc2
         else
           key = unordered_key(from, to)
@@ -230,7 +244,7 @@ defmodule Grafi.Algo.MST do
     out =
       g
       |> Graph.out_neighbors(v)
-      |> Enum.reject(&(&1 == v))
+      |> Enum.reject(&(&1 === v))
       |> Enum.map(fn n ->
         w = g |> Graph.edges_between(v, n) |> Enum.map(& &1.weight) |> Enum.min()
         %Edge{from: v, to: n, weight: w}
@@ -239,7 +253,7 @@ defmodule Grafi.Algo.MST do
     inc =
       g
       |> Graph.in_neighbors(v)
-      |> Enum.reject(&(&1 == v))
+      |> Enum.reject(&(&1 === v))
       |> Enum.map(fn n ->
         w = g |> Graph.edges_between(n, v) |> Enum.map(& &1.weight) |> Enum.min()
         %Edge{from: v, to: n, weight: w}
@@ -256,14 +270,14 @@ defmodule Grafi.Algo.MST do
     |> Map.values()
   end
 
-  defp unordered_key(a, b) do
-    cond do
-      a == b -> {a, b}
-      compare(a, b) -> {a, b}
-      true -> {b, a}
-    end
-  end
+  defp unordered_key(a, b) when a < b, do: {a, b}
+  defp unordered_key(a, b) when b < a, do: {b, a}
 
-  # Total-order comparison that works for any Erlang term.
-  defp compare(a, b), do: a <= b
+  # Distinct ids that compare equal (`1` and `1.0`): a deterministic
+  # tie-break gives both orientations the same key.
+  defp unordered_key(a, b) do
+    if :erlang.term_to_binary(a, [:deterministic]) <= :erlang.term_to_binary(b, [:deterministic]),
+      do: {a, b},
+      else: {b, a}
+  end
 end

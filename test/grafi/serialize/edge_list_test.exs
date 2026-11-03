@@ -73,7 +73,7 @@ defmodule Grafi.Serialize.EdgeListTest do
 
   describe "from_edge_list/2" do
     test "parses unweighted directed by default" do
-      g = EdgeList.from_edge_list("a b\nb c")
+      {:ok, g} = EdgeList.from_edge_list("a b\nb c")
 
       assert g.type == :directed
       assert Graph.num_vertices(g) == 3
@@ -83,14 +83,14 @@ defmodule Grafi.Serialize.EdgeListTest do
     end
 
     test "parses weighted lines" do
-      g = EdgeList.from_edge_list("a b 2.5\nb c 3.0")
+      {:ok, g} = EdgeList.from_edge_list("a b 2.5\nb c 3.0")
 
       [e1] = Graph.edges_between(g, "a", "b")
       assert e1.weight == 2.5
     end
 
     test "parses undirected graph" do
-      g = EdgeList.from_edge_list("a b\nb c", directed: false)
+      {:ok, g} = EdgeList.from_edge_list("a b\nb c", type: :undirected)
 
       assert g.type == :undirected
       assert Graph.has_edge?(g, "a", "b")
@@ -98,17 +98,17 @@ defmodule Grafi.Serialize.EdgeListTest do
     end
 
     test "vertices_as_atoms option" do
-      g = EdgeList.from_edge_list("a b", vertices_as_atoms: true)
+      {:ok, g} = EdgeList.from_edge_list("a b", vertices_as_atoms: true)
       assert Graph.has_edge?(g, :a, :b)
     end
 
     test "ignores comment lines and blank lines" do
-      g = EdgeList.from_edge_list("# header\na b\n\nb c\n")
+      {:ok, g} = EdgeList.from_edge_list("# header\na b\n\nb c\n")
       assert Graph.num_edges(g) == 2
     end
 
     test "default_weight option" do
-      g = EdgeList.from_edge_list("a b", default_weight: 7.0)
+      {:ok, g} = EdgeList.from_edge_list("a b", default_weight: 7.0)
       [e] = Graph.edges_between(g, "a", "b")
       assert e.weight == 7.0
     end
@@ -134,14 +134,14 @@ defmodule Grafi.Serialize.EdgeListTest do
     end
 
     test "weight detection runs per line: a weight after an unweighted first line" do
-      g = EdgeList.from_edge_list("a b\nb c 2.5")
+      {:ok, g} = EdgeList.from_edge_list("a b\nb c 2.5")
 
       assert [%{weight: 1.0}] = Graph.edges_between(g, "a", "b")
       assert [%{weight: 2.5}] = Graph.edges_between(g, "b", "c")
     end
 
     test "weight detection runs per line: an unweighted line after a weighted one" do
-      g = EdgeList.from_edge_list("a b 2.5\nb c", default_weight: 4.0)
+      {:ok, g} = EdgeList.from_edge_list("a b 2.5\nb c", default_weight: 4.0)
 
       assert [%{weight: 2.5}] = Graph.edges_between(g, "a", "b")
       assert [%{weight: 4.0}] = Graph.edges_between(g, "b", "c")
@@ -157,12 +157,12 @@ defmodule Grafi.Serialize.EdgeListTest do
     end
 
     test "weighted: false ignores extra columns" do
-      g = EdgeList.from_edge_list("a b 9 extra", weighted: false)
+      {:ok, g} = EdgeList.from_edge_list("a b 9 extra", weighted: false)
       assert [%{weight: 1.0}] = Graph.edges_between(g, "a", "b")
     end
 
     test ":separator splits on the string and trims fields, allowing spaces in names" do
-      g = EdgeList.from_edge_list("New York , Boston, 2.5\nBoston,Albany", separator: ",")
+      {:ok, g} = EdgeList.from_edge_list("New York , Boston, 2.5\nBoston,Albany", separator: ",")
 
       assert [%{weight: 2.5}] = Graph.edges_between(g, "New York", "Boston")
       assert [%{weight: 1.0}] = Graph.edges_between(g, "Boston", "Albany")
@@ -176,8 +176,8 @@ defmodule Grafi.Serialize.EdgeListTest do
 
     test ":max_bytes rejects larger input" do
       assert EdgeList.from_edge_list("a b", max_bytes: 2) == {:error, {:too_large, 3, 2}}
-      assert %Graph{} = EdgeList.from_edge_list("a b", max_bytes: 3)
-      assert %Graph{} = EdgeList.from_edge_list("a b", max_bytes: :infinity)
+      assert {:ok, %Graph{}} = EdgeList.from_edge_list("a b", max_bytes: 3)
+      assert {:ok, %Graph{}} = EdgeList.from_edge_list("a b", max_bytes: :infinity)
     end
 
     test "an error carries a bounded excerpt of the line, not the whole line" do
@@ -194,7 +194,7 @@ defmodule Grafi.Serialize.EdgeListTest do
       long = String.duplicate("x", 100)
       input = "#{long}a #{long}b\n" <> String.duplicate("# padding\n", 100)
 
-      for v <- Graph.vertices(EdgeList.from_edge_list(input)) do
+      for v <- Graph.vertices(EdgeList.from_edge_list!(input)) do
         assert :binary.referenced_byte_size(v) < byte_size(input)
       end
     end
@@ -205,7 +205,9 @@ defmodule Grafi.Serialize.EdgeListTest do
             String.duplicate("\n", 64 * 1024 * 1024),
             String.duplicate("\r\n", 32 * 1024 * 1024)
           ] do
-        assert {:done, %Graph{} = g} = with_heap_cap(fn -> EdgeList.from_edge_list(input) end)
+        assert {:done, {:ok, %Graph{} = g}} =
+                 with_heap_cap(fn -> EdgeList.from_edge_list(input) end)
+
         assert Graph.num_vertices(g) == 0
       end
     end
@@ -220,7 +222,7 @@ defmodule Grafi.Serialize.EdgeListTest do
         |> Graph.add_edge("a", "c", weight: 7.0)
 
       text = EdgeList.to_edge_list(g)
-      g2 = EdgeList.from_edge_list(text)
+      {:ok, g2} = EdgeList.from_edge_list(text)
 
       assert Graph.num_edges(g2) == 3
       assert Graph.num_vertices(g2) == 3
@@ -236,7 +238,7 @@ defmodule Grafi.Serialize.EdgeListTest do
         |> Graph.add_edge("y", "z", weight: 4.0)
 
       text = EdgeList.to_edge_list(g)
-      g2 = EdgeList.from_edge_list(text, directed: false)
+      {:ok, g2} = EdgeList.from_edge_list(text, type: :undirected)
 
       assert g2.type == :undirected
       assert Graph.has_edge?(g2, "x", "y")
@@ -252,7 +254,7 @@ defmodule Grafi.Serialize.EdgeListTest do
         |> Graph.add_edge("a", "b", weight: 2.0)
 
       text = EdgeList.to_edge_list(g, weighted: true)
-      g2 = EdgeList.from_edge_list(text, weighted: true)
+      {:ok, g2} = EdgeList.from_edge_list(text, weighted: true)
 
       assert Graph.num_edges(g2) == 2
       assert length(Graph.edges_between(g2, "a", "b")) == 2
@@ -267,7 +269,7 @@ defmodule Grafi.Serialize.EdgeListTest do
       text = EdgeList.to_edge_list(g, separator: ",")
       assert text =~ "New York,Boston,2.5"
 
-      g2 = EdgeList.from_edge_list(text, separator: ",")
+      {:ok, g2} = EdgeList.from_edge_list(text, separator: ",")
 
       assert Enum.sort(Graph.vertices(g2)) == ["Boston", "New York", "a b c"]
       assert [%{weight: 2.5}] = Graph.edges_between(g2, "New York", "Boston")
@@ -275,9 +277,9 @@ defmodule Grafi.Serialize.EdgeListTest do
     end
 
     test "mixed weighted and unweighted lines round-trip through per-line detection" do
-      g = EdgeList.from_edge_list("a,b\nb,c,3.0", separator: ",")
+      {:ok, g} = EdgeList.from_edge_list("a,b\nb,c,3.0", separator: ",")
       text = EdgeList.to_edge_list(g, separator: ",")
-      g2 = EdgeList.from_edge_list(text, separator: ",")
+      {:ok, g2} = EdgeList.from_edge_list(text, separator: ",")
 
       assert [%{weight: 1.0}] = Graph.edges_between(g2, "a", "b")
       assert [%{weight: 3.0}] = Graph.edges_between(g2, "b", "c")

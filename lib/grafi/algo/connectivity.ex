@@ -1,6 +1,4 @@
 defmodule Grafi.Algo.Connectivity do
-  @dialyzer :no_opaque
-
   @moduledoc """
   Bridges, articulation points, and biconnected components.
 
@@ -163,6 +161,7 @@ defmodule Grafi.Algo.Connectivity do
       bridges: [],
       aps: MapSet.new(),
       edge_stack: [],
+      edge_stack_len: 0,
       bccs: [],
       want_bccs: want_bccs?
     }
@@ -175,14 +174,8 @@ defmodule Grafi.Algo.Connectivity do
           {st, _root_children} = dfs(v, -1, true, st)
 
           # Anything left on the edge stack at the end of a DFS tree
-          # forms a final biconnected component (or sits empty if the
-          # last popped component already cleared it).
-          if want_bccs? and st.edge_stack != [] do
-            st
-          else
-            st
-          end
-          |> flush_final_bcc()
+          # forms a final biconnected component.
+          flush_final_bcc(st)
         end
       end)
 
@@ -194,7 +187,7 @@ defmodule Grafi.Algo.Connectivity do
 
   defp flush_final_bcc(st) do
     bcc = MapSet.new(st.edge_stack)
-    %{st | edge_stack: [], bccs: [bcc | st.bccs]}
+    %{st | edge_stack: [], edge_stack_len: 0, bccs: [bcc | st.bccs]}
   end
 
   # Recursive DFS. `parent_eid` is the id of the edge by which we arrived
@@ -225,12 +218,7 @@ defmodule Grafi.Algo.Connectivity do
             # the same back edge in the other direction — and that case
             # has eid == some earlier edge already on the stack).
             if s.disc[w] < s.disc[u] do
-              s =
-                if s.want_bccs do
-                  %{s | edge_stack: [canonical_edge(u, w) | s.edge_stack]}
-                else
-                  s
-                end
+              s = push_edge(s, u, w)
 
               {%{s | low: Map.put(s.low, u, min(s.low[u], s.disc[w]))}, cc}
             else
@@ -239,14 +227,8 @@ defmodule Grafi.Algo.Connectivity do
 
           true ->
             # Tree edge u -> w.
-            s =
-              if s.want_bccs do
-                %{s | edge_stack: [canonical_edge(u, w) | s.edge_stack]}
-              else
-                s
-              end
-
-            stack_marker = length(s.edge_stack)
+            s = push_edge(s, u, w)
+            stack_marker = s.edge_stack_len
 
             {s, _w_children} = dfs(w, eid, false, s)
 
@@ -275,14 +257,20 @@ defmodule Grafi.Algo.Connectivity do
             # anything pushed during w's subtree).
             s =
               if s.want_bccs and low_w >= s.disc[u] do
-                target_len = stack_marker - 1
-                {popped, remaining} = pop_to(s.edge_stack, target_len)
-                bcc = MapSet.new(popped)
+                {popped, remaining} = pop_to(s.edge_stack, s.edge_stack_len - (stack_marker - 1))
+                len = stack_marker - 1
 
-                if MapSet.size(bcc) > 0 do
-                  %{s | edge_stack: remaining, bccs: [bcc | s.bccs]}
-                else
-                  %{s | edge_stack: remaining}
+                case popped do
+                  [] ->
+                    %{s | edge_stack: remaining, edge_stack_len: len}
+
+                  _ ->
+                    %{
+                      s
+                      | edge_stack: remaining,
+                        edge_stack_len: len,
+                        bccs: [MapSet.new(popped) | s.bccs]
+                    }
                 end
               else
                 s
@@ -303,12 +291,18 @@ defmodule Grafi.Algo.Connectivity do
     {st, child_count}
   end
 
-  # Pop from the top of `stack` (which is a list, top = head) until
-  # exactly `target_len` items remain. Returns `{popped, remaining}`.
-  defp pop_to(stack, target_len) do
-    n_pop = max(length(stack) - target_len, 0)
-    Enum.split(stack, n_pop)
-  end
+  # Pops the top `n_pop` edges (top = head). Returns `{popped, remaining}`
+  # in O(n_pop): the caller tracks the stack length, so no `length/1`.
+  defp pop_to(stack, n_pop), do: Enum.split(stack, n_pop)
+
+  defp push_edge(%{want_bccs: false} = s, _u, _w), do: s
+
+  defp push_edge(s, u, w),
+    do: %{
+      s
+      | edge_stack: [canonical_edge(u, w) | s.edge_stack],
+        edge_stack_len: s.edge_stack_len + 1
+    }
 
   defp visit(st, v) do
     %{

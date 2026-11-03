@@ -51,7 +51,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 2 2.5
       """
 
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert g.type == :directed
       assert Graph.has_edge?(g, "a", "b")
       [e] = Graph.edges_between(g, "a", "b")
@@ -65,7 +65,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 2 1.0
       """
 
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert Graph.has_edge?(g, 1, 2)
     end
 
@@ -80,7 +80,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 2 1.0
       """
 
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert Graph.has_edge?(g, "a", "b")
     end
 
@@ -108,7 +108,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 2 1.0
       """
 
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert Graph.has_vertex?(g, "c")
     end
   end
@@ -130,12 +130,12 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       assert {:error, {:too_many_vertices, 11}} =
                MatrixMarket.from_matrix_market(@header <> "2 11 0\n", max_vertices: 10)
 
-      g = MatrixMarket.from_matrix_market(@header <> "10 10 0\n", max_vertices: 10)
+      {:ok, g} = MatrixMarket.from_matrix_market(@header <> "10 10 0\n", max_vertices: 10)
       assert Graph.num_vertices(g) == 10
     end
 
     test ":max_vertices accepts :infinity" do
-      g = MatrixMarket.from_matrix_market(@header <> "3 3 0\n", max_vertices: :infinity)
+      {:ok, g} = MatrixMarket.from_matrix_market(@header <> "3 3 0\n", max_vertices: :infinity)
       assert Graph.num_vertices(g) == 3
     end
 
@@ -151,7 +151,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
     end
 
     test "a non-square matrix gets max(rows, cols) vertices" do
-      g = MatrixMarket.from_matrix_market(@header <> "2 3 0\n")
+      {:ok, g} = MatrixMarket.from_matrix_market(@header <> "2 3 0\n")
       assert Enum.sort(Graph.vertices(g)) == [1, 2, 3]
     end
 
@@ -177,7 +177,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       assert {:error, {:too_large, ^size, 10}} =
                MatrixMarket.from_matrix_market(input, max_bytes: 10)
 
-      assert %Graph{} = MatrixMarket.from_matrix_market(input, max_bytes: size)
+      assert {:ok, %Graph{}} = MatrixMarket.from_matrix_market(input, max_bytes: size)
     end
 
     test "a row index beyond rows is out of range" do
@@ -307,7 +307,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
 
     test "comment ids that swap integer rows are not a collision" do
       input = @header <> "%GRAFI_VERTEX 1 int:2\n%GRAFI_VERTEX 2 int:1\n2 2 1\n1 2 1.0\n"
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert Graph.has_edge?(g, 2, 1)
       refute Graph.has_edge?(g, 1, 2)
     end
@@ -324,7 +324,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
 
       input = @header <> "2 2 1\n" <> String.duplicate("\n", 64 * 1024 * 1024 - 64) <> "1 2\n"
 
-      assert {:done, %Graph{}} =
+      assert {:done, {:ok, %Graph{}}} =
                with_heap_cap(fn -> MatrixMarket.from_matrix_market(input) end)
     end
   end
@@ -338,14 +338,14 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       2 3
       """
 
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert [%{weight: 1.0}] = Graph.edges_between(g, 1, 2)
       assert [%{weight: 1.0}] = Graph.edges_between(g, 2, 3)
     end
 
     test "tab-separated fields are accepted" do
       input = "%%MatrixMarket\tmatrix coordinate real general\n2\t2\t1\n1\t2\t2.0\n"
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert [%{weight: 2.0}] = Graph.edges_between(g, 1, 2)
     end
 
@@ -353,7 +353,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       g = Graph.new() |> Graph.add_edge(7, 2.5, weight: 1.0)
       text = MatrixMarket.to_matrix_market(g)
 
-      g2 = MatrixMarket.from_matrix_market(text)
+      {:ok, g2} = MatrixMarket.from_matrix_market(text)
       assert Graph.has_edge?(g2, 7, 2.5)
       assert Enum.sort(Graph.vertices(g2)) === [2.5, 7]
     end
@@ -367,14 +367,14 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 1 0
       """
 
-      assert [v] = Graph.vertices(MatrixMarket.from_matrix_market(input))
+      assert [v] = Graph.vertices(MatrixMarket.from_matrix_market!(input))
       assert v == digits
     end
 
     test "bignum integer ids round-trip" do
       ids = [Integer.pow(10, 40), -Integer.pow(10, 40)]
       g = Graph.new() |> Graph.add_edge(hd(ids), List.last(ids))
-      decoded = g |> MatrixMarket.to_matrix_market() |> MatrixMarket.from_matrix_market()
+      decoded = g |> MatrixMarket.to_matrix_market() |> MatrixMarket.from_matrix_market!()
       assert Enum.sort(Graph.vertices(decoded)) == Enum.sort(ids)
     end
 
@@ -387,7 +387,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 1 0
       """
 
-      assert Graph.vertices(MatrixMarket.from_matrix_market(input)) == [digits]
+      assert Graph.vertices(MatrixMarket.from_matrix_market!(input)) == [digits]
     end
 
     test "string ids with a reserved prefix, whitespace or % round-trip as strings" do
@@ -409,14 +409,14 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       ]
 
       g = Enum.reduce(ids, Graph.new(), &Graph.add_vertex(&2, &1))
-      g2 = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+      {:ok, g2} = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
 
       assert Enum.sort(Graph.vertices(g2)) == Enum.sort(ids)
     end
 
     test "string ids next to the typed ids they look like stay distinct" do
       g = Graph.new() |> Graph.add_edge("int:5", 5) |> Graph.add_edge(:erlang, "atom:erlang")
-      g2 = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+      {:ok, g2} = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
 
       assert Graph.has_edge?(g2, "int:5", 5)
       assert Graph.has_edge?(g2, :erlang, "atom:erlang")
@@ -429,7 +429,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 1 0
       """
 
-      assert Graph.vertices(MatrixMarket.from_matrix_market(input)) == ["a b%"]
+      assert Graph.vertices(MatrixMarket.from_matrix_market!(input)) == ["a b%"]
     end
 
     test "a percent sign without two hex digits is kept literally" do
@@ -439,12 +439,12 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 1 0
       """
 
-      assert Graph.vertices(MatrixMarket.from_matrix_market(input)) == ["a%-1b%4"]
+      assert Graph.vertices(MatrixMarket.from_matrix_market!(input)) == ["a%-1b%4"]
     end
 
     test "other ids are written as their inspect text and read back as strings" do
       g = Graph.add_vertex(Graph.new(), {:a, 1})
-      g2 = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
+      {:ok, g2} = MatrixMarket.from_matrix_market(MatrixMarket.to_matrix_market(g))
       assert Graph.vertices(g2) == ["{:a, 1}"]
     end
 
@@ -459,7 +459,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       4 4 0
       """
 
-      for v <- Graph.vertices(MatrixMarket.from_matrix_market(input)) do
+      for v <- Graph.vertices(MatrixMarket.from_matrix_market!(input)) do
         assert :binary.referenced_byte_size(v) < byte_size(input)
       end
     end
@@ -474,7 +474,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
       1 1 0
       """
 
-      g = MatrixMarket.from_matrix_market(input)
+      {:ok, g} = MatrixMarket.from_matrix_market(input)
       assert Graph.vertices(g) == [name]
       assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
     end
@@ -489,7 +489,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
         |> Graph.add_edge("a", "c", weight: 7.0)
 
       text = MatrixMarket.to_matrix_market(g)
-      g2 = MatrixMarket.from_matrix_market(text)
+      {:ok, g2} = MatrixMarket.from_matrix_market(text)
 
       assert g2.type == :directed
       assert Graph.num_vertices(g2) == 3
@@ -500,7 +500,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
     test "atom vertex ids round-trip" do
       g = Graph.new() |> Graph.add_edge(:athens, :sparta, weight: 1.0)
       text = MatrixMarket.to_matrix_market(g)
-      g2 = MatrixMarket.from_matrix_market(text)
+      {:ok, g2} = MatrixMarket.from_matrix_market(text)
       assert Graph.has_edge?(g2, :athens, :sparta)
     end
 
@@ -510,7 +510,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
         |> Graph.add_edge("x", "y", weight: 1.5)
 
       text = MatrixMarket.to_matrix_market(g)
-      g2 = MatrixMarket.from_matrix_market(text)
+      {:ok, g2} = MatrixMarket.from_matrix_market(text)
 
       assert g2.type == :undirected
       assert Graph.has_edge?(g2, "x", "y")
@@ -524,7 +524,7 @@ defmodule Grafi.Serialize.MatrixMarketTest do
         |> Graph.add_edge("a", "b", weight: 2.0)
 
       text = MatrixMarket.to_matrix_market(g)
-      g2 = MatrixMarket.from_matrix_market(text)
+      {:ok, g2} = MatrixMarket.from_matrix_market(text)
 
       # Multi-edges are collapsed to a single edge with summed weight.
       assert Graph.num_edges(g2) == 1

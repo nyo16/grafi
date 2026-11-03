@@ -41,6 +41,12 @@ defmodule Grafi.Algo.BidirectionalTest do
   # ── Basic ─────────────────────────────────────────────────────────────
 
   describe "dijkstra/4" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g = Graph.new() |> Graph.add_edges([{1, 1.0, weight: 2.0}])
+      assert Grafi.Algo.Bidirectional.dijkstra(g, 1, 1.0) == {:ok, {[1, 1.0], 2.0}}
+      assert Grafi.Algo.Bidirectional.dijkstra(g, 1.0, 1) == {:error, :no_path}
+    end
+
     test "matches classical Dijkstra weight on a small directed graph" do
       g =
         Graph.new()
@@ -74,9 +80,17 @@ defmodule Grafi.Algo.BidirectionalTest do
       assert w == classic_w
     end
 
-    test ":no_path when disconnected" do
+    test "{:error, :no_path} when disconnected" do
       g = Graph.new() |> Graph.add_vertices([:a, :b])
-      assert :no_path = Bidirectional.dijkstra(g, :a, :b)
+      assert {:error, :no_path} = Bidirectional.dijkstra(g, :a, :b)
+    end
+
+    test "unknown options raise ArgumentError" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/unknown keys \[:engine\]/, fn ->
+        Bidirectional.dijkstra(g, :a, :b, engine: :elixir)
+      end
     end
 
     test "{:error, :no_such_vertex} when source missing" do
@@ -146,8 +160,8 @@ defmodule Grafi.Algo.BidirectionalTest do
             assert valid_path?(g, path)
             assert_in_delta path_weight(g, path), bidi_w, 1.0e-9
 
-          :no_path ->
-            assert :no_path = Bidirectional.dijkstra(g, src, tgt)
+          {:error, :no_path} ->
+            assert {:error, :no_path} = Bidirectional.dijkstra(g, src, tgt)
         end
       end
     end
@@ -178,8 +192,8 @@ defmodule Grafi.Algo.BidirectionalTest do
             assert {:ok, {_path, bidi_w}} = Bidirectional.dijkstra(g, src, tgt)
             assert_in_delta bidi_w, classic_w, 1.0e-9
 
-          :no_path ->
-            assert :no_path = Bidirectional.dijkstra(g, src, tgt)
+          {:error, :no_path} ->
+            assert {:error, :no_path} = Bidirectional.dijkstra(g, src, tgt)
         end
       end
     end

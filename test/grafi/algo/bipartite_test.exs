@@ -92,12 +92,19 @@ defmodule Grafi.Algo.BipartiteTest do
         Graph.new(type: :undirected)
         |> Graph.add_edges([{:a, :b}, {:b, :c}, {:c, :a}])
 
-      assert {:error, :not_bipartite, {u, v}} = Bipartite.coloring(g)
+      assert {:error, {:not_bipartite, {u, v}}} = Bipartite.coloring(g)
       assert u in [:a, :b, :c]
       assert v in [:a, :b, :c]
       assert u != v
       # The violating edge must actually exist in the underlying graph.
       assert Graph.has_edge?(g, u, v) or Graph.has_edge?(g, v, u)
+    end
+
+    test "a self-loop is an odd cycle" do
+      g = Graph.new(type: :undirected) |> Graph.add_edges([{:a, :b}, {:b, :b}])
+
+      assert {:error, {:not_bipartite, {:b, :b}}} = Bipartite.coloring(g)
+      refute Bipartite.bipartite?(g)
     end
 
     test "isolated vertex gets a color" do
@@ -207,8 +214,16 @@ defmodule Grafi.Algo.BipartiteTest do
   describe "property: random bipartite construction is bipartite" do
     property "graph built as A-B edges is always bipartite" do
       check all(
-              left_seed <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
-              right_seed <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
+              left_seed <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 8
+                ),
+              right_seed <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 8
+                ),
               edge_count <- integer(0..30)
             ) do
         # Tag sides to keep them strictly disjoint, using a 3-tuple so
