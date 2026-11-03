@@ -211,12 +211,12 @@ All notable changes to Grafi are documented here, following
   Louvain and Leiden return `{:error, :directed_unsupported}` on
   directed graphs.
 - igraph silently accepted negative weights in PageRank and Leiden.
-  Weighted centralities now raise `ArgumentError`; Dijkstra and
-  community detection return `{:error, :negative_weight}` on both
+  PageRank, betweenness and closeness now raise `ArgumentError`; Dijkstra
+  and community detection return `{:error, :negative_weight}` on both
   engines.
-- Invalid options (`damping`, `iterations`, `tolerance`, `resolution`,
-  `engine`, `timeout`) raise `ArgumentError` before dispatch; integer
-  `resolution` is accepted.
+- Invalid options (`damping`, `max_iter`, `tol`, `resolution`, `engine`,
+  `timeout`) raise `ArgumentError` before dispatch; integer `resolution`
+  is accepted.
 - Non-finite NIF results (e.g. igraph's NaN closeness for a vertex that
   reaches nothing) are returned as `0.0`, matching the Elixir engine.
 - Dijkstra NIF distances on multigraphs sum the weights of the edges
@@ -454,7 +454,17 @@ All notable changes to Grafi are documented here, following
   and `:dot`/`:neato`/`:circo`/`:twopi`/`:fdp`/`:sfdp` engines.
 - **Top-level `Grafi.*` delegations** for every algorithm module (see
   the "Facade names" table in the `Grafi` moduledoc for the few aliases),
-  plus `to_*`/`from_*`/`from_*!` wrappers for every serialization format.
+  `Graph` queries (`edges_between/3`, `label/2`, `out_degree/2`,
+  `in_degree/2`, `empty?/1`), the generators (`complete_graph/2`,
+  `erdos_renyi/3`, …), plus `to_*`/`from_*`/`from_*!` wrappers for every
+  serialization format.
+- **New functions:** `Grafi.Algo.Traversal.topological_sort/1` (Kahn, ties
+  in term order), `Traversal.weak_bfs/2` (BFS over in- and out-edges),
+  `ShortestPath.dijkstra_all/3` (a custom edge-weight function),
+  `MST.kruskal_tree/1` (`{:ok, tree}` or `{:error, :disconnected}`),
+  `MaxFlow.max_flow/4` (`algo: :dinic | :edmonds_karp`), a raising
+  `from_x!/2` for every deserializer, and
+  `Grafi.Serialize.Mermaid.to_markdown/2`.
 
 ### Changed
 - License declaration in `mix.exs` corrected to `Apache-2.0` to match

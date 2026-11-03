@@ -12,12 +12,14 @@ defmodule Grafi.Algo.InvariantsPropertyTest do
 
   defp sorted_vertices(g), do: g |> Graph.vertices() |> Enum.sort()
 
-  # Members of `parts` cover V exactly once.
+  # `parts` cover V exactly once, in canonical order: each part sorted, parts
+  # ordered by their smallest member.
   defp assert_partition(parts, g) do
     members = Enum.concat(parts)
     assert Enum.sort(members) == sorted_vertices(g)
     assert length(members) == length(Enum.uniq(members))
     assert Enum.all?(parts, &(&1 != []))
+    assert parts == parts |> Enum.map(&Enum.sort/1) |> Enum.sort_by(&hd/1)
   end
 
   # `g` without self-loops and parallel edges (isomorphism and k-core work on
@@ -84,7 +86,8 @@ defmodule Grafi.Algo.InvariantsPropertyTest do
       position = order |> Enum.with_index() |> Map.new()
       assert Enum.all?(Graph.edges(g), &(position[&1.from] < position[&1.to]))
 
-      assert {:ok, ^order} = g |> DAG.from_graph!() |> DAG.topological_sort(engine: :elixir)
+      # :auto uses the NIF when it is loaded: a NIF/Elixir parity check.
+      assert {:ok, ^order} = g |> DAG.from_graph!() |> DAG.topological_sort(engine: :auto)
     end
   end
 
@@ -97,16 +100,59 @@ defmodule Grafi.Algo.InvariantsPropertyTest do
     end
   end
 
-  property "a graph is isomorphic to a relabelled copy of itself" do
-    check all(g <- map(Generators.graph(max_vertices: 8, max_edges: 14), &simple/1)) do
-      mapping = g |> Graph.vertices() |> Enum.with_index() |> Map.new()
-      base = Graph.add_vertices(Graph.new(type: g.type), Map.values(mapping))
+  property "an undirected graph has a cycle exactly when it is not a forest (E > V - C)" do
+    check all(g <- Generators.graph(type: :undirected)) do
+      forest_edges = Graph.num_vertices(g) - length(Cycles.connected_components(g))
+      assert Cycles.has_cycle?(g) == Graph.num_edges(g) > forest_edges
+    end
+  end
 
-      relabelled =
-        Enum.reduce(Graph.edges(g), base, &Graph.add_edge(&2, mapping[&1.from], mapping[&1.to]))
+  property "find_cycle returns a closed walk along real edges" do
+    check all(g <- Generators.graph()) do
+      case Cycles.find_cycle(g) do
+        {:error, :no_cycle} ->
+          refute Cycles.has_cycle?(g)
+
+        {:ok, [first | _] = walk} ->
+          assert Cycles.has_cycle?(g)
+          assert List.last(walk) == first
+          interior = Enum.drop(walk, -1)
+          assert length(interior) == length(Enum.uniq(interior))
+
+          for [a, b] <- Enum.chunk_every(walk, 2, 1, :discard),
+              do: assert(Graph.edges_between(g, a, b) != [], "#{inspect(a)} -> #{inspect(b)}")
+
+          # An undirected walk a, b, a needs two parallel edges, not one edge twice.
+          with %Graph{type: :undirected} <- g, [a, b, a] when a != b <- walk do
+            assert length(Graph.edges_between(g, a, b)) >= 2
+          end
+      end
+    end
+  end
+
+  property "a graph is isomorphic to a shuffled relabelling of itself" do
+    check all(
+            g <- map(Generators.graph(max_vertices: 8, max_edges: 14), &simple/1),
+            seed <- integer()
+          ) do
+      relabelled = shuffled_copy(g, seed)
 
       for engine <- [:elixir, :auto] do
         assert Isomorphism.isomorphic?(g, relabelled, engine: engine)
+      end
+    end
+  end
+
+  property "isomorphic? agrees with trying every bijection" do
+    check all(
+            type <- member_of([:directed, :undirected]),
+            g1 <- map(Generators.graph(type: type, id_type: :integer, max_vertices: 5), &simple/1),
+            g2 <- map(Generators.graph(type: type, id_type: :integer, max_vertices: 5), &simple/1)
+          ) do
+      expected = brute_isomorphic?(g1, g2)
+
+      for engine <- [:elixir, :auto] do
+        assert Isomorphism.isomorphic?(g1, g2, engine: engine) == expected
       end
     end
   end
@@ -125,19 +171,59 @@ defmodule Grafi.Algo.InvariantsPropertyTest do
     end
   end
 
-  property "every vertex of the k-core has degree at least k inside it" do
+  property "the k-core is what repeatedly peeling vertices of degree below k leaves" do
     check all(g <- map(Generators.graph(type: :undirected), &simple/1), k <- integer(0..4)) do
       core = KCore.k_core(g, k)
       assert Enum.all?(Graph.vertices(core), &(Graph.degree(core, &1) >= k))
-
-      # Maximal: every vertex outside the core has core number below k.
-      numbers = KCore.core_numbers(g)
-
-      for v <- Graph.vertices(g) do
-        assert Graph.has_vertex?(core, v) == numbers[v] >= k
-      end
+      assert sorted_vertices(core) == g |> peel(k) |> Enum.sort()
     end
   end
+
+  # Vertices left after removing, until none is left, every vertex with fewer
+  # than k neighbours among the remaining ones (an independent k-core oracle).
+  defp peel(g, k) do
+    nbrs = Map.new(Graph.vertices(g), &{&1, MapSet.new(Graph.neighbors(g, &1))})
+
+    Stream.iterate(MapSet.new(Graph.vertices(g)), fn alive ->
+      alive
+      |> Enum.filter(&(MapSet.size(MapSet.intersection(nbrs[&1], alive)) >= k))
+      |> MapSet.new()
+    end)
+    |> Stream.chunk_every(2, 1)
+    |> Enum.find(fn [a, b] -> MapSet.equal?(a, b) end)
+    |> hd()
+    |> MapSet.to_list()
+  end
+
+  defp shuffled_copy(g, seed) do
+    :rand.seed(:exsss, {seed, seed, seed})
+    vs = Graph.vertices(g)
+    mapping = vs |> Enum.zip(Enum.shuffle(0..(length(vs) - 1)//1)) |> Map.new()
+    base = Graph.add_vertices(Graph.new(type: g.type), Map.values(mapping))
+    Enum.reduce(Graph.edges(g), base, &Graph.add_edge(&2, mapping[&1.from], mapping[&1.to]))
+  end
+
+  defp edge_set(g, mapping) do
+    g
+    |> Graph.edges()
+    |> Enum.map(fn %{from: f, to: t} ->
+      {a, b} = {mapping[f], mapping[t]}
+      if g.type == :undirected and b < a, do: {b, a}, else: {a, b}
+    end)
+    |> Enum.sort()
+  end
+
+  defp brute_isomorphic?(g1, g2) do
+    vs1 = Graph.vertices(g1)
+    vs2 = Graph.vertices(g2)
+    target = edge_set(g2, Map.new(vs2, &{&1, &1}))
+
+    length(vs1) == length(vs2) and
+      Enum.any?(permutations(vs2), &(edge_set(g1, Map.new(Enum.zip(vs1, &1))) == target))
+  end
+
+  defp permutations([]), do: [[]]
+  defp permutations(list), do: for(x <- list, rest <- permutations(list -- [x]), do: [x | rest])
 
   defp non_negative(g) do
     base = Graph.add_vertices(Graph.new(type: g.type), Graph.vertices(g))

@@ -147,7 +147,7 @@ defmodule Grafi.MixProject do
         Core: [Grafi, Grafi.Graph, Grafi.DAG, Grafi.Edge, Grafi.Generators, Grafi.UnionFind],
         Algorithms: ~r/^Grafi\.Algo\./,
         Serialization: ~r/^Grafi\.Serialize\./,
-        "Layout & Visualization": [Grafi.Layout, Grafi.Viz, Grafi.Kino],
+        "Layout & Visualization": [Grafi.Layout, Grafi.Viz],
         "Native Engine & Errors": [
           Grafi.NIF,
           Grafi.NIFError,

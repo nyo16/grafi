@@ -149,6 +149,8 @@ defmodule Grafi.Bench do
       {"katz", "A2.13", [1_000, 10_000], &random_graph(&1, 5, :directed), &Centrality.katz/1},
       {"eigenvector", "A2.13", [1_000, 10_000], &random_graph(&1, 5, :undirected),
        &Centrality.eigenvector/1},
+      {"betweenness_elixir", "A4.2", [1_000, 10_000], &random_graph(&1, 5, :directed),
+       &Centrality.betweenness(&1, engine: :elixir)},
       {"graphml_parse", "A4.2", [1_000, 10_000],
        &GraphML.to_graphml(random_graph(&1, 5, :directed)), &GraphML.from_graphml/1}
     ]
