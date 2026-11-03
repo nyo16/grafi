@@ -314,7 +314,9 @@ defmodule Grafi.Algo.APSPTest do
   # w in 1..1001 gives a positive range of ~0.01..10.01.
   defp positive_weight_graph do
     gen all(
-          verts <- uniq_list_of(Generators.vertex_id(:atom), min_length: 1, max_length: 8),
+          # list_of + uniq: uniq_list_of gives up on the small atom pool.
+          verts <-
+            map(list_of(Generators.vertex_id(:atom), min_length: 1, max_length: 8), &Enum.uniq/1),
           raw <-
             list_of({member_of(verts), member_of(verts), integer(1..1001)}, max_length: 20)
         ) do
@@ -329,7 +331,7 @@ defmodule Grafi.Algo.APSPTest do
   # must still hand Dijkstra only non-negative costs.
   defp potential_weight_graph do
     gen all(
-          verts <- uniq_list_of(integer(0..30), min_length: 1, max_length: 8),
+          verts <- map(list_of(integer(0..30), min_length: 1, max_length: 8), &Enum.uniq/1),
           potentials <- fixed_list(Enum.map(verts, fn _ -> integer(-50..50) end)),
           raw <- list_of({member_of(verts), member_of(verts), integer(1..20)}, max_length: 20)
         ) do
