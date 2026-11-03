@@ -10,7 +10,8 @@ defmodule Grafi.Algo.Metrics do
   declared `:type`.
 
   Diameter, radius and eccentricity default to unweighted shortest-path
-  distances (BFS). Pass `weighted: true` to dispatch to Dijkstra. For
+  distances (BFS). Pass `weighted: true` to dispatch to Dijkstra, which
+  raises `ArgumentError` on a negative edge weight. For
   disconnected graphs, the diameter and radius default to `:infinity`
   (matching NetworkX). With `connected: :ignore` only finite pairs are
   considered.
@@ -225,8 +226,8 @@ defmodule Grafi.Algo.Metrics do
   the maximum over finite distances. Returns `0` for an isolated
   vertex.
 
-  Raises `ArgumentError` if `vertex` is not in the graph or an option
-  is unknown or invalid.
+  Raises `ArgumentError` if `vertex` is not in the graph, an option is
+  unknown or invalid, or `weighted: true` and an edge weight is negative.
 
   ## Options
     * `:weighted` — `true` to use Dijkstra (default `false`, BFS)
@@ -243,7 +244,7 @@ defmodule Grafi.Algo.Metrics do
   @spec eccentricity(Graph.t(), any(), keyword()) :: number() | :infinity
   def eccentricity(%Graph{} = g, vertex, opts \\ []) do
     opts = Keyword.validate!(opts, weighted: false, connected: :ignore)
-    {weighted?, strict?} = distance_opts!(opts)
+    {weighted?, strict?} = distance_opts!(g, opts)
     ensure_vertex!(g, vertex)
     vertex_eccentricity(g, vertex, weighted?, strict?)
   end
@@ -365,16 +366,18 @@ defmodule Grafi.Algo.Metrics do
   # ── Internal helpers ─────────────────────────────────────────────────
 
   defp all_eccentricities(g, opts) do
-    {weighted?, strict?} = distance_opts!(opts)
+    {weighted?, strict?} = distance_opts!(g, opts)
     Map.new(Graph.vertices(g), &{&1, vertex_eccentricity(g, &1, weighted?, strict?)})
   end
 
-  # Typed checks for the validated distance options.
-  defp distance_opts!(opts) do
+  # Typed checks for the validated distance options. Weighted distances run
+  # Dijkstra from every source, so the weights are checked here, once.
+  defp distance_opts!(g, opts) do
     weighted? = Args.boolean!(opts, :weighted, false)
 
     case Keyword.fetch!(opts, :connected) do
       connected when connected in [:strict, :ignore] ->
+        if weighted?, do: Args.non_negative_weights!(g)
         {weighted?, connected == :strict}
 
       other ->

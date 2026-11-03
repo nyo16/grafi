@@ -165,10 +165,53 @@ defmodule Grafi.Algo.CentralityTest do
       for fun <- [&Centrality.hits/2, &Centrality.katz/2, &Centrality.eigenvector/2] do
         assert_raise ArgumentError, ~r/:max_iter/, fn -> fun.(g, max_iter: 0) end
         assert_raise ArgumentError, ~r/:tol/, fn -> fun.(g, tol: -1.0) end
+        # Like pagerank/2, the tolerance must be positive.
+        assert_raise ArgumentError, ~r/:tol/, fn -> fun.(g, tol: 0) end
       end
 
       assert_raise ArgumentError, ~r/:weighted/, fn -> Centrality.harmonic(g, weighted: :yes) end
       assert_raise ArgumentError, ~r/:alpha/, fn -> Centrality.katz(g, alpha: "0.1") end
+    end
+  end
+
+  describe "negative edge weights" do
+    setup do
+      %{g: undirected([{:a, :b, weight: -1}, {:b, :c}])}
+    end
+
+    # Weighted harmonic runs Dijkstra from every vertex; without a settled
+    # set a negative undirected edge re-settled forever, so this hung.
+    test "weighted harmonic raises; unweighted harmonic ignores weights", %{g: g} do
+      assert {:raised, %ArgumentError{message: message}} =
+               run_bounded(fn -> Centrality.harmonic(g, weighted: true) end)
+
+      assert message =~ ~r/non-negative edge weights/
+      assert Centrality.harmonic(g)[:b] == 2.0
+    end
+
+    # A negative adjacency entry voids Perron–Frobenius: on a single a–b
+    # edge of weight -1 the iterate flips sign every round.
+    test "weighted eigenvector raises; unweighted eigenvector ignores weights", %{g: g} do
+      for opts <- [[], [weighted: true]] do
+        assert_raise ArgumentError, ~r/non-negative edge weights/, fn ->
+          Centrality.eigenvector(g, opts)
+        end
+      end
+
+      scores = Centrality.eigenvector(g, weighted: false)
+      assert Enum.all?(scores, fn {_v, x} -> x > 0 end)
+    end
+  end
+
+  describe "vertex ids that compare equal" do
+    # 1 and 1.0 are distinct vertices. On the path x – 1.0 – 1 only the
+    # pair {x, 1} passes through 1.0; comparing ids with == skipped 1.0's
+    # dependency from source 1 and halved its score.
+    test "betweenness keeps 1 and 1.0 apart" do
+      g = undirected([{:x, 1.0}, {1.0, 1}])
+      scores = Centrality.betweenness(g, normalized: false, engine: :elixir)
+      assert scores[1.0] == 1.0
+      assert scores[1] == 0.0
     end
   end
 
@@ -223,6 +266,24 @@ defmodule Grafi.Algo.CentralityTest do
     test "fewer than two vertices yields %{}" do
       assert Centrality.degree_centrality(Graph.new()) == %{}
       assert Centrality.degree_centrality(Graph.new() |> Graph.add_vertex(:a)) == %{}
+    end
+  end
+
+  # Runs `fun` in a task and returns `{:ok, result}` or `{:raised, exception}`,
+  # failing the test if it takes over `ms` (for calls that used to hang).
+  defp run_bounded(fun, ms \\ 5_000) do
+    task =
+      Task.async(fn ->
+        try do
+          {:ok, fun.()}
+        rescue
+          e -> {:raised, e}
+        end
+      end)
+
+    case Task.yield(task, ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> flunk("did not return within #{ms} ms")
     end
   end
 end

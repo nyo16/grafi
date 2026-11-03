@@ -13,6 +13,9 @@ defmodule Grafi.Algo.LinkPrediction do
   in- and out-neighbors. The returned map is keyed by `{u, v}` in the
   same order the pair was supplied; for default-generated candidates
   the canonical order matches `Enum.sort([u, v])`.
+
+  Every scorer raises `ArgumentError` if a candidate pair names a vertex
+  that is not in the graph.
   """
 
   alias Grafi.Algo.Neighborhood
@@ -115,14 +118,21 @@ defmodule Grafi.Algo.LinkPrediction do
   # one per common neighbour. Without candidates every vertex is scored, so
   # every set is built; with candidates only the endpoints' sets are, plus
   # their neighbours' when the score needs common-neighbour degrees
-  # (`:with_neighbors`). A vertex not in the graph has no neighbours.
+  # (`:with_neighbors`).
   defp score_pairs(g, nil, _scope, score_fun) do
     sets = Neighborhood.sets(g, self_loops: :drop)
     score_with(sets, default_candidates(sets), score_fun)
   end
 
   defp score_pairs(g, candidates, scope, score_fun) do
-    sets = add_sets(%{}, g, Enum.flat_map(candidates, fn {u, v} -> [u, v] end))
+    endpoints = Enum.flat_map(candidates, fn {u, v} -> [u, v] end)
+
+    case Enum.reject(endpoints, &Graph.has_vertex?(g, &1)) do
+      [] -> :ok
+      [v | _] -> raise ArgumentError, "vertex #{inspect(v)} is not in the graph"
+    end
+
+    sets = add_sets(%{}, g, endpoints)
 
     sets =
       case scope do
@@ -147,13 +157,15 @@ defmodule Grafi.Algo.LinkPrediction do
     end)
   end
 
+  # Unordered pairs by position in the sorted vertex list, not by `<`,
+  # which would drop a pair of distinct but equal-comparing ids (`1`, `1.0`).
   defp default_candidates(sets) do
-    vs = sets |> Map.keys() |> Enum.sort()
+    indexed = sets |> Map.keys() |> Enum.sort() |> Enum.with_index()
 
-    for u <- vs,
+    for {u, i} <- indexed,
         n_u = Map.fetch!(sets, u),
-        v <- vs,
-        u < v,
+        {v, j} <- indexed,
+        i < j,
         not MapSet.member?(n_u, v),
         do: {u, v}
   end

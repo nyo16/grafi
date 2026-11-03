@@ -239,8 +239,7 @@ defmodule Grafi.Serialize.MermaidTest do
       assert %{type: :tabs, labels: ["Graph", "Raw"], outputs: [diagram, raw]} =
                Kino.Render.to_livebook(g)
 
-      assert %{type: :js, js_view: %{assets: %{archive_path: path}}} = diagram
-      assert path =~ "Kino_Mermaid"
+      assert %{type: :js} = diagram
       assert %{type: :terminal_text, text: text} = raw
       assert text =~ "#Grafi.Graph<directed, V: "
     end

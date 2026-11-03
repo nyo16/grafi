@@ -20,6 +20,12 @@ defmodule Grafi.Algo.Centrality do
   | `harmonic/2` | weight is path length | default `false` |
   | `eigenvector/2` | adjacency entry is the summed weight | default `true` if any edge weight is not `1.0`, else `false` |
   | `hits/2`, `katz/2`, `degree_centrality/1` | ignored | none |
+
+  Whenever weights are used, a negative edge weight raises `ArgumentError`
+  (`closeness/2` and weighted `betweenness/2` also reject zero weights).
+  Eigenvector centrality is not path-based, but a negative adjacency entry
+  voids the Perron–Frobenius guarantee: power iteration can flip sign every
+  round and never converge (an `a–b` edge of weight `-1` does).
   """
 
   alias Grafi.Algo.Distances
@@ -258,7 +264,7 @@ defmodule Grafi.Algo.Centrality do
             Map.update(acc, v, sigma[v] * coeff, &(&1 + sigma[v] * coeff))
           end)
 
-        cb = if w == s, do: cb, else: Map.update!(cb, w, &(&1 + delta_w))
+        cb = if w === s, do: cb, else: Map.update!(cb, w, &(&1 + delta_w))
         {delta, cb}
       end)
 
@@ -490,6 +496,9 @@ defmodule Grafi.Algo.Centrality do
     - `:weighted` — use edge weights when summing. Defaults to `true`
       if any edge in the graph has a non-default (`!= 1.0`) weight,
       `false` otherwise.
+
+  Raises `ArgumentError` if weights are used and an edge weight is
+  negative (see "Edge weights" above).
   """
   @spec eigenvector(Graph.t(), keyword()) :: %{any() => float()}
   def eigenvector(%Graph{} = g, opts \\ []) do
@@ -500,6 +509,8 @@ defmodule Grafi.Algo.Centrality do
       if Keyword.has_key?(opts, :weighted),
         do: Args.boolean!(opts, :weighted, false),
         else: Args.any_weight?(g, &(&1 != 1.0))
+
+    if weighted, do: Args.non_negative_weights!(g)
 
     vs = Graph.vertices(g)
     n = length(vs)
@@ -535,11 +546,14 @@ defmodule Grafi.Algo.Centrality do
   ## Options
     - `:weighted` — `true` to use edge weights as path lengths (Dijkstra);
       default `false` (BFS, every edge has length 1)
+
+  Raises `ArgumentError` if `weighted: true` and an edge weight is negative.
   """
   @spec harmonic(Graph.t(), keyword()) :: %{any() => float()}
   def harmonic(%Graph{} = g, opts \\ []) do
     opts = Keyword.validate!(opts, weighted: false)
     weighted = Args.boolean!(opts, :weighted, false)
+    if weighted, do: Args.non_negative_weights!(g)
     vs = Graph.vertices(g)
 
     Map.new(vs, fn v ->
@@ -557,7 +571,7 @@ defmodule Grafi.Algo.Centrality do
 
   defp iteration_opts!(opts) do
     {Args.pos_integer!(opts, :max_iter, 100),
-     Args.float!(opts, :tol, 1.0e-6, &(&1 >= 0), "a non-negative number")}
+     Args.float!(opts, :tol, 1.0e-6, &(&1 > 0), "a positive number")}
   end
 
   # `%{v => [{u, coeff}]}` from an `in_edges` or `out_edges` map, built once

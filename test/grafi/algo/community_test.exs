@@ -66,8 +66,8 @@ defmodule Grafi.Algo.CommunityTest do
       assert MapSet.disjoint?(abc_labels, xyz_labels)
     end
 
-    # A sweep that changes nothing ends propagation; the old loop always ran
-    # every sweep, so a huge cap took hours instead of milliseconds.
+    # A sweep that changes nothing ends propagation. Without that early exit
+    # this call would run all 1e8 sweeps and hit the 10 s test timeout.
     @tag timeout: 10_000
     test "stops at the first sweep with no change, however large :max_iter is" do
       g =

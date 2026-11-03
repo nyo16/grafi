@@ -214,8 +214,16 @@ defmodule Grafi.Algo.BipartiteTest do
   describe "property: random bipartite construction is bipartite" do
     property "graph built as A-B edges is always bipartite" do
       check all(
-              left_seed <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
-              right_seed <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
+              left_seed <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 8
+                ),
+              right_seed <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 8
+                ),
               edge_count <- integer(0..30)
             ) do
         # Tag sides to keep them strictly disjoint, using a 3-tuple so

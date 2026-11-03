@@ -109,6 +109,32 @@ defmodule Grafi.Algo.LinkPredictionTest do
     end
   end
 
+  describe "vertex checks" do
+    @scorers [
+      &LinkPrediction.jaccard/2,
+      &LinkPrediction.adamic_adar/2,
+      &LinkPrediction.resource_allocation/2,
+      &LinkPrediction.preferential_attachment/2
+    ]
+
+    # A missing vertex used to score 0 silently.
+    test "a candidate naming a vertex not in the graph raises" do
+      for score <- @scorers, pair <- [{:a, :ghost}, {:ghost, :a}, {nil, :a}] do
+        assert_raise ArgumentError, ~r/not in the graph/, fn -> score.(p4(), [pair]) end
+      end
+    end
+
+    # 1 and 1.0 are distinct vertices; ordering pairs with `<` dropped the
+    # non-adjacent pair {1, 1.0}, since neither is less than the other.
+    test "default candidates keep 1 and 1.0 apart" do
+      g = Graph.new(type: :undirected) |> Graph.add_edges([{1, :hub}, {1.0, :hub}])
+
+      for score <- @scorers do
+        assert score.(g, nil) |> Map.keys() |> Enum.sort() == [{1, 1.0}]
+      end
+    end
+  end
+
   describe "properties" do
     property "Jaccard scores live in [0, 1] and are symmetric in u/v" do
       check all(

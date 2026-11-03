@@ -80,10 +80,6 @@ defmodule Grafi.Algo.Isomorphism do
   alias Grafi.Graph
   alias Grafi.NIF
 
-  # Dialyzer reports MapSet's opaque type passed through the backtracking
-  # recursion (`used`) as a mismatch; the calls are correct.
-  @dialyzer {:no_opaque, backtrack_one: 4, backtrack_count: 4, feasible?: 5}
-
   @type mapping :: %{Graph.vertex_id() => Graph.vertex_id()}
   @type error :: {:error, :timeout | :nif_not_available | {:igraph, String.t()}}
 
@@ -92,9 +88,11 @@ defmodule Grafi.Algo.Isomorphism do
   @default_vf2_timeout :infinity
   # The largest timeout the NIF can turn into a steady_clock deadline.
   @max_timeout 0xFFFF_FFFF
-  # Colour refinement (Elixir engine, full isomorphism): seed depth and
-  # round budget, see `refine/3`.
+  # Colour refinement (Elixir engine, full isomorphism): seed depth, the
+  # density above which the seed skips it, and the round budget; see
+  # `refine/4`.
   @profile_depth 3
+  @profile_max_mean_degree 16
   @refine_rounds_per_bit 2
   # Every public function's options; `:timeout` has no default, since its
   # absence selects the `vf2_timeout` config.
@@ -430,9 +428,10 @@ defmodule Grafi.Algo.Isomorphism do
   # Every vertex has a key that a match must respect:
   #   * sub-isomorphism: `{out_degree, in_degree}`, and the host vertex's
   #     degrees must dominate the pattern vertex's;
-  #   * full isomorphism: a colour from `refine/3` (colour refinement over
-  #     both graphs), which must be equal. Colours subsume degrees and split
-  #     regular graphs that degrees cannot.
+  #   * full isomorphism: a colour from `refine/4` (colour refinement over
+  #     both graphs), which must be equal. Colours subsume degrees (so equal
+  #     colour histograms imply equal degree multisets) and split regular
+  #     graphs that degrees cannot.
   #
   # The search state that never changes lives in a context map:
   #   host_vs    : vertices of the host (the larger or same-size graph)
@@ -441,17 +440,17 @@ defmodule Grafi.Algo.Isomorphism do
   #   host_class : %{key => [h]} (full isomorphism only; root candidates)
   #   strict?    : true for full isomorphism, false for sub-isomorphism
   #   deadline   : monotonic millisecond deadline, or :infinity
+  #
+  # The deadline is checked per vertex while building adjacency and colours
+  # and per search step, so a timeout also bounds the preprocessing.
+  # `used` (host vertices already in the mapping) is a plain map `%{h => true}`.
 
-  defp elixir_isomorphic?(g1, g2, deadline) do
-    degree_seq(g1) == degree_seq(g2) and find_one(g1, g2, true, deadline) != nil
-  end
+  defp elixir_isomorphic?(g1, g2, deadline), do: find_one(g1, g2, true, deadline) != nil
 
   defp elixir_isomorphism(g1, g2, deadline) do
-    with true <- degree_seq(g1) == degree_seq(g2),
-         mapping when mapping != nil <- find_one(g1, g2, true, deadline) do
-      {:ok, mapping}
-    else
-      _ -> {:error, :no_isomorphism}
+    case find_one(g1, g2, true, deadline) do
+      nil -> {:error, :no_isomorphism}
+      mapping -> {:ok, mapping}
     end
   end
 
@@ -459,12 +458,12 @@ defmodule Grafi.Algo.Isomorphism do
 
   defp elixir_count_subgraph_isomorphisms(graph, pattern, deadline) do
     {:ok, steps, ctx} = prepare(pattern, graph, false, deadline)
-    backtrack_count(steps, %{}, MapSet.new(), ctx)
+    backtrack_count(steps, %{}, %{}, ctx)
   end
 
   defp find_one(pattern, host, strict?, deadline) do
     case prepare(pattern, host, strict?, deadline) do
-      {:ok, steps, ctx} -> backtrack_one(steps, %{}, MapSet.new(), ctx)
+      {:ok, steps, ctx} -> backtrack_one(steps, %{}, %{}, ctx)
       :mismatch -> nil
     end
   end
@@ -472,11 +471,11 @@ defmodule Grafi.Algo.Isomorphism do
   # Returns `{:ok, steps, ctx}`, or `:mismatch` when the colour classes
   # already rule out an isomorphism.
   defp prepare(pattern, host, strict?, deadline) do
-    pat_adj = adjacency(pattern)
-    host_adj = adjacency(host)
+    pat_adj = adjacency(pattern, deadline)
+    host_adj = adjacency(host, deadline)
     dir? = pattern.type == :directed
 
-    with {:ok, pat_key, host_key} <- keys(pat_adj, host_adj, dir?, strict?) do
+    with {:ok, pat_key, host_key} <- keys(pat_adj, host_adj, dir?, strict?, deadline) do
       ctx = %{
         host_vs: Graph.vertices(host),
         host_adj: host_adj,
@@ -490,32 +489,25 @@ defmodule Grafi.Algo.Isomorphism do
     end
   end
 
-  defp keys(pat_adj, host_adj, _dir?, false), do: {:ok, degrees(pat_adj), degrees(host_adj)}
-  defp keys(pat_adj, host_adj, dir?, true), do: refine(pat_adj, host_adj, dir?)
+  defp keys(pat_adj, host_adj, _dir?, false, _deadline),
+    do: {:ok, degrees(pat_adj), degrees(host_adj)}
+
+  defp keys(pat_adj, host_adj, dir?, true, deadline), do: refine(pat_adj, host_adj, dir?, deadline)
 
   defp degrees(adj),
     do: Map.new(adj, fn {v, {out, in_}} -> {v, {MapSet.size(out), MapSet.size(in_)}} end)
 
-  defp check_deadline!(%{deadline: :infinity}), do: :ok
+  defp check_deadline!(:infinity), do: :ok
 
-  defp check_deadline!(%{deadline: deadline}) do
+  defp check_deadline!(deadline) do
     if System.monotonic_time(:millisecond) >= deadline, do: throw(@timeout_throw), else: :ok
-  end
-
-  defp degree_seq(%Graph{type: :undirected} = g) do
-    Graph.vertices(g) |> Enum.map(&Graph.degree(g, &1)) |> Enum.sort()
-  end
-
-  defp degree_seq(%Graph{} = g) do
-    Graph.vertices(g)
-    |> Enum.map(&{Graph.in_degree(g, &1), Graph.out_degree(g, &1)})
-    |> Enum.sort()
   end
 
   # %{v => {out :: MapSet, in :: MapSet}}. Undirected graphs list every
   # neighbour in both sets.
-  defp adjacency(g) do
+  defp adjacency(g, deadline) do
     Map.new(Graph.vertices(g), fn v ->
+      check_deadline!(deadline)
       {v, {MapSet.new(Graph.out_neighbors(g, v)), MapSet.new(Graph.in_neighbors(g, v))}}
     end)
   end
@@ -558,7 +550,7 @@ defmodule Grafi.Algo.Isomorphism do
 
     Enum.map(order, fn {v, parent} ->
       {out, in_} = Map.fetch!(pat_adj, v)
-      earlier? = &(&1 != v and Map.fetch!(pos, &1) < Map.fetch!(pos, v))
+      earlier? = &(&1 !== v and Map.fetch!(pos, &1) < Map.fetch!(pos, v))
       back_out = Enum.filter(out, earlier?)
       back_in = if dir?, do: Enum.filter(in_, earlier?), else: []
       {v, parent, back_out, back_in, MapSet.member?(out, v), Map.fetch!(pat_key, v)}
@@ -595,11 +587,11 @@ defmodule Grafi.Algo.Isomorphism do
   defp backtrack_one([], mapping, _used, _ctx), do: mapping
 
   defp backtrack_one([{v, _, _, _, _, _} = step | rest], mapping, used, ctx) do
-    check_deadline!(ctx)
+    check_deadline!(ctx.deadline)
 
     Enum.find_value(candidates(step, mapping, ctx), fn h ->
       if feasible?(step, h, mapping, used, ctx),
-        do: backtrack_one(rest, Map.put(mapping, v, h), MapSet.put(used, h), ctx),
+        do: backtrack_one(rest, Map.put(mapping, v, h), Map.put(used, h, true), ctx),
         else: nil
     end)
   end
@@ -607,11 +599,11 @@ defmodule Grafi.Algo.Isomorphism do
   defp backtrack_count([], _mapping, _used, _ctx), do: 1
 
   defp backtrack_count([{v, _, _, _, _, _} = step | rest], mapping, used, ctx) do
-    check_deadline!(ctx)
+    check_deadline!(ctx.deadline)
 
     Enum.reduce(candidates(step, mapping, ctx), 0, fn h, acc ->
       if feasible?(step, h, mapping, used, ctx),
-        do: acc + backtrack_count(rest, Map.put(mapping, v, h), MapSet.put(used, h), ctx),
+        do: acc + backtrack_count(rest, Map.put(mapping, v, h), Map.put(used, h, true), ctx),
         else: acc
     end)
   end
@@ -631,7 +623,7 @@ defmodule Grafi.Algo.Isomorphism do
   defp feasible?({_v, _parent, back_out, back_in, loop?, key}, h, mapping, used, ctx) do
     {h_out, h_in} = Map.fetch!(ctx.host_adj, h)
 
-    not MapSet.member?(used, h) and
+    not is_map_key(used, h) and
       key_fits?(Map.fetch!(ctx.host_key, h), key, ctx.strict?) and
       (not loop? or MapSet.member?(h_out, h)) and
       Enum.all?(back_out, &MapSet.member?(h_out, Map.fetch!(mapping, &1))) and
@@ -656,15 +648,28 @@ defmodule Grafi.Algo.Isomorphism do
   # or after `@refine_rounds_per_bit` rounds per bit of the vertex count
   # (any round's colours are valid, later ones only prune more).
   #
+  # The distance profile reads the adjacency of every vertex within
+  # `@profile_depth - 1` hops, about V·d³ work on a d-regular graph, so it
+  # is skipped when the degree-weighted mean degree (Σdeg² / Σdeg) exceeds
+  # `@profile_max_mean_degree`; refinement rounds still split many dense
+  # cases. The choice is a function of `adj1`'s degree multiset only, so
+  # both graphs get the same seed; graphs whose multisets differ are
+  # rejected by the seed histogram either way.
+  #
   # Returns `{:ok, colours1, colours2}`, or `:mismatch` when the two graphs
   # have different numbers of vertices of some colour.
-  defp refine(adj1, adj2, dir?) do
+  defp refine(adj1, adj2, dir?, deadline) do
     max_rounds = @refine_rounds_per_bit * bit_length(map_size(adj1))
-    {c1, c2, classes} = intern(seed_colours(adj1), seed_colours(adj2))
-    refine(c1, c2, classes, adj1, adj2, dir?, max_rounds)
+    depth = profile_depth(adj1)
+    env = %{adj1: adj1, adj2: adj2, dir?: dir?, deadline: deadline}
+
+    {c1, c2, classes} =
+      intern(seed_colours(adj1, depth, deadline), seed_colours(adj2, depth, deadline))
+
+    refine(c1, c2, classes, env, max_rounds)
   end
 
-  defp refine(c1, c2, classes, adj1, adj2, dir?, rounds_left) do
+  defp refine(c1, c2, classes, env, rounds_left) do
     cond do
       histogram(c1) != histogram(c2) ->
         :mismatch
@@ -673,39 +678,57 @@ defmodule Grafi.Algo.Isomorphism do
         {:ok, c1, c2}
 
       true ->
-        case intern(signatures(c1, adj1, dir?), signatures(c2, adj2, dir?)) do
+        %{adj1: adj1, adj2: adj2, dir?: dir?, deadline: deadline} = env
+
+        case intern(signatures(c1, adj1, dir?, deadline), signatures(c2, adj2, dir?, deadline)) do
           {_, _, ^classes} -> {:ok, c1, c2}
-          {d1, d2, more} -> refine(d1, d2, more, adj1, adj2, dir?, rounds_left - 1)
+          {d1, d2, more} -> refine(d1, d2, more, env, rounds_left - 1)
         end
     end
   end
 
-  defp seed_colours(adj) do
-    undirected = Map.new(adj, fn {v, {out, in_}} -> {v, MapSet.to_list(MapSet.union(out, in_))} end)
+  defp profile_depth(adj) do
+    {sum, sum_sq} =
+      Enum.reduce(adj, {0, 0}, fn {_v, {out, in_}}, {s, sq} ->
+        d = MapSet.size(out) + MapSet.size(in_)
+        {s + d, sq + d * d}
+      end)
+
+    if sum_sq > @profile_max_mean_degree * sum, do: 0, else: @profile_depth
+  end
+
+  defp seed_colours(adj, depth, deadline) do
+    undirected =
+      if depth > 0,
+        do: Map.new(adj, fn {v, {out, in_}} -> {v, MapSet.to_list(MapSet.union(out, in_))} end),
+        else: %{}
 
     Map.new(adj, fn {v, {out, in_}} ->
-      {v, {MapSet.size(out), MapSet.size(in_), MapSet.member?(out, v), layer_sizes(undirected, v)}}
+      check_deadline!(deadline)
+      profile = layer_sizes(undirected, v, depth)
+      {v, {MapSet.size(out), MapSet.size(in_), MapSet.member?(out, v), profile}}
     end)
   end
 
-  # The number of vertices at distance 1, 2, .. @profile_depth from v.
-  defp layer_sizes(undirected, v) do
+  # The number of vertices at distance 1, 2, .. depth from v.
+  defp layer_sizes(undirected, v, depth) do
     {sizes, _frontier, _seen} =
-      Enum.reduce(1..@profile_depth, {[], [v], MapSet.new([v])}, fn _, {sizes, frontier, seen} ->
+      Enum.reduce(1..depth//1, {[], [v], %{v => true}}, fn _, {sizes, frontier, seen} ->
         next =
           frontier
           |> Enum.flat_map(&Map.fetch!(undirected, &1))
-          |> Enum.reject(&MapSet.member?(seen, &1))
+          |> Enum.reject(&is_map_key(seen, &1))
           |> Enum.uniq()
 
-        {[length(next) | sizes], next, Enum.into(next, seen)}
+        {[length(next) | sizes], next, Enum.reduce(next, seen, &Map.put(&2, &1, true))}
       end)
 
     Enum.reverse(sizes)
   end
 
-  defp signatures(colours, adj, dir?) do
+  defp signatures(colours, adj, dir?, deadline) do
     Map.new(adj, fn {v, {out, in_}} ->
+      check_deadline!(deadline)
       in_colours = if dir?, do: neighbour_colours(colours, in_), else: []
       {v, {Map.fetch!(colours, v), neighbour_colours(colours, out), in_colours}}
     end)

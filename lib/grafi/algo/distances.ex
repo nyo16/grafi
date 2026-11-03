@@ -2,7 +2,9 @@ defmodule Grafi.Algo.Distances do
   @moduledoc false
   # Single-source shortest-path distances shared by Centrality (harmonic)
   # and Metrics (eccentricity and friends). Unreachable vertices are absent
-  # from the result. Distances follow edge direction.
+  # from the result. Distances follow edge direction. Raises ArgumentError
+  # if `source` is not in the graph. Callers check edge weights (once per
+  # public call) before asking for weighted distances.
   #
   # Options (both required, so every caller states its policy):
   #   * `weighted: true` runs `ShortestPath.dijkstra_all/2` (edge weights are
@@ -17,6 +19,9 @@ defmodule Grafi.Algo.Distances do
           source: :include | :exclude
         ) :: %{Graph.vertex_id() => number()}
   def single_source(%Graph{} = g, source, opts) do
+    if not Graph.has_vertex?(g, source),
+      do: raise(ArgumentError, "vertex #{inspect(source)} is not in the graph")
+
     dists =
       if Keyword.fetch!(opts, :weighted),
         do: ShortestPath.dijkstra_all(g, source),

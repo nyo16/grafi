@@ -413,8 +413,9 @@ defmodule Grafi.Algo.Matching do
   # ── Weighted bipartite matching on a graph ───────────────────────────
 
   @doc """
-  Maximum-weight (or minimum-weight) bipartite matching on a weighted
-  `Grafi.Graph`.
+  Optimal-weight bipartite matching on a weighted `Grafi.Graph`: among
+  the matchings of maximum cardinality, the one with the minimum (or,
+  with `maximize: true`, maximum) total weight.
 
   Extracts a cost matrix from the edge weights and dispatches to
   `hungarian/2`. The right side is taken to be all vertices not in
@@ -422,8 +423,10 @@ defmodule Grafi.Algo.Matching do
   to produce a deterministic column / row ordering.
 
   Missing edges receive a sentinel cost of `#{inspect(@inf)}` for
-  minimisation, or `-#{inspect(@inf)}` for maximisation, so the
-  solver naturally avoids them when better real alternatives exist.
+  minimisation, or `-#{inspect(@inf)}` for maximisation, which outweighs
+  any real edge. So cardinality comes first: minimising still matches as
+  many pairs as possible (it never returns a smaller, cheaper matching),
+  and maximising takes a negative-weight edge whenever it adds a pair.
   Pairs ultimately matched to a sentinel cell are dropped from the
   returned matching.
 
