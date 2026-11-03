@@ -100,3 +100,10 @@ Do NOT present code as complete until verification passes.
 | Project health | `/phx:audit` |
 
 <!-- ELIXIR-PHOENIX-PLUGIN:END -->
+
+## Project Rules (grafi)
+
+Learned from bugs fixed in this repo (see `.claude/solutions/`). Both apply to every algorithm in `lib/grafi/`.
+
+1. **Compare vertex ids strictly.** Use `===`/`!==` or pinned matches, never `==`, `!=`, `<` or `>`. Vertices are map keys, and map keys are strict, so `1` and `1.0` are different vertices. Yet `1 == 1.0` is true, and `1 < 1.0` and `1.0 < 1` are both false, so `u < v` pair dedup drops `{1, 1.0}`. Also cover a vertex set containing both `1` and `1.0` in a test.
+2. **Search loops terminate on invalid input.** Every traversal or relaxation loop needs a termination argument that doesn't assume valid input: a settled/visited set or an iteration bound. Reject bad input (e.g. negative weights → `ArgumentError`) when it is weighed, not after it has caused a hang. "Must not hang" tests run the call in a `Task` with `Task.yield/2`, so a regression fails instead of blocking CI.
