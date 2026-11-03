@@ -95,7 +95,7 @@ defmodule Grafi.Algo.APSP do
       not Map.has_key?(preds, from) or not Map.has_key?(preds, to) ->
         {:error, :no_such_vertex}
 
-      from == to ->
+      from === to ->
         {:ok, [from]}
 
       true ->
@@ -218,7 +218,7 @@ defmodule Grafi.Algo.APSP do
             w = Graph.edges_between(g, u, v) |> Enum.map(& &1.weight) |> Enum.min()
 
             cond do
-              v == u and w >= 0 ->
+              v === u and w >= 0 ->
                 # ignore non-negative self-loop (0 is already there)
                 {r, pr}
 
@@ -286,8 +286,11 @@ defmodule Grafi.Algo.APSP do
   end
 
   # Johnson reweighting: w'(u, v) = w(u, v) + h[u] - h[v], non-negative
-  # once `h` holds the Bellman-Ford potentials.
+  # once `h` holds the Bellman-Ford potentials: at its fixpoint
+  # `h[u] + w >= h[v]` in the same float arithmetic. The clamp to 0.0 keeps
+  # Dijkstra's precondition (it raises on a negative cost) should a rounding
+  # -ε ever slip through.
   defp reweight(edge, h) do
-    edge.weight + Map.fetch!(h, edge.from) - Map.fetch!(h, edge.to)
+    max(edge.weight + Map.fetch!(h, edge.from) - Map.fetch!(h, edge.to), 0.0)
   end
 end

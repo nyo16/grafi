@@ -229,6 +229,15 @@ defmodule Grafi.Algo.KShortestPathTest do
       weights = Enum.map(results, fn {_, w} -> w end)
       assert weights == Enum.sort(weights)
     end
+
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g =
+        Graph.new()
+        |> Graph.add_edges([{:s, 1.0, weight: 1.0}, {:s, 1, weight: 5.0}, {1.0, 1, weight: 1.0}])
+
+      assert KShortestPath.yen(g, :s, 1, 3) == {:ok, [{[:s, 1.0, 1], 2.0}, {[:s, 1], 5.0}]}
+      assert KShortestPath.yen(g, 1.0, 1, 1) == {:ok, [{[1.0, 1], 1.0}]}
+    end
   end
 
   # ── Property tests ────────────────────────────────────────────────────
@@ -277,9 +286,10 @@ defmodule Grafi.Algo.KShortestPathTest do
         g = random_graph(n, prob, seed, type)
         {src, tgt} = {0, n - 1}
 
+        all_paths = simple_paths(g, tgt, [src], MapSet.new([src]))
+
         expected =
-          g
-          |> simple_paths(tgt, [src], MapSet.new([src]))
+          all_paths
           |> Enum.map(&path_weight(g, &1))
           |> Enum.sort()
           |> Enum.take(k)
@@ -289,10 +299,52 @@ defmodule Grafi.Algo.KShortestPathTest do
             assert Enum.map(results, &elem(&1, 1)) == expected
             assert results |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> length() == length(results)
 
+            # Each result is a real simple path, of the weight reported.
+            for {path, w} <- results do
+              assert path in all_paths, "not a simple path: #{inspect(path)}"
+              assert path_weight(g, path) == w
+            end
+
           {:error, :no_path} ->
             assert expected == []
         end
       end
+    end
+  end
+
+  # ── Scaling ───────────────────────────────────────────────────────────
+
+  # An n×n directed grid (right and down edges, unit weights) from the top
+  # left corner to the bottom right one: paths have 2n - 2 edges, so each
+  # Yen iteration runs about 2n spur searches over ~n² vertices.
+  defp grid(n) do
+    for r <- 0..(n - 1), c <- 0..(n - 1), reduce: Graph.new() do
+      g ->
+        g = if c + 1 < n, do: Graph.add_edge(g, {r, c}, {r, c + 1}, weight: 1.0), else: g
+        if r + 1 < n, do: Graph.add_edge(g, {r, c}, {r + 1, c}, weight: 1.0), else: g
+    end
+  end
+
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_call} = Process.info(self(), :reductions)
+    after_call - before
+  end
+
+  describe "scaling" do
+    # Spurs per iteration × spur search: O(n · n² log n), so doubling n costs
+    # about 8-9x. Rebuilding the root path and rescanning every yielded
+    # path's prefix per spur adds an O(n²) term per spur that grows faster.
+    @tag :slow
+    test "Yen on a grid grows as spurs × spur search" do
+      {small, large} = {grid(10), grid(20)}
+      target = fn n -> {n - 1, n - 1} end
+
+      r_small = reductions(fn -> KShortestPath.yen(small, {0, 0}, target.(10), 10) end)
+      r_large = reductions(fn -> KShortestPath.yen(large, {0, 0}, target.(20), 10) end)
+
+      assert r_large < 14 * r_small, "2x the side took #{r_large} vs #{r_small} reductions"
     end
   end
 end

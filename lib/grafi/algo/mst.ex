@@ -60,7 +60,7 @@ defmodule Grafi.Algo.MST do
         {ru, uf_acc} = UnionFind.find(uf_acc, edge.from)
         {rv, uf_acc} = UnionFind.find(uf_acc, edge.to)
 
-        if ru == rv do
+        if ru === rv do
           {acc, uf_acc}
         else
           {[edge | acc], UnionFind.union(uf_acc, edge.from, edge.to)}
@@ -221,7 +221,7 @@ defmodule Grafi.Algo.MST do
   defp unique_undirected_edges(%Graph{out_edges: out}) do
     Enum.reduce(out, %{}, fn {from, targets}, acc ->
       Enum.reduce(targets, acc, fn {to, edges}, acc2 ->
-        if from == to do
+        if from === to do
           acc2
         else
           key = unordered_key(from, to)
@@ -244,7 +244,7 @@ defmodule Grafi.Algo.MST do
     out =
       g
       |> Graph.out_neighbors(v)
-      |> Enum.reject(&(&1 == v))
+      |> Enum.reject(&(&1 === v))
       |> Enum.map(fn n ->
         w = g |> Graph.edges_between(v, n) |> Enum.map(& &1.weight) |> Enum.min()
         %Edge{from: v, to: n, weight: w}
@@ -253,7 +253,7 @@ defmodule Grafi.Algo.MST do
     inc =
       g
       |> Graph.in_neighbors(v)
-      |> Enum.reject(&(&1 == v))
+      |> Enum.reject(&(&1 === v))
       |> Enum.map(fn n ->
         w = g |> Graph.edges_between(n, v) |> Enum.map(& &1.weight) |> Enum.min()
         %Edge{from: v, to: n, weight: w}
@@ -270,14 +270,14 @@ defmodule Grafi.Algo.MST do
     |> Map.values()
   end
 
-  defp unordered_key(a, b) do
-    cond do
-      a == b -> {a, b}
-      compare(a, b) -> {a, b}
-      true -> {b, a}
-    end
-  end
+  defp unordered_key(a, b) when a < b, do: {a, b}
+  defp unordered_key(a, b) when b < a, do: {b, a}
 
-  # Total-order comparison that works for any Erlang term.
-  defp compare(a, b), do: a <= b
+  # Distinct ids that compare equal (`1` and `1.0`): a deterministic
+  # tie-break gives both orientations the same key.
+  defp unordered_key(a, b) do
+    if :erlang.term_to_binary(a, [:deterministic]) <= :erlang.term_to_binary(b, [:deterministic]),
+      do: {a, b},
+      else: {b, a}
+  end
 end

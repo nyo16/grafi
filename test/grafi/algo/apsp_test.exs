@@ -6,6 +6,7 @@ defmodule Grafi.Algo.APSPTest do
 
   alias Grafi.Algo.APSP
   alias Grafi.Algo.ShortestPath
+  alias Grafi.Test.Generators
 
   # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -170,6 +171,14 @@ defmodule Grafi.Algo.APSPTest do
       assert APSP.reconstruct_path(p, :a, :a) == {:ok, [:a]}
     end
 
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g = Grafi.new() |> Grafi.add_edges([{1, 1.0, weight: 2.0}, {1.0, 1, weight: -1.0}])
+      {:ok, d, p} = APSP.floyd_warshall_with_paths(g)
+      assert APSP.reconstruct_path(p, 1, 1.0) == {:ok, [1, 1.0]}
+      assert d[1][1] == 0.0
+      assert d[1][1.0] == 2.0
+    end
+
     test "no path" do
       g =
         Grafi.new()
@@ -305,11 +314,30 @@ defmodule Grafi.Algo.APSPTest do
   # w in 1..1001 gives a positive range of ~0.01..10.01.
   defp positive_weight_graph do
     gen all(
-          verts <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
+          verts <- uniq_list_of(Generators.vertex_id(:atom), min_length: 1, max_length: 8),
           raw <-
             list_of({member_of(verts), member_of(verts), integer(1..1001)}, max_length: 20)
         ) do
       edges = Enum.map(raw, fn {u, v, w} -> {u, v, weight: w / 100} end)
+      Grafi.new() |> Grafi.add_vertices(verts) |> Grafi.add_edges(edges)
+    end
+  end
+
+  # Negative weights without a negative cycle: w(u, v) = p[v] - p[u] + s
+  # with slack s > 0, so every cycle weighs the sum of its slacks. The
+  # potentials are sevenths, so the reweighting runs on rounded floats and
+  # must still hand Dijkstra only non-negative costs.
+  defp potential_weight_graph do
+    gen all(
+          verts <- uniq_list_of(integer(0..30), min_length: 1, max_length: 8),
+          potentials <- fixed_list(Enum.map(verts, fn _ -> integer(-50..50) end)),
+          raw <- list_of({member_of(verts), member_of(verts), integer(1..20)}, max_length: 20)
+        ) do
+      p = verts |> Enum.zip(potentials) |> Map.new(fn {v, q} -> {v, q / 7} end)
+
+      edges =
+        Enum.map(raw, fn {u, v, s} -> {u, v, weight: p[v] - p[u] + s / 10} end)
+
       Grafi.new() |> Grafi.add_vertices(verts) |> Grafi.add_edges(edges)
     end
   end
@@ -323,6 +351,15 @@ defmodule Grafi.Algo.APSPTest do
 
         assert_dist_matrices_equal(fw, jo, 1.0e-6)
         assert_dist_matrices_equal(fw, dj, 1.0e-6)
+      end
+    end
+
+    property "johnson agrees with floyd_warshall on negative weights without negative cycles" do
+      check all(g <- potential_weight_graph()) do
+        {:ok, fw} = APSP.floyd_warshall(g)
+        {:ok, jo} = APSP.johnson(g)
+
+        assert_dist_matrices_equal(fw, jo, 1.0e-6)
       end
     end
   end

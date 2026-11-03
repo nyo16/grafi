@@ -114,7 +114,7 @@ defmodule Grafi.Algo.Traversal do
   @spec reachable?(Graph.t(), any(), any()) :: boolean()
   def reachable?(%Graph{} = g, source, target) do
     vertex!(g, target)
-    g |> bfs(source) |> Enum.any?(&(&1 == target))
+    g |> bfs(source) |> Enum.any?(&(&1 === target))
   end
 
   @doc """

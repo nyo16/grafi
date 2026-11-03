@@ -102,6 +102,13 @@ defmodule Grafi.Algo.TraversalTest do
       g = line_graph()
       assert Traversal.reachable?(g, :a, :a)
     end
+
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g = Graph.new() |> Graph.add_edges([{:s, 1.0}, {1, :t}])
+      refute Traversal.reachable?(g, :s, 1)
+      refute Traversal.reachable?(g, :s, :t)
+      assert Traversal.reachable?(g, :s, 1.0)
+    end
   end
 
   describe "missing vertices" do
@@ -142,6 +149,14 @@ defmodule Grafi.Algo.TraversalTest do
     test "reports a cycle" do
       g = Graph.new() |> Graph.add_edges([{:a, :b}, {:b, :a}])
       assert Traversal.topological_sort(g) == {:error, :has_cycle}
+    end
+
+    test "an undirected graph with an edge counts as cyclic" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b)
+      assert Traversal.topological_sort(g) == {:error, :has_cycle}
+
+      assert Traversal.topological_sort(Graph.new(type: :undirected) |> Graph.add_vertex(:a)) ==
+               {:ok, [:a]}
     end
 
     test "orders every vertex of a random DAG after its predecessors" do

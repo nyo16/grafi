@@ -41,6 +41,12 @@ defmodule Grafi.Algo.BidirectionalTest do
   # ── Basic ─────────────────────────────────────────────────────────────
 
   describe "dijkstra/4" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g = Graph.new() |> Graph.add_edges([{1, 1.0, weight: 2.0}])
+      assert Grafi.Algo.Bidirectional.dijkstra(g, 1, 1.0) == {:ok, {[1, 1.0], 2.0}}
+      assert Grafi.Algo.Bidirectional.dijkstra(g, 1.0, 1) == {:error, :no_path}
+    end
+
     test "matches classical Dijkstra weight on a small directed graph" do
       g =
         Graph.new()

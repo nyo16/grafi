@@ -35,9 +35,33 @@ defmodule Grafi.Algo.ShortestPathTest do
     end)
   end
 
+  # Reductions spent by `fun` in this process: deterministic, unlike wall
+  # clock, so a scaling ratio can be asserted tightly.
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    fun.()
+    {:reductions, after_call} = Process.info(self(), :reductions)
+    after_call - before
+  end
+
   defp best_time(fun) do
     :erlang.garbage_collect()
     Enum.min(for _ <- 1..3, do: elem(:timer.tc(fun), 0))
+  end
+
+  # Runs `fun` in a task and fails, instead of hanging, if it takes longer
+  # than `ms`.
+  defp within(ms, fun) do
+    task = Task.async(fun)
+    assert {:ok, result} = Task.yield(task, ms) || Task.shutdown(task, :brutal_kill)
+    result
+  end
+
+  # Edges `:s → 1.0 (1)`, `:s → 1 (5)` and `1.0 → 1 (1)`: `1` and `1.0` are
+  # distinct vertices, and the shortest path to `1` goes through `1.0`.
+  defp int_float_graph do
+    Graph.new()
+    |> Graph.add_edges([{:s, 1.0, weight: 1.0}, {:s, 1, weight: 5.0}, {1.0, 1, weight: 1.0}])
   end
 
   # ── dijkstra/4 ────────────────────────────────────────────────────────
@@ -76,6 +100,12 @@ defmodule Grafi.Algo.ShortestPathTest do
 
       assert ShortestPath.dijkstra(g, :c, :a, engine: :elixir) == {:ok, {[:c, :b, :a], 2.0}}
       assert ShortestPath.dijkstra(g, :a, :c, engine: :elixir) == {:ok, {[:a, :b, :c], 2.0}}
+    end
+
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      g = int_float_graph()
+      assert ShortestPath.dijkstra(g, :s, 1, engine: :elixir) == {:ok, {[:s, 1.0, 1], 2.0}}
+      assert ShortestPath.dijkstra(g, :s, 1.0, engine: :elixir) == {:ok, {[:s, 1.0], 1.0}}
     end
 
     property "Elixir engine agrees with dijkstra_all/2 and Bellman-Ford on every pair" do
@@ -138,6 +168,65 @@ defmodule Grafi.Algo.ShortestPathTest do
       g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b, weight: 2.0)
       assert ShortestPath.dijkstra_all(g, :b, & &1.weight) == %{a: 2.0, b: 0.0}
     end
+
+    test "a missing source raises ArgumentError" do
+      g = Graph.new() |> Graph.add_edge(:a, :b)
+
+      assert_raise ArgumentError, ~r/:ghost is not in the graph/, fn ->
+        ShortestPath.dijkstra_all(g, :ghost)
+      end
+    end
+
+    test "a negative undirected edge raises instead of relaxing forever" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b, weight: -1)
+
+      within(5_000, fn ->
+        assert_raise ArgumentError, ~r/non-negative edge weights/, fn ->
+          ShortestPath.dijkstra_all(g, :a)
+        end
+      end)
+    end
+
+    test "a negative directed 2-cycle raises instead of relaxing forever" do
+      g = Graph.new() |> Graph.add_edges([{:a, :b, weight: 1.0}, {:b, :a, weight: -3.0}])
+
+      within(5_000, fn ->
+        assert_raise ArgumentError, ~r/non-negative edge weights/, fn ->
+          ShortestPath.dijkstra_all(g, :a)
+        end
+      end)
+    end
+
+    test "a weight fn returning a negative cost raises" do
+      g = Graph.new() |> Graph.add_edges([{:a, :b, weight: 1.0}, {:b, :c, weight: 1.0}])
+      cost = fn %{from: from} -> if from == :b, do: -0.5, else: 1.0 end
+
+      within(5_000, fn ->
+        assert_raise ArgumentError, ~r/non-negative edge weights/, fn ->
+          ShortestPath.dijkstra_all(g, :a, cost)
+        end
+      end)
+    end
+
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      assert ShortestPath.dijkstra_all(int_float_graph(), :s) == %{:s => 0.0, 1.0 => 1.0, 1 => 2.0}
+    end
+  end
+
+  # ── a_star/4 ──────────────────────────────────────────────────────────
+
+  describe "a_star/4" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      assert ShortestPath.a_star(int_float_graph(), :s, 1, fn _ -> 0 end) ==
+               {:ok, {[:s, 1.0, 1], 2.0}}
+    end
+
+    test "a negative undirected edge still terminates" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b, weight: -1) |> Graph.add_vertex(:c)
+
+      assert within(5_000, fn -> ShortestPath.a_star(g, :a, :c, fn _ -> 0 end) end) ==
+               {:error, :no_path}
+    end
   end
 
   # ── bellman_ford/2 ────────────────────────────────────────────────────
@@ -191,13 +280,13 @@ defmodule Grafi.Algo.ShortestPathTest do
     @tag :slow
     test "stops after the first round that changes nothing" do
       star = fn n -> Enum.reduce(1..n, Graph.new(), &Graph.add_edge(&2, 0, &1)) end
-      {small, large} = {star.(500), star.(2_000)}
+      {small, large} = {star.(1_000), star.(4_000)}
 
-      t_small = best_time(fn -> ShortestPath.bellman_ford(small, 0) end)
-      t_large = best_time(fn -> ShortestPath.bellman_ford(large, 0) end)
+      r_small = reductions(fn -> ShortestPath.bellman_ford(small, 0) end)
+      r_large = reductions(fn -> ShortestPath.bellman_ford(large, 0) end)
 
-      assert t_large < 8 * max(t_small, 1_000),
-             "4x the input took #{t_large} µs vs #{t_small} µs"
+      # Linear: about 4x. Quadratic (|V| - 1 rounds): about 16x.
+      assert r_large < 8 * r_small, "4x the input took #{r_large} vs #{r_small} reductions"
     end
   end
 end

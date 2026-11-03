@@ -5,8 +5,13 @@ defmodule Grafi.Algo.CyclesTest do
   alias Grafi.Algo.Cycles
   alias Grafi.Graph
 
+  # A closed walk along real edges. An undirected walk `[a, b, a]` is only a
+  # cycle over two distinct (parallel) edges, so it needs multiplicity 2.
+  defp closed_walk?(%Graph{type: :undirected} = g, [a, b, a]) when a !== b,
+    do: length(Graph.edges_between(g, a, b)) >= 2
+
   defp closed_walk?(g, [first | _] = cycle) do
-    List.last(cycle) == first and
+    List.last(cycle) === first and
       Enum.all?(Enum.zip(cycle, tl(cycle)), fn {u, v} -> Graph.has_edge?(g, u, v) end)
   end
 
@@ -40,6 +45,26 @@ defmodule Grafi.Algo.CyclesTest do
     test "a self-loop is a cycle" do
       g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :a)
       assert Cycles.find_cycle(g) == {:ok, [:a, :a]}
+    end
+
+    test "vertex ids compare strictly: a triangle on 1, 1.0 and :x is a cycle" do
+      for edges <- [
+            [{1, 1.0}, {1.0, :x}, {:x, 1}],
+            [{1.0, 1}, {1, :x}, {:x, 1.0}],
+            [{:x, 1}, {1, 1.0}, {1.0, :x}]
+          ] do
+        g = Graph.new(type: :undirected) |> Graph.add_edges(edges)
+        assert Cycles.has_cycle?(g), inspect(edges)
+        assert {:ok, cycle} = Cycles.find_cycle(g)
+        assert length(cycle) == 4
+        assert closed_walk?(g, cycle)
+      end
+    end
+
+    test "vertex ids compare strictly: an edge between 1 and 1.0 is not a cycle" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(1, 1.0)
+      refute Cycles.has_cycle?(g)
+      assert Cycles.find_cycle(g) == {:error, :no_cycle}
     end
   end
 
@@ -83,7 +108,7 @@ defmodule Grafi.Algo.CyclesTest do
 
   describe "strongly_connected_components/2" do
     test "rejects unknown options" do
-      assert_raise ArgumentError, fn ->
+      assert_raise ArgumentError, ~r/unknown keys \[:bogus\]/, fn ->
         Cycles.strongly_connected_components(Graph.new(), bogus: 1)
       end
     end

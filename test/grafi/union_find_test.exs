@@ -127,6 +127,23 @@ defmodule Grafi.UnionFindTest do
     end
   end
 
+  describe "item comparison" do
+    test "1 and 1.0 are distinct items" do
+      uf = UnionFind.new([1, 1.0, :x])
+      assert UnionFind.count_sets(uf) == 3
+      refute UnionFind.connected?(uf, 1, 1.0)
+
+      uf = UnionFind.union(uf, 1, 1.0)
+      assert UnionFind.count_sets(uf) == 2
+      assert UnionFind.connected?(uf, 1, 1.0)
+      refute UnionFind.connected?(uf, 1, :x)
+
+      uf = UnionFind.union(uf, 1.0, :x)
+      assert UnionFind.count_sets(uf) == 1
+      assert UnionFind.connected?(uf, 1, :x)
+    end
+  end
+
   describe "properties" do
     property "count_sets == n - successful unions" do
       check all(

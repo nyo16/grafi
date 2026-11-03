@@ -51,7 +51,7 @@ defmodule Grafi.Algo.Bidirectional do
       not Graph.has_vertex?(g, target) ->
         {:error, :no_such_vertex}
 
-      source == target ->
+      source === target ->
         {:ok, {[source], 0.0}}
 
       true ->

@@ -185,7 +185,9 @@ defmodule Grafi.LayoutTest do
   end
 
   test "sugiyama/2 rejects unknown options" do
-    assert_raise ArgumentError, fn -> Layout.sugiyama(Grafi.new(), spacing: 2.0) end
+    assert_raise ArgumentError, ~r/unknown keys \[:spacing\]/, fn ->
+      Layout.sugiyama(Grafi.new(), spacing: 2.0)
+    end
   end
 
   test "levels follow the longest path on a DAG with a shortcut" do

@@ -71,7 +71,23 @@ defmodule Grafi.Algo.MSTTest do
 
   # ── Kruskal: small classics ───────────────────────────────────────────
 
+  # An undirected triangle on 1, 1.0 and :x: `1` and `1.0` are distinct
+  # vertices, so the 1–1.0 edge is a real edge, not a self-loop.
+  defp int_float_triangle do
+    Graph.new(type: :undirected)
+    |> Graph.add_edges([{1, 1.0, weight: 1.0}, {1.0, :x, weight: 2.0}, {:x, 1, weight: 5.0}])
+  end
+
+  defp edge_pairs(edges), do: edges |> Enum.map(&{&1.from, &1.to}) |> MapSet.new()
+
   describe "kruskal/1" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      {edges, total} = MST.kruskal(int_float_triangle())
+      assert total == 3.0
+      assert length(edges) == 2
+      refute Enum.any?(edges, &(&1.weight == 5.0))
+    end
+
     test "triangle 1-2-3 → MST weight 3" do
       g =
         Graph.new(type: :undirected)
@@ -227,6 +243,14 @@ defmodule Grafi.Algo.MSTTest do
   # ── Prim ──────────────────────────────────────────────────────────────
 
   describe "prim/2" do
+    test "vertex ids compare strictly: 1 and 1.0 are distinct" do
+      for start <- [1, 1.0, :x] do
+        {edges, total} = MST.prim(int_float_triangle(), start)
+        assert {length(edges), total} == {2, 3.0}, inspect(start)
+        assert edge_pairs(edges) |> MapSet.size() == 2
+      end
+    end
+
     test "triangle 1-2-3 → MST weight 3" do
       g =
         Graph.new(type: :undirected)

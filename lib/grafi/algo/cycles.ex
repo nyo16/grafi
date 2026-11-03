@@ -133,12 +133,12 @@ defmodule Grafi.Algo.Cycles do
   @spec connected_components(Graph.t()) :: [[any()]]
   def connected_components(%Graph{} = g) do
     {comps, _} =
-      Enum.reduce(Graph.vertices(g), {[], MapSet.new()}, fn v, {cs, vis} ->
-        if MapSet.member?(vis, v) do
+      Enum.reduce(Graph.vertices(g), {[], %{}}, fn v, {cs, vis} ->
+        if is_map_key(vis, v) do
           {cs, vis}
         else
           comp = g |> Traversal.weak_bfs(v) |> Enum.to_list()
-          {[Enum.sort(comp) | cs], Enum.reduce(comp, vis, &MapSet.put(&2, &1))}
+          {[Enum.sort(comp) | cs], Enum.reduce(comp, vis, &Map.put(&2, &1, true))}
         end
       end)
 
@@ -201,7 +201,7 @@ defmodule Grafi.Algo.Cycles do
       {_n, []}, c2 ->
         {:cont, c2}
 
-      {n, [_single]}, c2 when undirected? and {:parent, n} == parent ->
+      {n, [_single]}, c2 when undirected? and parent === {:parent, n} ->
         {:cont, c2}
 
       {n, _el}, c2 ->
@@ -228,7 +228,7 @@ defmodule Grafi.Algo.Cycles do
   # `path` is the DFS stack, newest first; `n` is on it. The cycle is the
   # stack from `n` up to the current vertex, closed back at `n`.
   defp close_cycle(path, n) do
-    {up_to_n, [^n | _]} = Enum.split_while(path, &(&1 != n))
+    {up_to_n, [^n | _]} = Enum.split_while(path, &(&1 !== n))
     [n | Enum.reverse(up_to_n)] ++ [n]
   end
 
@@ -268,6 +268,6 @@ defmodule Grafi.Algo.Cycles do
   defp pop_scc([w | r], os, v, scc) do
     os = MapSet.delete(os, w)
     scc = [w | scc]
-    if w == v, do: {Enum.reverse(scc), r, os}, else: pop_scc(r, os, v, scc)
+    if w === v, do: {Enum.reverse(scc), r, os}, else: pop_scc(r, os, v, scc)
   end
 end
