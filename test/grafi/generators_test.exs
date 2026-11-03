@@ -27,6 +27,37 @@ defmodule Grafi.GeneratorsTest do
       assert_raise ArgumentError, ~r/unknown keys \[:seed\]/, fn ->
         Generators.path(3, seed: 1)
       end
+
+      # `:weighted` was a documented no-op on complete/2.
+      assert_raise ArgumentError, ~r/unknown keys \[:weighted\]/, fn ->
+        Generators.complete(3, weighted: true)
+      end
+    end
+
+    # A non-integer seed used to raise CaseClauseError.
+    test "a non-integer :seed raises ArgumentError" do
+      for gen <- [
+            &Generators.erdos_renyi(5, 0.5, &1),
+            &Generators.barabasi_albert(5, 2, &1),
+            &Generators.watts_strogatz(6, 2, 0.5, &1),
+            &Generators.random_regular(6, 2, &1)
+          ],
+          seed <- [1.5, "1", :one] do
+        assert_raise ArgumentError, ~r/:seed to be an integer/, fn -> gen.(seed: seed) end
+      end
+    end
+
+    test "directed random_regular/3 and watts_strogatz/4 point each edge up" do
+      for g <- [
+            Generators.random_regular(12, 3, seed: 5),
+            Generators.watts_strogatz(12, 4, 0.5, seed: 5)
+          ] do
+        assert g.type == :directed
+        assert Enum.all?(Graph.edges(g), &(&1.from < &1.to))
+      end
+
+      g = Generators.random_regular(12, 3, seed: 5)
+      assert Enum.all?(Graph.vertices(g), &(Graph.out_degree(g, &1) + Graph.in_degree(g, &1) == 3))
     end
   end
 

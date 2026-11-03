@@ -13,14 +13,11 @@ defmodule Grafi.Generators do
   Random generators accept a `:seed` option; when present, the
   generator-local `:rand` state is seeded with `{:exsss, seed}` for
   reproducible runs. Without a seed, generators draw from the calling
-  process's `:rand` state.
+  process's `:rand` state. A `:seed` that is not an integer raises
+  `ArgumentError`.
   """
 
   alias Grafi.Graph
-
-  # Dialyzer reports MapSet's opaque type passed through these recursive
-  # helpers (`seen`, `picked`) as a mismatch; the calls are correct.
-  @dialyzer {:no_opaque, pair_off: 3, do_sample: 3}
 
   # ── Classical generators ─────────────────────────────────────────────
 
@@ -30,7 +27,6 @@ defmodule Grafi.Generators do
   ## Options
     * `:type` — `:directed` (default; both `(i, j)` and `(j, i)` for every
       distinct pair) or `:undirected`.
-    * `:weighted` — reserved; weights are always `1.0`.
 
   ## Examples
 
@@ -40,7 +36,7 @@ defmodule Grafi.Generators do
   """
   @spec complete(non_neg_integer(), keyword()) :: Graph.t()
   def complete(n, opts \\ []) when is_integer(n) and n >= 0 do
-    opts = opts!(opts, weighted: false)
+    opts = opts!(opts, [])
     g = new_graph(n, opts)
     directed? = opts[:type] == :directed
 
@@ -209,7 +205,11 @@ defmodule Grafi.Generators do
 
   ## Options
     * `:seed` — integer seed for reproducibility.
-    * `:type` — `:directed` (default) or `:undirected`.
+    * `:type` — `:directed` (default) or `:undirected`. The lattice and
+      rewiring are undirected; a directed graph orients each resulting edge
+      from its smaller vertex to its larger one, so in- and out-degrees vary
+      (with `p = 0.0`, vertex `i` points at `i+1..i+k/2` except where the
+      ring wraps past `n - 1`).
 
   ## Examples
 
@@ -262,7 +262,11 @@ defmodule Grafi.Generators do
 
   ## Options
     * `:seed` — integer seed for reproducibility.
-    * `:type` — `:directed` (default) or `:undirected`.
+    * `:type` — `:directed` (default) or `:undirected`. The pairing is
+      undirected; a directed graph orients each edge from its smaller vertex
+      to its larger one. Every vertex then has total (in + out) degree `d`,
+      but its in- and out-degrees vary, so the graph is not regular in the
+      directed sense.
 
   ## Examples
 
@@ -288,7 +292,7 @@ defmodule Grafi.Generators do
     half_edges = for v <- 0..(n - 1), _ <- 1..d, do: v
     shuffled = Enum.shuffle(half_edges)
 
-    case pair_off(shuffled, MapSet.new(), []) do
+    case pair_off(shuffled, %{}, []) do
       :retry ->
         attempt_regular(n, d, opts, tries - 1)
 
@@ -305,8 +309,8 @@ defmodule Grafi.Generators do
 
     cond do
       a == b -> :retry
-      MapSet.member?(seen, e) -> :retry
-      true -> pair_off(rest, MapSet.put(seen, e), [e | acc])
+      is_map_key(seen, e) -> :retry
+      true -> pair_off(rest, Map.put(seen, e, true), [e | acc])
     end
   end
 
@@ -338,23 +342,28 @@ defmodule Grafi.Generators do
       seed when is_integer(seed) ->
         _ = :rand.seed(:exsss, {seed, seed, seed})
         :ok
+
+      other ->
+        raise ArgumentError, "expected :seed to be an integer, got: #{inspect(other)}"
     end
   end
 
+  # `picked` is a map `%{vertex => true}`; its keys come out in the same
+  # order MapSet.to_list/1 would give, keeping seeded output unchanged.
   defp sample_distinct(pool, count) do
-    do_sample(pool, MapSet.new(), count)
+    do_sample(pool, %{}, count)
   end
 
-  defp do_sample(_pool, picked, 0), do: MapSet.to_list(picked)
+  defp do_sample(_pool, picked, 0), do: Map.keys(picked)
 
-  defp do_sample([], picked, _count), do: MapSet.to_list(picked)
+  defp do_sample([], picked, _count), do: Map.keys(picked)
 
   defp do_sample(pool, picked, count) do
     candidate = Enum.random(pool)
 
-    if MapSet.member?(picked, candidate),
+    if is_map_key(picked, candidate),
       do: do_sample(pool, picked, count),
-      else: do_sample(pool, MapSet.put(picked, candidate), count - 1)
+      else: do_sample(pool, Map.put(picked, candidate, true), count - 1)
   end
 
   defp pick_new_target(a, b, n, es) do

@@ -353,32 +353,65 @@ defmodule Grafi.Algo.IsomorphismTest do
       end
     end
 
+    # 1 and 1.0 are distinct vertices. In each 7-cycle the edge opposite
+    # the BFS root (0 or -1, the smallest key of its cycle) joins such a
+    # pair, so the search meets it as a back edge, not a parent edge.
+    # Comparing ids with `!=` dropped those back edges from the check, and
+    # two 7-cycles "embedded" in a 14-cycle as two paths.
+    test "back edges between 1 and 1.0 are checked like any other" do
+      cycle = fn vs -> Enum.zip(vs, tl(vs) ++ [hd(vs)]) end
+
+      two_c7 =
+        Graph.new(type: :undirected)
+        |> Graph.add_edges(cycle.([0, :a1, :a2, 1, 1.0, :a5, :a6]))
+        |> Graph.add_edges(cycle.([-1, :b1, :b2, 2, 2.0, :b5, :b6]))
+
+      c14 = Graph.new(type: :undirected) |> Graph.add_edges(cycle.(Enum.to_list(100..113)))
+
+      refute Isomorphism.isomorphic?(two_c7, c14, engine: :elixir)
+      assert Isomorphism.isomorphism(two_c7, c14, engine: :elixir) == {:error, :no_isomorphism}
+
+      copy = shuffled_copy(two_c7, 7)
+      assert {:ok, mapping} = Isomorphism.isomorphism(two_c7, copy, engine: :elixir)
+      assert valid_iso?(two_c7, copy, mapping)
+    end
+
+    # Colour refinement used to run before the first deadline check, about
+    # 2.5 s on two K_400 whatever the timeout. It now checks per vertex.
+    @tag :slow
+    test "the timeout also bounds the preprocessing on dense graphs" do
+      {g, h} = {k(400), k(400)}
+
+      {us, result} =
+        :timer.tc(fn ->
+          try do
+            Isomorphism.isomorphic?(g, h, engine: :elixir, timeout: 50)
+          rescue
+            Grafi.TimeoutError -> :timeout
+          end
+        end)
+
+      assert result in [true, :timeout]
+      assert us < 1_000_000, "took #{div(us, 1000)} ms with a 50 ms timeout"
+    end
+
     # Colour refinement splits random 3-regular graphs, which degrees cannot,
-    # so the search barely backtracks: 4x the vertices takes about 5x as
-    # long. Without it the search is exponential (n = 100 ran > 60 s).
+    # so the search barely backtracks: 4x the vertices costs about 5x as
+    # much. Without it the search is exponential (n = 100 ran > 60 s).
+    # Counted in reductions, which are deterministic for pure Elixir code.
     @tag :slow
     test "isomorphic?/3 scales near-linearly on random 3-regular graphs" do
-      best = fn n ->
+      cost = fn n ->
         g = Grafi.Generators.random_regular(n, 3, seed: 1, type: :undirected)
         h = shuffled_copy(g, n)
+        {:reductions, before} = Process.info(self(), :reductions)
         assert Isomorphism.isomorphic?(g, h, engine: :elixir, timeout: 30_000)
-
-        Enum.min(
-          for _ <- 1..3 do
-            :erlang.garbage_collect()
-
-            {t, true} =
-              :timer.tc(fn -> Isomorphism.isomorphic?(g, h, engine: :elixir, timeout: 30_000) end)
-
-            max(t, 1_000)
-          end
-        )
+        {:reductions, after_} = Process.info(self(), :reductions)
+        after_ - before
       end
 
-      {t_small, t_large} = {best.(126), best.(504)}
-
-      assert t_large < 8 * t_small,
-             "4x the vertices took #{Float.round(t_large / t_small, 1)}x as long"
+      {small, large} = {cost.(126), cost.(504)}
+      assert large < 8 * small, "4x the vertices took #{Float.round(large / small, 1)}x"
     end
   end
 

@@ -157,7 +157,11 @@ defmodule Grafi.Algo.CliquesTest do
   describe "property: every maximal clique is actually a clique" do
     property "all pairs inside a reported clique are adjacent" do
       check all(
-              vs <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 8),
+              vs <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 8
+                ),
               edges <- list_of({member_of(vs), member_of(vs)}, max_length: 15)
             ) do
         g =

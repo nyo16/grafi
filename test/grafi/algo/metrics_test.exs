@@ -195,6 +195,30 @@ defmodule Grafi.Algo.MetricsTest do
         assert_raise ArgumentError, ~r/:weighted/, fn -> fun.(g, weighted: :yes) end
       end
     end
+
+    # Dijkstra without a settled set re-settled a–b forever on a negative
+    # undirected edge, so these calls hung; the task bounds them.
+    test "weighted distance metrics raise on a negative edge weight" do
+      g = Graph.new(type: :undirected) |> Graph.add_edge(:a, :b, weight: -1)
+
+      for fun <- [
+            &Metrics.eccentricity(&1, :a, &2),
+            &Metrics.eccentricities/2,
+            &Metrics.diameter/2,
+            &Metrics.radius/2,
+            &Metrics.center/2,
+            &Metrics.periphery/2
+          ] do
+        assert {:raised, %ArgumentError{message: message}} =
+                 run_bounded(fn -> fun.(g, weighted: true) end)
+
+        assert message =~ ~r/non-negative edge weights/
+      end
+
+      # Unweighted distances ignore the weights.
+      assert Metrics.eccentricity(g, :a) == 1
+      assert Metrics.diameter(g) == 1
+    end
   end
 
   describe "properties" do
@@ -236,20 +260,15 @@ defmodule Grafi.Algo.MetricsTest do
   describe "scaling" do
     # The forward algorithm is O(E^1.5); on a star it is linear. The old
     # per-vertex neighbour scan cost Σ deg(v)² (every leaf re-read the
-    # centre's neighbours), quadratic on a star (16x). Best of 3.
+    # centre's neighbours), quadratic on a star (16x). Counted in reductions,
+    # which are deterministic for pure Elixir code, unlike wall-clock time.
     @tag :slow
     test "triangle metrics on a star scale linearly up to 20k leaves" do
-      # One input alive at a time, so timed runs don't GC the other.
-      best = fn fun, n ->
+      cost = fn fun, n ->
         g = Enum.reduce(1..n, Graph.new(type: :undirected), &Graph.add_edge(&2, 0, &1))
-        assert fun.(g) == 0
-
-        Enum.min(
-          for _ <- 1..3 do
-            :erlang.garbage_collect()
-            elem(:timer.tc(fun, [g]), 0)
-          end
-        )
+        {result, reds} = reductions(fn -> fun.(g) end)
+        assert result == 0
+        reds
       end
 
       for fun <- [
@@ -257,9 +276,35 @@ defmodule Grafi.Algo.MetricsTest do
             &Metrics.transitivity/1,
             &Metrics.clustering_coefficient/1
           ] do
-        {t_small, t_large} = {best.(fun, 5_000), best.(fun, 20_000)}
-        assert t_large < 8 * t_small, "4x the leaves took #{Float.round(t_large / t_small, 1)}x"
+        {small, large} = {cost.(fun, 5_000), cost.(fun, 20_000)}
+        assert large < 6 * small, "4x the leaves took #{Float.round(large / small, 1)}x"
       end
+    end
+  end
+
+  # Runs `fun` in this process; returns its result and the reductions spent.
+  defp reductions(fun) do
+    {:reductions, before} = Process.info(self(), :reductions)
+    result = fun.()
+    {:reductions, after_} = Process.info(self(), :reductions)
+    {result, after_ - before}
+  end
+
+  # Runs `fun` in a task and returns `{:ok, result}` or `{:raised, exception}`,
+  # failing the test if it takes over `ms` (for calls that used to hang).
+  defp run_bounded(fun, ms \\ 5_000) do
+    task =
+      Task.async(fn ->
+        try do
+          {:ok, fun.()}
+        rescue
+          e -> {:raised, e}
+        end
+      end)
+
+    case Task.yield(task, ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      _ -> flunk("did not return within #{ms} ms")
     end
   end
 end

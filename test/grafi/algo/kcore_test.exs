@@ -132,7 +132,11 @@ defmodule Grafi.Algo.KCoreTest do
   describe "property: core number bounded by degree" do
     property "every vertex's core number <= its degree" do
       check all(
-              vs <- uniq_list_of(atom(:alphanumeric), min_length: 1, max_length: 10),
+              vs <-
+                uniq_list_of(Grafi.Test.Generators.vertex_id(:simple_string),
+                  min_length: 1,
+                  max_length: 10
+                ),
               edges <- list_of({member_of(vs), member_of(vs)}, max_length: 20)
             ) do
         g =
@@ -159,9 +163,12 @@ defmodule Grafi.Algo.KCoreTest do
   end
 
   describe "scaling" do
-    # Batagelj–Zaversnik is O(V + E): 4x the leaves takes about 4x as long.
-    # The old peeling rewrote a degree-indexed tuple per decrement, O(V · Δ),
-    # so a star went quadratic (16x; over 60 s at 100k leaves). Best of 3.
+    # Batagelj–Zaversnik is O(V + E): 4x the leaves takes about 4-5x as
+    # long. The old peeling rewrote a degree-indexed tuple per decrement,
+    # O(V · Δ), so a star went quadratic (16x; over 60 s at 100k leaves).
+    # Wall-clock, not reductions: `put_elem/3` copies the tuple for a single
+    # reduction, so the old code scaled linearly in reductions (5x). The
+    # margin sits between the two (10x). Best of 3.
     @tag :slow
     test "core numbers of a star scale linearly up to 100k leaves" do
       # One input alive at a time, so timed runs don't GC the other.
@@ -180,7 +187,7 @@ defmodule Grafi.Algo.KCoreTest do
       end
 
       {t_small, t_large} = {best.(25_000), best.(100_000)}
-      assert t_large < 8 * t_small, "4x the leaves took #{Float.round(t_large / t_small, 1)}x"
+      assert t_large < 10 * t_small, "4x the leaves took #{Float.round(t_large / t_small, 1)}x"
     end
   end
 
