@@ -29,7 +29,9 @@ defmodule Grafi do
   | Deserializers | `from_x/2` returns `{:ok, graph}` or `{:error, reason}`; `from_x!/2` raises |
   | No path | `{:error, :no_path}` |
   | No cycle | `{:error, :no_cycle}` (`find_cycle/1`) |
-  | Missing endpoint | functions returning `{:ok, _}` / `{:error, _}` return `{:error, :no_such_vertex}`; functions returning a plain value (`bfs/2`, `dfs/2`, `reachable?/3`, `eccentricity/3`, `prim/2`) raise `ArgumentError` |
+  | Missing endpoint | functions returning `{:ok, _}` / `{:error, _}` return `{:error, :no_such_vertex}`; functions returning a plain value (`bfs/2`, `dfs/2`, `reachable?/3`, `dijkstra_all/3`, `eccentricity/3`, `prim/2`, the link-prediction scorers) raise `ArgumentError` |
+  | Negative weights | Dijkstra-based functions reject them: `dijkstra/4` returns `{:error, :negative_weight}`; plain-value ones (`dijkstra_all/3`, the `weighted: true` metrics, `harmonic/2`, weighted `eigenvector/2`) raise `ArgumentError` |
+  | Vertex ids | compared strictly: `1` and `1.0` are different vertices |
   | Invalid options | `ArgumentError`, including unknown option keys (`Keyword.validate!/2`) |
   | Iteration knobs | `:max_iter` and `:tol` |
   | Directedness | `type: :directed \| :undirected`, default `:directed` (`Grafi.Graph.new/1`, `Grafi.Generators`, the edge-list and adjacency-list readers) |

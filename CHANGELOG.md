@@ -152,7 +152,16 @@ All notable changes to Grafi are documented here, following
     undirected to directed) and in the edge-list and adjacency-list
     readers;
   - `:maximize` defaults to `false` in both `hungarian/2` and
-    `weighted_bipartite_matching/3` (the latter used to maximise).
+    `weighted_bipartite_matching/3` (the latter used to maximise);
+    `weighted_bipartite_matching/3` finds the optimal weight among
+    maximum-cardinality matchings;
+  - negative edge weights raise `ArgumentError` in `dijkstra_all/2,3`, the
+    `weighted: true` metrics (`eccentricity` … `periphery`), `harmonic/2`
+    and weighted `eigenvector/2` (they used to hang or return wrong
+    values); `:tol` must be positive in `hits`, `katz` and `eigenvector`;
+  - `dijkstra_all/3` and the link-prediction scorers raise `ArgumentError`
+    for a vertex not in the graph; `Generators.complete/2` drops its no-op
+    `:weighted` option, and a non-integer `:seed` raises.
 - **Facade names mirror the module functions:** `Grafi.shortest_path` is
   `Grafi.dijkstra`, `scc` is `strongly_connected_components`,
   `components` is `connected_components`, `k_shortest_paths` is `yen`,
@@ -352,6 +361,9 @@ All notable changes to Grafi are documented here, following
 - The Elixir isomorphism search mapped a pattern self-loop onto a host
   vertex without one.
 - `label_propagation_simple/2` could keep flipping between tied labels.
+- Vertex ids are compared strictly everywhere: `1` and `1.0` are
+  different vertices (betweenness used `1.0` as the source `1`, and the
+  link-prediction candidates skipped the pair `{1, 1.0}`).
 
 ### Changed (performance)
 - `Graph.delete_vertex/2` is O(d log V) (it rebuilt every adjacency map).
