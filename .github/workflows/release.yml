@@ -82,10 +82,13 @@ jobs:
             exit 1
           fi
 
+      # setup-beam's matchers parse mix output; on this job's C build they
+      # mislabel GCC notes from igraph's own sources as errors.
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           otp-version: ${{ env.OTP_VERSION }}
           elixir-version: ${{ env.ELIXIR_VERSION }}
+          disable_problem_matchers: true
 
       - name: Fetch dependencies
         run: mix deps.get
