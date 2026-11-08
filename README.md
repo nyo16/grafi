@@ -3,8 +3,6 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/grafi.svg)](https://hex.pm/packages/grafi)
 [![Docs](https://img.shields.io/badge/docs-hexdocs-blue.svg)](https://hexdocs.pm/grafi)
 
-*Hex and HexDocs links activate once v0.1.0 is published.*
-
 A high-performance graph library for Elixir with igraph NIF acceleration.
 
 The name comes from ancient Greek **γραφή** (*graphē*) — "to write, to draw, to describe" —
@@ -70,19 +68,12 @@ the etymological ancestor of the English word "graph." Returning the word to its
 
 ## Installation
 
-> **Pre-release notice**: v0.1.0 is not yet on Hex. Use the `git:` dep form
-> until the first published release.
-
 Add `grafi` to your `mix.exs`:
 
 ```elixir
 def deps do
   [
-    # Once published:
     {:grafi, "~> 0.1.0"}
-
-    # Until then:
-    # {:grafi, git: "https://github.com/nyo16/grafi"}
   ]
 end
 ```
@@ -101,8 +92,8 @@ is required for community detection (Louvain, Leiden, label propagation).
    succeeds. This still runs `make`, so `make` must be installed even then;
    a cross build (Nerves, a `MIX_TARGET` other than `host`) only uses an
    igraph given with `IGRAPH_DIR` and otherwise falls back to pure Elixir.
-3. **Precompiled NIF, opt-in** (from the first Hex release): igraph built
-   in, nothing to install. **It is GPL-3.0-or-later** (see
+3. **Precompiled NIF, opt-in**: igraph built in, nothing to install.
+   **It is GPL-3.0-or-later** (see
    [Third-party licenses](#third-party-licenses)), so you get it only by
    asking for it in your app's `config/config.exs`:
 
