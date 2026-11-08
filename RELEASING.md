@@ -1,8 +1,9 @@
 # Releasing Grafi
 
 Grafi ships as a Hex package plus precompiled NIF artefacts attached to the
-matching GitHub release. The artefacts are GPL-3.0-or-later (static igraph),
-so consumers download one only after opting in with
+matching GitHub release; a `v*` tag publishes both from CI. The artefacts
+are GPL-3.0-or-later (static igraph), so consumers download one only after
+opting in with
 `config :grafi, precompiled_nif: true`, verified against `checksum.exs` in the
 package. By default, on any other target, or if the download fails, the NIF
 is built from source, which needs igraph >= 1.0, and without igraph Grafi runs
@@ -12,7 +13,7 @@ Between releases `@version` in `mix.exs` ends in `-dev`. elixir_make always
 builds a `-dev` version from source, so development copies never pick up a
 published artefact.
 
-## One-time setup (before the first upload)
+## One-time setup (before the first release)
 
 1. **Enable artefact uploads.** The artefacts statically link igraph and are
    distributed under GPL-3.0-or-later (see `NOTICE`; Apache-2.0 code combined
@@ -20,10 +21,16 @@ published artefact.
    opting in. When you are ready to publish them, set the repository variable
    `RELEASE_LICENSE_APPROVED` to `true` (Settings → Secrets and variables →
    Actions → Variables). Until then the `upload` job does nothing.
-2. **Protected environment.** Create the environment `release` (Settings →
-   Environments) with required reviewers and restrict it to `v*` tags. The
-   upload job runs in it, so every release needs an explicit approval.
-3. **Immutable releases.** Enable immutable releases for the repository
+2. **Release environment.** Create the environment `release` (Settings →
+   Environments) with yourself as required reviewer and deployments limited
+   to `v*` tags. The upload job runs in it, so the GitHub release needs an
+   explicit approval.
+3. **Hex environment.** Create the environment `hex` the same way and add
+   the secret `HEX_API_KEY` to it (a key from `mix hex.user key generate`
+   or hex.pm → Keys with permission to publish), not to the repository
+   secrets. Only the `publish` job runs in it, so no other job can read the
+   key, and Hex publishing needs a second approval.
+4. **Immutable releases.** Enable immutable releases for the repository
    (Settings → General → Releases), so published assets cannot be replaced.
    The workflow never uses `--clobber`; a bad artefact means a new patch
    version, never a re-upload under the same tag.
@@ -52,14 +59,18 @@ published artefact.
      `.sha256` files, `checksum.exs`, `NOTICE` and the igraph source tarball,
      with release notes carrying the licence and corresponding-source
      pointers. An existing release is never reused;
-   - finally downloads the published artefact from the release URL as a Hex
-     consumer would, on all four targets (and on OTP 26 and 29 on Linux).
+   - downloads the published artefact from the release URL as a Hex
+     consumer would, on all four targets (and on OTP 26 and 29 on Linux);
+   - finally, after approval in the `hex` environment: re-checks every
+     published artefact against the release's `checksum.exs` (exactly 4
+     entries) and runs `mix hex.publish --yes` (package and docs) from the
+     tag with that `checksum.exs` in the package.
 
-   **If any job fails, do not publish to Hex.** With immutable releases a
-   published `vX.Y.Z` can't be repaired: fix the problem and release
-   `X.Y.(Z+1)` instead. (If the release was never created, deleting and
-   re-pushing the tag is fine.)
-3. **Checksums.** Fetch the workflow's `checksum.exs` and verify it:
+   `publish` runs only when every earlier job succeeded, so a failure stops
+   Hex publishing on its own. With immutable releases a published `vX.Y.Z`
+   can't be repaired: fix the problem and release `X.Y.(Z+1)` instead. (If
+   the release was never created, deleting and re-pushing the tag is fine.)
+3. **Before approving `hex`,** check the provenance of what is about to ship:
 
    ```bash
    gh release download vX.Y.Z --pattern 'grafi-nif-*.tar.gz' --pattern checksum.exs --dir /tmp/rel
@@ -67,22 +78,11 @@ published artefact.
      gh attestation verify "$f" --repo nyo16/grafi \
        --signer-workflow nyo16/grafi/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z
    done
-   mix elixir_make.checksum --all --print   # must match /tmp/rel/checksum.exs (4 entries)
-   cp /tmp/rel/checksum.exs checksum.exs
+   cat /tmp/rel/checksum.exs   # 4 entries, the names consumers request
    ```
 
-   Commit `checksum.exs` **on top of the tag** (on the default branch, with
-   nothing else): `git diff vX.Y.Z HEAD --stat` must list only `checksum.exs`.
-4. **Verify the package.**
-
-   ```bash
-   mix hex.build --unpack
-   ls grafi-X.Y.Z/   # checksum.exs (4 entries), NOTICE, LICENSES/, CHANGELOG.md, LICENSE
-   rm -rf grafi-X.Y.Z grafi-X.Y.Z.tar
-   ```
-
-5. **Publish.** `mix hex.publish`.
-6. **Back to development.** Set `@version` to the next `X.Y.(Z+1)-dev`.
+4. **Back to development.** In one PR, commit the release's `checksum.exs`
+   (a record of what shipped) and set `@version` to the next `X.Y.(Z+1)-dev`.
 
 ## Supported targets and runtimes
 
