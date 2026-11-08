@@ -4,7 +4,9 @@ name: Release
 # smoke-tests it (consumers get it only with `config :grafi,
 # precompiled_nif: true`), and, for a v* tag push once uploads are enabled,
 # publishes it to the GitHub release with checksum.exs, provenance
-# attestations and the corresponding source. See RELEASING.md and NOTICE.
+# attestations and the corresponding source, verifies the published
+# artefacts on every target, then publishes the Hex package. See
+# RELEASING.md and NOTICE.
 
 on:
   push:
@@ -329,3 +331,56 @@ jobs:
             sum = g |> Grafi.Algo.Centrality.pagerank(engine: :nif) |> Map.values() |> Enum.sum()
             if abs(sum - 1.0) > 1.0e-9, do: Mix.raise("pagerank sums to #{sum}")
           '
+
+  # The Hex package goes out only once the release exists and every target
+  # has loaded the published artefact. HEX_API_KEY lives in the `hex`
+  # environment (required reviewer, `v*` tags only), so this is the only job
+  # that can read it, and it holds no GitHub token beside it.
+  publish:
+    name: Publish to Hex
+    needs: [upload, verify-published]
+    runs-on: ubuntu-24.04
+    environment: hex
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The package ships the checksum.exs the upload job wrote from the build
+      # jobs' bytes and attached to the release. It must name exactly the four
+      # artefacts, and every published artefact must still match it.
+      # (`mix compile` can't check this: on a mismatch elixir_make falls back
+      # to a source build and succeeds.)
+      - name: Fetch checksum.exs and verify the published artefacts
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          curl -fsSL -o checksum.exs "$base/checksum.exs"
+          cat checksum.exs
+          entries=$(grep -c '=> "sha256:' checksum.exs)
+          [ "$entries" -eq 4 ] || { echo "expected 4 checksum entries, got $entries" >&2; exit 1; }
+          for target in x86_64-linux-gnu aarch64-linux-gnu aarch64-apple-darwin x86_64-apple-darwin; do
+            name="grafi-nif-2.17-${target}-${TAG#v}.tar.gz"
+            expected=$(grep -F "\"${name}\"" checksum.exs | sed -n 's/.*"sha256:\([0-9a-f]*\)".*/\1/p')
+            [ -n "$expected" ] || { echo "checksum.exs has no entry for $name" >&2; exit 1; }
+            curl -fsSL -o "$RUNNER_TEMP/artefact.tar.gz" "$base/$name"
+            actual=$(sha256sum "$RUNNER_TEMP/artefact.tar.gz" | cut -d' ' -f1)
+            [ "$actual" = "$expected" ] || { echo "$name: published $actual, checksum.exs $expected" >&2; exit 1; }
+            echo "ok $name $actual"
+          done
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      - name: Fetch dependencies
+        run: mix deps.get
+
+      - name: Publish to Hex
+        run: mix hex.publish --yes
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
