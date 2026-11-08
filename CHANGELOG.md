@@ -6,8 +6,10 @@ All notable changes to Grafi are documented here, following
 
 ## [Unreleased]
 
-> **v0.1.0 will be the first published release.** The entries below
-> describe the hardening work happening on the way to that release.
+## [0.1.0] - 2026-11-08
+
+> **First published release.** "Breaking" and "Fixed" entries are relative
+> to the unpublished pre-release code summarised at the end of this file.
 
 ### Breaking
 - `Grafi.Algo.Centrality.betweenness/2` follows NetworkX: unweighted
@@ -541,9 +543,9 @@ All notable changes to Grafi are documented here, following
 - Replaced the 16-byte atom buffer in `decode_csr` with a 64-byte
   buffer and checked the `enif_get_atom` return value.
 
-## v0.1.0
+## Pre-release development (unpublished)
 
-- Initial release (pre-Hex; not yet published).
+- Initial development before the first Hex release.
 - Core graph struct (directed, undirected, weighted, labelled).
 - DAG with cycle prevention, topological sort, layers, critical path.
 - Traversals: BFS, DFS as lazy streams.
@@ -560,3 +562,6 @@ All notable changes to Grafi are documented here, following
 - Expanded test suite with edge cases, JSON round-trip, and
   property-based tests (via `stream_data`).
 - `@doc` annotations on all public functions.
+
+[Unreleased]: https://github.com/nyo16/grafi/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/nyo16/grafi/releases/tag/v0.1.0

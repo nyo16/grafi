@@ -4,7 +4,7 @@ defmodule Grafi.MixProject do
   # Between releases this carries a `-dev` suffix: elixir_make then always
   # builds from source instead of fetching (stale) published artefacts. See
   # RELEASING.md.
-  @version "0.1.0-dev"
+  @version "0.1.0"
   @source_url "https://github.com/nyo16/grafi"
 
   def project do
