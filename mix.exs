@@ -83,7 +83,7 @@ defmodule Grafi.MixProject do
   defp deps do
     [
       # C++ NIF bridge (elixir-nx); build-time only (headers).
-      {:fine, "~> 0.1.6", runtime: false},
+      {:fine, "~> 0.2.0", runtime: false},
       {:elixir_make, "~> 0.10", runtime: false},
       # Not optional: consumers need it to fetch artefacts or build from source.
       {:cc_precompiler, "~> 0.1.11", runtime: false},
